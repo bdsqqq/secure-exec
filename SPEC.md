@@ -325,6 +325,5 @@ expect(shResult.stdout).toContain("hello from node");
 - terminal emulation
 - get claude code cli working in this emulator
 - emulate npm
-- use node_modules instead of pulling packages from cdn
 - native addon polyfills - npm packages with native C/C++ bindings won't work in isolated-vm. may need a polyfill registry mapping them to pure-JS alternatives (e.g. esbuild→esbuild-wasm, bcrypt→bcryptjs, sharp→sharp-wasm, sqlite3→sql.js)
 
