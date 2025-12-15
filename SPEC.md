@@ -120,14 +120,7 @@ uses @wasmer/sdk to run Linux commands. loads node-shim.webc package which bundl
 
 ### node shim
 
-a rust-compiled WASM binary ([source](scratch/wasmer-node-shim/)) that acts as a `node` command within the WASM environment. when bash or other programs try to execute `node`, this shim intercepts the call and bridges to real Node.js via file-based IPC.
-
-**protocol:**
-1. shim writes args to `/ipc/request.txt` (one arg per line)
-2. shim polls for `/ipc/response.txt`
-3. host-side JS polls Directory, finds request, executes real `node`
-4. host writes exit code + stdout to `/ipc/response.txt`
-5. shim reads response, prints stdout, exits with code
+a rust-compiled WASM binary ([source](scratch/wasmer-node-shim/)) that acts as a `node` command within the WASM environment. uses file-based IPC polling to bridge WASM to host Node.js (see [test18-fs-polling-ipc.ts](scratch/wasmer-test/test18-fs-polling-ipc.ts) for proven approach).
 
 **packaging:** bundled in a .webc file with bash + coreutils dependencies. the package exposes a `node` command that routes to our shim. loaded via `Wasmer.fromFile()`.
 
@@ -164,27 +157,19 @@ modules that still need bridging to main isolate (real I/O): `fs`, `net`, `http`
 pnpm add isolated-vm
 ```
 
-**wasm-js bridging** - how WasixInstance delegates `node` commands to NodeProcess. see TEST_WASM_JS_BRIDGE.md for research.
+**file-based IPC polling** - used by the node shim to bridge WASM to host Node.js ([test 18](scratch/wasmer-test/test18-fs-polling-ipc.ts), [rust shim](scratch/wasmer-node-shim/)):
 
-**file-based IPC polling** ([test 18](scratch/wasmer-test/test18-fs-polling-ipc.ts), [rust shim](scratch/wasmer-node-shim/)):
-proven approach for bridging WASM to host Node.js:
+1. node shim (WASM) writes args to `/ipc/request.txt`
+2. node shim polls for `/ipc/response.txt`
+3. host-side JS (WasixInstance) polls Directory, finds request
+4. host executes real `node` via NodeProcess
+5. host writes exit code + stdout to `/ipc/response.txt`
+6. node shim reads response, prints stdout, exits
 
-1. build a rust-based `node` shim (compiled to WASM) that:
-   - writes args to `/ipc/request.txt`
-   - polls for `/ipc/response.txt`
-   - reads exit code + stdout and returns
+this enables shell scripts to call `node` since bash can spawn our custom node shim. latency is ~200-500ms per call due to polling.
 
-2. host-side JavaScript:
-   - polls Directory for `/ipc/request.txt`
-   - when found, executes real `node` via child_process
-   - writes result to `/ipc/response.txt`
-
-3. package the shim with bash + coreutils in a .webc file
-
-this enables shell scripts to call `node` since bash can spawn our custom node shim, which then bridges to real Node.js via file-based IPC. latency is ~200-500ms per call due to polling.
-
-**custom WASM shell with native bridge imports** ([test 9](scratch/wasmer-test/test9-wasi-plus-custom.ts)):
-alternative approach using direct WASM imports (lower latency but more complex):
+**alternative: custom WASM shell with native bridge imports** ([test 9](scratch/wasmer-test/test9-wasi-plus-custom.ts)):
+lower latency approach using direct WASM imports (not currently used):
 - use Node.js native WASI (not @wasmer/sdk) with custom `bridge.*` imports
 - WASM shell calls `bridge.spawn_node("script.js")` → JS handler → NodeProcess
 - requires building a custom WASM binary in Rust that imports both WASI and bridge functions
@@ -214,29 +199,41 @@ const result = await proc.run(`
 expect(result).toBe("foo/bar");
 ```
 
-3. implement VirtualMachine and SystemBridge with basic filesystem. VirtualMachine owns a SystemBridge that forwards to a dedicated folder on the host.
+3. implement VirtualMachine and SystemBridge with basic filesystem. SystemBridge wraps the shared Directory instance.
 
 ```ts
 import { VirtualMachine } from "./vm";
 import { SystemBridge } from "./system-bridge";
-import fs from "fs";
-import path from "path";
-import os from "os";
+import { Directory } from "@wasmer/sdk";
 
-const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-test-"));
-
-// SystemBridge can be used directly
-const bridge = new SystemBridge(tmpDir);
+// SystemBridge wraps Directory
+const dir = new Directory();
+const bridge = new SystemBridge(dir);
 bridge.writeFile("/direct.txt", "hello");
-expect(fs.readFileSync(path.join(tmpDir, "direct.txt"), "utf8")).toBe("hello");
+expect(bridge.readFile("/direct.txt")).toBe("hello");
 
 // VirtualMachine wraps SystemBridge
-const vm = new VirtualMachine(tmpDir);
+const vm = new VirtualMachine();
 vm.writeFile("/foo.txt", "bar");
 expect(vm.readFile("/foo.txt")).toBe("bar");
 ```
 
-4. get basic wasix shell working
+4. implement host fs loading layer
+
+Copy files from host filesystem into Directory on init. This is how node_modules and other host files become available.
+
+```ts
+import { VirtualMachine } from "./vm";
+
+// loadFromHost recursively copies host directory into Directory
+const vm = new VirtualMachine();
+await vm.loadFromHost("/path/to/project"); // copies into Directory
+
+// now node_modules are available in Directory
+expect(vm.readFile("/node_modules/ms/package.json")).toContain("ms");
+```
+
+5. get basic wasix shell working
 
 ```ts
 import { WasixInstance } from "./wasix";
@@ -246,19 +243,19 @@ const result = await wasix.exec("echo hello");
 expect(result.stdout).toBe("hello\n");
 ```
 
-5. get wasix file system bindings working (test ls, cd, etc)
+6. get wasix file system bindings working (test ls, cd, etc)
 
 ```ts
 import { VirtualMachine } from "./vm";
 
-const vm = new VirtualMachine(tmpDir);
+const vm = new VirtualMachine();
 vm.writeFile("/test.txt", "content");
 
 const result = await vm.spawn("ls", ["/"]);
 expect(result.stdout).toContain("test.txt");
 ```
 
-6. integrate node shim with WasixInstance
+7. integrate node shim with WasixInstance
 
 WasixInstance loads the pre-built node-shim.webc and runs an IPC polling loop during exec() to handle node requests from WASM.
 
@@ -277,14 +274,17 @@ const result = await wasix.exec("bash -c 'node -e \"console.log(2+2)\"'");
 expect(result.stdout).toContain("4");
 ```
 
-7. implement package imports using the code in node_modules
+8. implement package imports using the code in node_modules
+
+NodeProcess resolves require() calls against node_modules in Directory (loaded from host in step 4).
 
 ```ts
 import { VirtualMachine } from "./vm";
 import { NodeProcess } from "./node-process";
 
-const vm = new VirtualMachine(tmpDir);
-// assume `pnpm add ms` was run in tmpDir on host
+const vm = new VirtualMachine();
+await vm.loadFromHost("/path/to/project"); // has node_modules with ms installed
+
 const proc = new NodeProcess(vm);
 const result = await proc.run(`
   const ms = require("ms");
@@ -293,7 +293,7 @@ const result = await proc.run(`
 expect(result).toBe(3600000);
 ```
 
-8. implement hybrid routing in VirtualMachine.spawn()
+9. implement hybrid routing in VirtualMachine.spawn()
 
 VirtualMachine.spawn() checks the command name and routes to the appropriate runtime:
 - `node` → NodeProcess (run JS in isolated-vm)
@@ -302,7 +302,8 @@ VirtualMachine.spawn() checks the command name and routes to the appropriate run
 ```ts
 import { VirtualMachine } from "./vm";
 
-const vm = new VirtualMachine(tmpDir);
+const vm = new VirtualMachine();
+await vm.loadFromHost("/path/to/project");
 vm.writeFile("/script.js", `console.log("hello from node")`);
 
 // this routes to NodeProcess, not WASM
