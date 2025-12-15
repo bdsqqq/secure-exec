@@ -121,7 +121,23 @@ fs.writeFileSync = (path, content) => {
 
 uses @wasmer/sdk to run Linux commands. uses `sharrattj/coreutils` package from Wasmer registry for ls, cat, echo, etc.
 
-**v1 limitation:** VirtualMachine.spawn() handles routing in JS (see step 7). shell scripts that internally call node are supported via file-based IPC polling (see [test 18](scratch/wasmer-test/test18-fs-polling-ipc.ts)).
+### node shim
+
+a rust-compiled WASM binary ([source](scratch/wasmer-node-shim/)) that acts as a `node` command within the WASM environment. when bash or other programs try to execute `node`, this shim intercepts the call and bridges to real Node.js via file-based IPC.
+
+**protocol:**
+1. shim writes args to `/ipc/request.txt` (one arg per line)
+2. shim polls for `/ipc/response.txt`
+3. host-side JS polls Directory, finds request, executes real `node`
+4. host writes exit code + stdout to `/ipc/response.txt`
+5. shim reads response, prints stdout, exits with code
+
+**packaging:** bundled in a .webc file with bash + coreutils dependencies. the package exposes a `node` command that routes to our shim. loaded via `Wasmer.fromFile()`.
+
+**limitations:**
+- ~200-500ms latency per call (polling overhead)
+- no streaming stdout/stderr (collected then returned)
+- single request at a time (concurrent calls would need request IDs)
 
 ### dependencies
 
