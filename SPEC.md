@@ -298,7 +298,9 @@ const lsResult = await vm.spawn("ls", ["/"]);
 expect(lsResult.stdout).toContain("script.js");
 ```
 
-**note:** `vm.spawn("sh", ["script-that-calls-node.sh"])` is supported via file-based IPC polling. the shell runs in WASM with a custom `node` shim that bridges to NodeProcess (see [test 18](scratch/wasmer-test/test18-fs-polling-ipc.ts) and [rust shim](scratch/wasmer-node-shim/)).
+8. integrate node shim for shell script support
+
+WasixInstance loads the node shim .webc package and runs host-side IPC polling to bridge `node` calls from WASM to real Node.js. see [node shim component](#node-shim), [test 18](scratch/wasmer-test/test18-fs-polling-ipc.ts), and [rust source](scratch/wasmer-node-shim/).
 
 ## future work
 
