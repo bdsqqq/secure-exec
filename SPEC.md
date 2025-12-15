@@ -63,21 +63,18 @@ const jsCode = `
 
 `;
 
-const fs = require("fs");
+const vm = new VirtualMachine("/path/to/local/fs");
 
-const vmPath = "/path/to/local/fs";
-const vm = new VirtualMachine(vmPath);
-
-// write scripts to the vm filesystem using native fs
-fs.writeFileSync(`${vmPath}/test.sh`, shCode);
-fs.writeFileSync(`${vmPath}/script.js`, jsCode);
+// write scripts to the vm filesystem
+vm.writeFile("/test.sh", shCode);
+vm.writeFile("/script.js", jsCode);
 
 // run the shell script (assumes npm install jsonfile ms was run on host)
 const output = await vm.spawn("sh", ["/test.sh"]);
 console.log('output', output.stdout, output.stderr, output.code)
 
-// read back using native fs to verify
-const raw = fs.readFileSync(`${vmPath}/test.json`, "utf8");
+// read back to verify
+const raw = vm.readFile("/test.json");
 console.log("read back:", JSON.parse(raw));
 ```
 
