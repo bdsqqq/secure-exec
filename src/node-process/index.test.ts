@@ -1,8 +1,14 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeAll } from "vitest";
+import { init, Directory } from "@wasmer/sdk/node";
 import { NodeProcess } from "./index";
+import { SystemBridge } from "../system-bridge/index";
 
 describe("NodeProcess", () => {
   let proc: NodeProcess;
+
+  beforeAll(async () => {
+    await init();
+  });
 
   afterEach(() => {
     proc?.dispose();
@@ -104,6 +110,106 @@ describe("NodeProcess", () => {
       `);
       expect(result.code).toBe(1);
       expect(result.stderr).toContain("Cannot find module");
+    });
+  });
+
+  describe("Step 8: Package imports from node_modules", () => {
+    it("should load a simple package from virtual node_modules", async () => {
+      const dir = new Directory();
+      const bridge = new SystemBridge(dir);
+
+      // Create a simple mock package
+      bridge.mkdir("/node_modules/my-pkg");
+      bridge.writeFile(
+        "/node_modules/my-pkg/package.json",
+        JSON.stringify({ name: "my-pkg", main: "index.js" })
+      );
+      bridge.writeFile(
+        "/node_modules/my-pkg/index.js",
+        `module.exports = { add: (a, b) => a + b };`
+      );
+
+      proc = new NodeProcess({ systemBridge: bridge });
+      const result = await proc.run(`
+        const pkg = require('my-pkg');
+        module.exports = pkg.add(2, 3);
+      `);
+
+      expect(result).toBe(5);
+    });
+
+    it("should load package with default index.js", async () => {
+      const dir = new Directory();
+      const bridge = new SystemBridge(dir);
+
+      // Package without explicit main
+      bridge.mkdir("/node_modules/simple-pkg");
+      bridge.writeFile(
+        "/node_modules/simple-pkg/package.json",
+        JSON.stringify({ name: "simple-pkg" })
+      );
+      bridge.writeFile(
+        "/node_modules/simple-pkg/index.js",
+        `module.exports = "hello from simple-pkg";`
+      );
+
+      proc = new NodeProcess({ systemBridge: bridge });
+      const result = await proc.run(`
+        const pkg = require('simple-pkg');
+        module.exports = pkg;
+      `);
+
+      expect(result).toBe("hello from simple-pkg");
+    });
+
+    it("should prioritize polyfills over node_modules", async () => {
+      const dir = new Directory();
+      const bridge = new SystemBridge(dir);
+
+      // Even if path exists in node_modules, polyfill should be used
+      bridge.mkdir("/node_modules/path");
+      bridge.writeFile(
+        "/node_modules/path/package.json",
+        JSON.stringify({ name: "path", main: "index.js" })
+      );
+      bridge.writeFile(
+        "/node_modules/path/index.js",
+        `module.exports = { fake: true };`
+      );
+
+      proc = new NodeProcess({ systemBridge: bridge });
+      const result = await proc.run(`
+        const path = require('path');
+        // Real path polyfill has join, our fake doesn't
+        module.exports = typeof path.join === 'function';
+      `);
+
+      expect(result).toBe(true);
+    });
+
+    it("should use setSystemBridge to add bridge later", async () => {
+      const dir = new Directory();
+      const bridge = new SystemBridge(dir);
+
+      bridge.mkdir("/node_modules/late-pkg");
+      bridge.writeFile(
+        "/node_modules/late-pkg/package.json",
+        JSON.stringify({ name: "late-pkg", main: "index.js" })
+      );
+      bridge.writeFile(
+        "/node_modules/late-pkg/index.js",
+        `module.exports = 42;`
+      );
+
+      proc = new NodeProcess();
+      proc.setSystemBridge(bridge);
+
+      const result = await proc.run(`
+        const pkg = require('late-pkg');
+        module.exports = pkg;
+      `);
+
+      expect(result).toBe(42);
     });
   });
 });

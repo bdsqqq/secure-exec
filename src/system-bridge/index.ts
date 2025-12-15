@@ -66,20 +66,28 @@ export class SystemBridge {
   }
 
   /**
-   * Create a directory
-   * Note: wasmer Directory doesn't support nested mkdir directly,
-   * but writing to a path auto-creates parent directories
+   * Create a directory (recursively creates parent directories)
    */
   mkdir(path: string): void {
-    // Create directory by writing and removing a placeholder file
-    // This triggers auto-creation of parent directories
-    const placeholder = `${path}/.keep`;
-    try {
-      this.directory.createDir(path);
-    } catch {
-      // If createDir fails, try to create by writing to a nested path
-      // (wasmer will auto-create parent directories)
-      this.directory.writeFile(placeholder, "");
+    // Normalize path
+    const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+    const parts = normalizedPath.split("/").filter(Boolean);
+
+    // Create each directory level
+    let currentPath = "";
+    for (const part of parts) {
+      currentPath += `/${part}`;
+      try {
+        // createDir may return a promise - catch any rejections
+        const result = this.directory.createDir(currentPath);
+        if (result && typeof result.catch === "function") {
+          result.catch(() => {
+            // Directory might already exist, ignore error
+          });
+        }
+      } catch {
+        // Directory might already exist, ignore error
+      }
     }
   }
 

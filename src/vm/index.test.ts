@@ -142,4 +142,96 @@ describe("VirtualMachine", () => {
       expect(await vm.readFile("/project/hello.txt")).toBe("Hello World");
     });
   });
+
+  describe("Step 9: Hybrid routing in spawn()", () => {
+    it("should route node -e commands to NodeProcess", async () => {
+      const vm = new VirtualMachine();
+      try {
+        const result = await vm.spawn("node", ["-e", 'console.log("hello from node")']);
+        expect(result.stdout).toContain("hello from node");
+        expect(result.code).toBe(0);
+      } finally {
+        vm.dispose();
+      }
+    });
+
+    it("should route node script file to NodeProcess", async () => {
+      const vm = new VirtualMachine();
+      try {
+        await vm.init();
+        vm.writeFile("/script.js", 'console.log("script output")');
+
+        const result = await vm.spawn("node", ["/script.js"]);
+        expect(result.stdout).toContain("script output");
+        expect(result.code).toBe(0);
+      } finally {
+        vm.dispose();
+      }
+    });
+
+    it("should route linux commands to WasixInstance", async () => {
+      const vm = new VirtualMachine();
+      try {
+        await vm.init();
+        vm.writeFile("/test.txt", "content");
+
+        const result = await vm.spawn("ls", ["/"]);
+        expect(result.stdout).toContain("test.txt");
+      } finally {
+        vm.dispose();
+      }
+    });
+
+    it("should execute echo command via WasixInstance", async () => {
+      const vm = new VirtualMachine();
+      try {
+        const result = await vm.spawn("echo", ["hello world"]);
+        expect(result.stdout.trim()).toBe("hello world");
+        expect(result.code).toBe(0);
+      } finally {
+        vm.dispose();
+      }
+    });
+
+    it("should run shell scripts that call node via IPC", async () => {
+      const vm = new VirtualMachine();
+      try {
+        await vm.init();
+        vm.writeFile("/script.js", 'console.log("from node")');
+
+        // bash runs in WASM, node call bridges via IPC to NodeProcess
+        const result = await vm.spawn("bash", [
+          "-c",
+          "echo before && node /script.js && echo after",
+        ]);
+        expect(result.stdout).toContain("before");
+        expect(result.stdout).toContain("from node");
+        expect(result.stdout).toContain("after");
+      } finally {
+        vm.dispose();
+      }
+    });
+
+    it("should handle node errors properly", async () => {
+      const vm = new VirtualMachine();
+      try {
+        const result = await vm.spawn("node", ["-e", "throw new Error('oops')"]);
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain("oops");
+      } finally {
+        vm.dispose();
+      }
+    });
+
+    it("should handle missing script file", async () => {
+      const vm = new VirtualMachine();
+      try {
+        const result = await vm.spawn("node", ["/nonexistent.js"]);
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain("Cannot find module");
+      } finally {
+        vm.dispose();
+      }
+    });
+  });
 });

@@ -85,17 +85,27 @@ describe("WasixInstance", () => {
     });
 
     it("should run bash script that calls node via IPC", async () => {
-      const wasix = new WasixInstance();
+      const nodeProcess = new NodeProcess();
+      const systemBridge = new SystemBridge();
 
-      // Run bash that calls node
-      const result = await wasix.runWithIpc("bash", [
-        "-c",
-        "echo 'Before node' && node -e \"console.log('From node')\" && echo 'After node'",
-      ]);
+      try {
+        const wasix = new WasixInstance({
+          nodeProcess,
+          systemBridge,
+        });
 
-      expect(result.stdout).toContain("Before node");
-      expect(result.stdout).toContain("From node");
-      expect(result.stdout).toContain("After node");
+        // Run bash that calls node via IPC to NodeProcess
+        const result = await wasix.runWithIpc("bash", [
+          "-c",
+          "echo 'Before node' && node -e \"console.log('From node')\" && echo 'After node'",
+        ]);
+
+        expect(result.stdout).toContain("Before node");
+        expect(result.stdout).toContain("From node");
+        expect(result.stdout).toContain("After node");
+      } finally {
+        nodeProcess.dispose();
+      }
     });
   });
 });

@@ -1,8 +1,11 @@
 import ivm from "isolated-vm";
 import { bundlePolyfill, hasPolyfill } from "./polyfills.js";
+import { bundlePackage } from "./package-bundler.js";
+import type { SystemBridge } from "../system-bridge/index.js";
 
 export interface NodeProcessOptions {
   memoryLimit?: number; // MB, default 128
+  systemBridge?: SystemBridge; // For accessing virtual filesystem
 }
 
 export interface RunResult {
@@ -13,15 +16,26 @@ export interface RunResult {
 
 // Cache of bundled polyfills
 const polyfillCodeCache: Map<string, string> = new Map();
+// Cache of bundled packages
+const packageCodeCache: Map<string, string> = new Map();
 
 export class NodeProcess {
   private isolate: ivm.Isolate;
   private context: ivm.Context | null = null;
   private memoryLimit: number;
+  private systemBridge?: SystemBridge;
 
   constructor(options: NodeProcessOptions = {}) {
     this.memoryLimit = options.memoryLimit ?? 128;
     this.isolate = new ivm.Isolate({ memoryLimit: this.memoryLimit });
+    this.systemBridge = options.systemBridge;
+  }
+
+  /**
+   * Set the SystemBridge for filesystem access
+   */
+  setSystemBridge(bridge: SystemBridge): void {
+    this.systemBridge = bridge;
   }
 
   /**
@@ -48,7 +62,35 @@ export class NodeProcess {
       }
     );
 
+    // Create a reference that can load packages from node_modules
+    const loadPackageRef = new ivm.Reference(
+      async (packageName: string): Promise<string | null> => {
+        if (!this.systemBridge) {
+          return null;
+        }
+
+        // Check cache first
+        const cached = packageCodeCache.get(packageName);
+        if (cached) {
+          return cached;
+        }
+
+        try {
+          // Try to bundle the package from virtual filesystem
+          const code = await bundlePackage(packageName, this.systemBridge);
+          if (code) {
+            packageCodeCache.set(packageName, code);
+            return code;
+          }
+        } catch {
+          // Package not found or can't be bundled
+        }
+        return null;
+      }
+    );
+
     await jail.set("_loadPolyfill", loadPolyfillRef);
+    await jail.set("_loadPackage", loadPackageRef);
 
     // Set up the require system
     await context.eval(`
@@ -69,8 +111,14 @@ export class NodeProcess {
           return _pendingModules[name].exports;
         }
 
-        // Try to load polyfill synchronously
-        const code = _loadPolyfill.applySyncPromise(undefined, [name]);
+        // Try to load polyfill first (for built-in modules)
+        let code = _loadPolyfill.applySyncPromise(undefined, [name]);
+
+        // If not a polyfill, try to load from node_modules
+        if (code === null) {
+          code = _loadPackage.applySyncPromise(undefined, [name]);
+        }
+
         if (code === null) {
           throw new Error('Cannot find module: ' + moduleName);
         }

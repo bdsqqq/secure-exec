@@ -1,5 +1,7 @@
 import { init, Directory } from "@wasmer/sdk/node";
 import { SystemBridge } from "../system-bridge/index.js";
+import { NodeProcess } from "../node-process/index.js";
+import { WasixInstance } from "../wasix/index.js";
 
 export interface SpawnResult {
   stdout: string;
@@ -17,6 +19,8 @@ export class VirtualMachine {
   private bridge: SystemBridge | null = null;
   private options: VirtualMachineOptions;
   private initialized = false;
+  private nodeProcess: NodeProcess | null = null;
+  private wasixInstance: WasixInstance | null = null;
 
   constructor(options: VirtualMachineOptions = {}) {
     this.options = options;
@@ -35,6 +39,20 @@ export class VirtualMachine {
 
     // Create SystemBridge after wasmer is initialized
     this.bridge = new SystemBridge();
+
+    // Create NodeProcess with access to virtual filesystem
+    this.nodeProcess = new NodeProcess({
+      memoryLimit: this.options.memoryLimit,
+      systemBridge: this.bridge,
+    });
+
+    // Create WasixInstance sharing the same filesystem
+    this.wasixInstance = new WasixInstance({
+      directory: this.bridge.getDirectory(),
+      systemBridge: this.bridge,
+      nodeProcess: this.nodeProcess,
+    });
+
     this.initialized = true;
   }
 
@@ -131,7 +149,75 @@ export class VirtualMachine {
    * Routes to appropriate runtime (node -> NodeProcess, linux -> WasixInstance)
    */
   async spawn(command: string, args: string[] = []): Promise<SpawnResult> {
-    // This will be implemented in Step 9
-    throw new Error("spawn not yet implemented");
+    await this.init();
+
+    if (!this.nodeProcess || !this.wasixInstance || !this.bridge) {
+      throw new Error("VirtualMachine not properly initialized");
+    }
+
+    // Route node commands to NodeProcess
+    if (command === "node") {
+      return this.spawnNode(args);
+    }
+
+    // Route all other commands to WasixInstance with IPC support
+    // This allows shell scripts to call node via IPC
+    return this.wasixInstance.runWithIpc(command, args);
+  }
+
+  /**
+   * Execute node via NodeProcess
+   */
+  private async spawnNode(args: string[]): Promise<SpawnResult> {
+    if (!this.nodeProcess || !this.bridge) {
+      throw new Error("NodeProcess not initialized");
+    }
+
+    // Parse node args to extract code
+    let code = "";
+
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === "-e" || args[i] === "--eval") {
+        code = args[i + 1] || "";
+        break;
+      } else if (!args[i].startsWith("-")) {
+        // It's a script file path
+        const scriptPath = args[i];
+        try {
+          code = await this.bridge.readFile(scriptPath);
+        } catch {
+          return {
+            stdout: "",
+            stderr: `Cannot find module '${scriptPath}'`,
+            code: 1,
+          };
+        }
+        break;
+      }
+    }
+
+    if (!code) {
+      return { stdout: "", stderr: "", code: 0 };
+    }
+
+    const result = await this.nodeProcess.exec(code);
+    return {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      code: result.code,
+    };
+  }
+
+  /**
+   * Dispose of resources
+   */
+  dispose(): void {
+    if (this.nodeProcess) {
+      this.nodeProcess.dispose();
+      this.nodeProcess = null;
+    }
+    this.wasixInstance = null;
+    this.bridge = null;
+    this.initialized = false;
   }
 }

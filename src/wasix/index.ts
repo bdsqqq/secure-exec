@@ -127,10 +127,8 @@ export class WasixInstance {
   /**
    * Internal method to run a command
    */
-  private async runCommand(
-    cmd: ReturnType<typeof nodeShimPkg.commands[string]>,
-    args: string[]
-  ): Promise<ExecResult> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async runCommand(cmd: any, args: string[]): Promise<ExecResult> {
     try {
       const instance = await cmd.run({
         args,
