@@ -98,22 +98,26 @@ uses WebAssembly.sh to emulate a Linux shell environment. provides shell command
 
 ## steps
 
-1. implement a basic virtual machine with a fake file system. expose methods on this that forwards to a dedicated folder for this vm. keep this simple and add as needed.
+1. implement VirtualMachine and SystemBridge with basic filesystem. VirtualMachine owns a SystemBridge that forwards to a dedicated folder on the host.
 
 ```ts
 import { VirtualMachine } from "./vm";
+import { SystemBridge } from "./system-bridge";
 import fs from "fs";
 import path from "path";
 import os from "os";
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-test-"));
+
+// SystemBridge can be used directly
+const bridge = new SystemBridge(tmpDir);
+bridge.writeFile("/direct.txt", "hello");
+expect(fs.readFileSync(path.join(tmpDir, "direct.txt"), "utf8")).toBe("hello");
+
+// VirtualMachine wraps SystemBridge
 const vm = new VirtualMachine(tmpDir);
-
-fs.writeFileSync(path.join(tmpDir, "hello.txt"), "world");
-expect(vm.readFile("/hello.txt")).toBe("world");
-
 vm.writeFile("/foo.txt", "bar");
-expect(fs.readFileSync(path.join(tmpDir, "foo.txt"), "utf8")).toBe("bar");
+expect(vm.readFile("/foo.txt")).toBe("bar");
 ```
 
 2. get basic isolates & bindings working using isolated-vm
