@@ -1,16 +1,15 @@
 import * as fs from "fs";
-import * as path from "path";
-import { fileURLToPath } from "url";
+import { createRequire } from "module";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 
 /**
  * Get the fs module code that can be injected into an isolate.
  * This returns the compiled JavaScript code as a string wrapped in an IIFE.
  */
 export function getFsModuleCode(): string {
-  // Read the compiled bridge.js file (IIFE format)
-  const bridgePath = path.join(__dirname, "..", "assets", "bridge.js");
+  // Read the compiled bridge.js file (IIFE format) from @anthropic/ivm-bridge
+  const bridgePath = require.resolve("@anthropic/ivm-bridge");
   const code = fs.readFileSync(bridgePath, "utf8");
 
   // The compiled code creates a global `bridge` variable with the module exports
