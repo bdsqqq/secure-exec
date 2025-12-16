@@ -9,6 +9,7 @@ import {
 } from "./process-polyfill.js";
 import { generateChildProcessPolyfill } from "./child-process-polyfill.js";
 import { generateNetworkPolyfill } from "./network-polyfill.js";
+import { generateOSPolyfill, type OSConfig } from "./os-polyfill.js";
 
 // Interface for command executor (like WasixInstance)
 export interface CommandExecutor {
@@ -54,6 +55,7 @@ export interface NodeProcessOptions {
   processConfig?: ProcessConfig; // Process object configuration
   commandExecutor?: CommandExecutor; // For child_process support (e.g., WasixInstance)
   networkAdapter?: NetworkAdapter; // For network support (fetch, http, https, dns)
+  osConfig?: OSConfig; // OS module configuration
 }
 
 /**
@@ -135,6 +137,7 @@ export class NodeProcess {
   private processConfig: ProcessConfig;
   private commandExecutor?: CommandExecutor;
   private networkAdapter?: NetworkAdapter;
+  private osConfig: OSConfig;
   // Cache for compiled ESM modules (per isolate)
   private esmModuleCache: Map<string, ivm.Module> = new Map();
 
@@ -145,6 +148,7 @@ export class NodeProcess {
     this.processConfig = options.processConfig ?? {};
     this.commandExecutor = options.commandExecutor;
     this.networkAdapter = options.networkAdapter;
+    this.osConfig = options.osConfig ?? {};
   }
 
   /**
@@ -462,6 +466,11 @@ export class NodeProcess {
           return null;
         }
 
+        // os module is handled specially with our own polyfill
+        if (name === "os") {
+          return null;
+        }
+
         if (!hasPolyfill(name)) {
           return null;
         }
@@ -643,6 +652,10 @@ export class NodeProcess {
       await context.eval(networkPolyfillCode);
     }
 
+    // Initialize os polyfill (always available)
+    const osPolyfillCode = generateOSPolyfill(this.osConfig);
+    await context.eval(osPolyfillCode);
+
     // Set up the require system with dynamic CommonJS resolution
     await context.eval(`
       globalThis._moduleCache = {};
@@ -722,6 +735,16 @@ export class NodeProcess {
           }
           _moduleCache['dns'] = _dnsModule;
           return _dnsModule;
+        }
+
+        // Special handling for os module
+        if (name === 'os') {
+          if (_moduleCache['os']) return _moduleCache['os'];
+          if (typeof _osModule === 'undefined') {
+            throw new Error('os module not initialized');
+          }
+          _moduleCache['os'] = _osModule;
+          return _osModule;
         }
 
         // Try to load polyfill first (for built-in modules like path, events, etc.)

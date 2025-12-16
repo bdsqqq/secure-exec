@@ -1653,4 +1653,218 @@ describe("NodeProcess", () => {
       });
     });
   });
+
+  describe("Phase 5: OS Module", () => {
+    it("should have os.platform()", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const os = require('os');
+        module.exports = os.platform();
+      `);
+      expect(result.exports).toBe("linux");
+    });
+
+    it("should have os.arch()", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const os = require('os');
+        module.exports = os.arch();
+      `);
+      expect(result.exports).toBe("x64");
+    });
+
+    it("should have os.type()", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const os = require('os');
+        module.exports = os.type();
+      `);
+      expect(result.exports).toBe("Linux");
+    });
+
+    it("should have os.release()", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const os = require('os');
+        module.exports = os.release();
+      `);
+      expect(result.exports).toBe("5.15.0");
+    });
+
+    it("should have os.homedir()", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const os = require('os');
+        module.exports = os.homedir();
+      `);
+      expect(result.exports).toBe("/root");
+    });
+
+    it("should have os.tmpdir()", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const os = require('os');
+        module.exports = os.tmpdir();
+      `);
+      expect(result.exports).toBe("/tmp");
+    });
+
+    it("should have os.hostname()", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const os = require('os');
+        module.exports = os.hostname();
+      `);
+      expect(result.exports).toBe("sandbox");
+    });
+
+    it("should have os.userInfo()", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const os = require('os');
+        const info = os.userInfo();
+        module.exports = {
+          hasUsername: typeof info.username === 'string',
+          hasUid: typeof info.uid === 'number',
+          hasGid: typeof info.gid === 'number',
+          hasHomedir: typeof info.homedir === 'string'
+        };
+      `);
+      expect(result.exports).toEqual({
+        hasUsername: true,
+        hasUid: true,
+        hasGid: true,
+        hasHomedir: true
+      });
+    });
+
+    it("should have os.cpus()", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const os = require('os');
+        const cpus = os.cpus();
+        module.exports = {
+          isArray: Array.isArray(cpus),
+          hasModel: cpus.length > 0 && typeof cpus[0].model === 'string',
+          hasTimes: cpus.length > 0 && typeof cpus[0].times === 'object'
+        };
+      `);
+      expect(result.exports).toEqual({
+        isArray: true,
+        hasModel: true,
+        hasTimes: true
+      });
+    });
+
+    it("should have os.totalmem() and os.freemem()", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const os = require('os');
+        module.exports = {
+          totalmem: os.totalmem(),
+          freemem: os.freemem()
+        };
+      `);
+      expect(result.exports).toMatchObject({
+        totalmem: 1073741824,  // 1GB
+        freemem: 536870912     // 512MB
+      });
+    });
+
+    it("should have os.loadavg()", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const os = require('os');
+        const load = os.loadavg();
+        module.exports = {
+          isArray: Array.isArray(load),
+          hasThreeItems: load.length === 3
+        };
+      `);
+      expect(result.exports).toEqual({
+        isArray: true,
+        hasThreeItems: true
+      });
+    });
+
+    it("should have os.EOL", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const os = require('os');
+        module.exports = os.EOL;
+      `);
+      expect(result.exports).toBe("\n");
+    });
+
+    it("should have os.endianness()", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const os = require('os');
+        module.exports = os.endianness();
+      `);
+      expect(result.exports).toBe("LE");
+    });
+
+    it("should have os.networkInterfaces()", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const os = require('os');
+        const interfaces = os.networkInterfaces();
+        module.exports = typeof interfaces === 'object';
+      `);
+      expect(result.exports).toBe(true);
+    });
+
+    it("should have os.constants", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const os = require('os');
+        module.exports = {
+          hasSignals: typeof os.constants.signals === 'object',
+          hasErrno: typeof os.constants.errno === 'object',
+          hasSIGINT: os.constants.signals.SIGINT === 2
+        };
+      `);
+      expect(result.exports).toEqual({
+        hasSignals: true,
+        hasErrno: true,
+        hasSIGINT: true
+      });
+    });
+
+    it("should have os.devNull", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const os = require('os');
+        module.exports = os.devNull;
+      `);
+      expect(result.exports).toBe("/dev/null");
+    });
+
+    it("should use osConfig for custom values", async () => {
+      proc = new NodeProcess({
+        osConfig: {
+          platform: "darwin",
+          arch: "arm64",
+          homedir: "/Users/test",
+          hostname: "testhost"
+        }
+      });
+      const result = await proc.run(`
+        const os = require('os');
+        module.exports = {
+          platform: os.platform(),
+          arch: os.arch(),
+          homedir: os.homedir(),
+          hostname: os.hostname()
+        };
+      `);
+      expect(result.exports).toEqual({
+        platform: "darwin",
+        arch: "arm64",
+        homedir: "/Users/test",
+        hostname: "testhost"
+      });
+    });
+  });
 });
