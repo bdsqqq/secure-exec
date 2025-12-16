@@ -1,6 +1,8 @@
 /**
  * Child process polyfill code to be injected into isolated-vm context.
  * This provides Node.js child_process module emulation that bridges to WasixInstance.
+ *
+ * TODO: Move child_process to its own module to be built separately.
  */
 
 /**
