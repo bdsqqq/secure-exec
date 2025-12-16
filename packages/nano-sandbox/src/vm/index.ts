@@ -90,6 +90,27 @@ export class VirtualMachine {
     // API conflicts with the webc's filesystem, breaking IPC-based node execution.
     const { loadHostDirectory } = await import("./host-loader.js");
     await loadHostDirectory(npmAssetsPath, "/opt/npm", this.bridge);
+
+    // Create default /etc/npmrc
+    this.bridge.mkdir("/etc");
+    this.bridge.writeFile(
+      "/etc/npmrc",
+      `; Default npm configuration
+prefix=/usr/local
+cache=/tmp/.npm
+`
+    );
+  }
+
+  /**
+   * Get the path where npm is installed in the virtual filesystem
+   * Returns null if npm is not loaded
+   */
+  getNpmPath(): string | null {
+    if (this.options.loadNpm === false) {
+      return null;
+    }
+    return "/opt/npm";
   }
 
   /**
@@ -235,6 +256,44 @@ export class VirtualMachine {
     if (!code) {
       return { stdout: "", stderr: "", code: 0 };
     }
+
+    const result = await this.nodeProcess.exec(code);
+    return {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      code: result.code,
+    };
+  }
+
+  /**
+   * Run an npm command
+   * @param args - npm arguments (e.g., ["install", "lodash"] or ["--version"])
+   * @throws Error if npm is not loaded (loadNpm: false)
+   */
+  async npm(args: string[]): Promise<SpawnResult> {
+    await this.init();
+
+    if (this.options.loadNpm === false) {
+      throw new Error("npm is not loaded. Initialize with loadNpm: true");
+    }
+
+    if (!this.nodeProcess) {
+      throw new Error("NodeProcess not initialized");
+    }
+
+    // Build code that runs npm CLI with the given args
+    const argsJson = JSON.stringify(args);
+    const code = `
+      process.argv = ["node", "npm", ...${argsJson}];
+      process.on('output', (type, ...args) => {
+        if (type === 'standard') {
+          process.stdout.write(args.join(' ') + '\\n');
+        } else if (type === 'error') {
+          process.stderr.write(args.join(' ') + '\\n');
+        }
+      });
+      require('/opt/npm/lib/cli.js')(process);
+    `;
 
     const result = await this.nodeProcess.exec(code);
     return {
