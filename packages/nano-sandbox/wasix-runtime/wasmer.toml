@@ -7,12 +7,12 @@ description = "WASIX runtime with Node.js shim using file-based IPC polling"
 "sharrattj/coreutils" = "1.0.16"
 "sharrattj/bash" = "*"
 
-# Bundle npm into the package filesystem
-[fs]
-"/usr/lib/node_modules/npm" = "dist/usr/lib/node_modules/npm"
-"/usr/bin/npm" = "dist/usr/bin/npm"
-"/usr/bin/npx" = "dist/usr/bin/npx"
-"/etc/npmrc" = "dist/etc/npmrc"
+# NOTE: [fs] section causes "entry not found" error with wasmer-js SDK
+# npm is loaded at runtime via SystemBridge instead
+# [fs]
+# "/usr/lib/node_modules/npm" = "dist/usr/lib/node_modules/npm"
+# "/usr/bin" = "dist/usr/bin"
+# "/etc" = "dist/etc"
 
 [[module]]
 name = "wasix-runtime"
