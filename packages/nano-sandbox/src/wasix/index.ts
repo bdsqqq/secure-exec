@@ -3,7 +3,6 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import { NodeProcess, RunResult } from "../node-process/index.js";
-import { SystemBridge } from "../system-bridge/index.js";
 
 export interface ExecResult {
   stdout: string;
@@ -22,7 +21,6 @@ export interface InteractiveSession {
 
 export interface WasixInstanceOptions {
   directory?: Directory;
-  systemBridge?: SystemBridge;
   nodeProcess?: NodeProcess;
   memoryLimit?: number; // MB - reserved for future WASM memory limiting
 }
@@ -34,14 +32,12 @@ let wasixRuntime: Awaited<ReturnType<typeof Wasmer.fromFile>> | null = null;
 
 export class WasixInstance {
   private directory: Directory;
-  private systemBridge?: SystemBridge;
   private nodeProcess?: NodeProcess;
   private memoryLimit?: number;
   private initialized = false;
 
   constructor(options: WasixInstanceOptions = {}) {
     this.directory = options.directory ?? new Directory();
-    this.systemBridge = options.systemBridge;
     this.nodeProcess = options.nodeProcess;
     this.memoryLimit = options.memoryLimit;
   }
@@ -348,8 +344,8 @@ export class WasixInstance {
   private async executeNodeViaProcess(
     args: string[]
   ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-    if (!this.nodeProcess || !this.systemBridge) {
-      throw new Error("NodeProcess or SystemBridge not configured");
+    if (!this.nodeProcess) {
+      throw new Error("NodeProcess not configured");
     }
 
     // Parse args to get the code to run
@@ -364,7 +360,7 @@ export class WasixInstance {
         // It's a script file path
         const scriptPath = args[i];
         try {
-          code = await this.systemBridge.readFile(scriptPath);
+          code = await this.directory.readTextFile(scriptPath);
         } catch {
           return {
             exitCode: 1,

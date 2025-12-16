@@ -2,7 +2,6 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { init, Directory } from "@wasmer/sdk/node";
 import { WasixInstance } from "./index";
 import { NodeProcess } from "../node-process/index";
-import { SystemBridge } from "../system-bridge/index";
 
 describe("WasixInstance", () => {
   beforeAll(async () => {
@@ -65,12 +64,10 @@ describe("WasixInstance", () => {
 
     it("should run node command via IPC with NodeProcess", async () => {
       const nodeProcess = new NodeProcess();
-      const systemBridge = new SystemBridge();
 
       try {
         const wasix = new WasixInstance({
           nodeProcess,
-          systemBridge,
         });
 
         const result = await wasix.runWithIpc("node", [
@@ -86,12 +83,10 @@ describe("WasixInstance", () => {
 
     it("should run bash script that calls node via IPC", async () => {
       const nodeProcess = new NodeProcess();
-      const systemBridge = new SystemBridge();
 
       try {
         const wasix = new WasixInstance({
           nodeProcess,
-          systemBridge,
         });
 
         // Run bash that calls node via IPC to NodeProcess

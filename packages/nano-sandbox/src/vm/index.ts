@@ -51,7 +51,6 @@ export class VirtualMachine {
     // Create WasixInstance sharing the same filesystem
     this.wasixInstance = new WasixInstance({
       directory: this.bridge.getDirectory(),
-      systemBridge: this.bridge,
       nodeProcess: this.nodeProcess,
       memoryLimit: this.options.memoryLimit,
     });
