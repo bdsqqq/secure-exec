@@ -666,10 +666,11 @@ export class NodeProcess {
     // We'll eval it after setting up _requireFrom and _resolveModule
 
     // Set up the require system with dynamic CommonJS resolution
+    const initialCwd = this.processConfig.cwd ?? "/";
     await context.eval(`
       globalThis._moduleCache = {};
       globalThis._pendingModules = {};
-      globalThis._currentModule = { dirname: '/' };
+      globalThis._currentModule = { dirname: ${JSON.stringify(initialCwd)} };
 
       // Path utilities
       function _dirname(p) {

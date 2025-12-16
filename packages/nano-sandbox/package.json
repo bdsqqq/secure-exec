@@ -12,14 +12,14 @@
   },
   "scripts": {
     "check-types": "tsc --noEmit",
-    "build:wasix": "./wasix-runtime/build.sh",
-    "build": "tsc",
+    "build:bridge": "esbuild src/bridge/index.ts --bundle --format=iife --global-name=bridge --outfile=assets/bridge.js",
+    "build": "pnpm run build:bridge && tsc",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@nano-sandbox/ivm-bridge": "workspace:*",
     "@wasmer/sdk": "^0.9.0",
+    "buffer": "^6.0.3",
     "esbuild": "^0.27.1",
     "isolated-vm": "^5.0.1",
     "node-stdlib-browser": "^1.3.1"

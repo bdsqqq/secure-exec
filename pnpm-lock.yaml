@@ -44,12 +44,12 @@ importers:
 
   packages/nano-sandbox:
     dependencies:
-      '@nano-sandbox/ivm-bridge':
-        specifier: workspace:*
-        version: link:../ivm-bridge
       '@wasmer/sdk':
         specifier: ^0.9.0
         version: 0.9.0
+      buffer:
+        specifier: ^6.0.3
+        version: 6.0.3
       esbuild:
         specifier: ^0.27.1
         version: 0.27.1
@@ -925,7 +925,6 @@ packages:
     dependencies:
       base64-js: 1.5.1
       ieee754: 1.2.1
-    dev: true
 
   /builtin-status-codes@3.0.0:
     resolution: {integrity: sha512-HpGFw18DgFWlncDfjTa2rcQ4W88O1mC8e8yZ2AvQY5KDaktSTwo+KRf6nHK6FRI5FyRyb/5T6+TSxfP7QyGsmQ==}
