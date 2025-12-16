@@ -2,7 +2,7 @@ import ivm from "isolated-vm";
 import { bundlePolyfill, hasPolyfill } from "./polyfills.js";
 import { resolveModule, loadFile } from "./package-bundler.js";
 import type { SystemBridge } from "../system-bridge/index.js";
-import { FS_MODULE_CODE } from "@nano-sandbox/fs-polyfill";
+import { FS_MODULE_CODE } from "../bridge-loader.js";
 import {
   generateProcessPolyfill,
   type ProcessConfig,
@@ -10,6 +10,7 @@ import {
 import { generateChildProcessPolyfill } from "./child-process-polyfill.js";
 import { generateNetworkPolyfill } from "./network-polyfill.js";
 import { generateOSPolyfill, type OSConfig } from "./os-polyfill.js";
+import { generateModulePolyfill } from "./module-polyfill.js";
 
 // Interface for command executor (like WasixInstance)
 export interface CommandExecutor {
@@ -471,6 +472,11 @@ export class NodeProcess {
           return null;
         }
 
+        // module is handled specially with our own polyfill
+        if (name === "module") {
+          return null;
+        }
+
         if (!hasPolyfill(name)) {
           return null;
         }
@@ -656,6 +662,9 @@ export class NodeProcess {
     const osPolyfillCode = generateOSPolyfill(this.osConfig);
     await context.eval(osPolyfillCode);
 
+    // Initialize module polyfill (must be after require system is set up)
+    // We'll eval it after setting up _requireFrom and _resolveModule
+
     // Set up the require system with dynamic CommonJS resolution
     await context.eval(`
       globalThis._moduleCache = {};
@@ -745,6 +754,16 @@ export class NodeProcess {
           }
           _moduleCache['os'] = _osModule;
           return _osModule;
+        }
+
+        // Special handling for module module
+        if (name === 'module') {
+          if (_moduleCache['module']) return _moduleCache['module'];
+          if (typeof _moduleModule === 'undefined') {
+            throw new Error('module module not initialized');
+          }
+          _moduleCache['module'] = _moduleModule;
+          return _moduleModule;
         }
 
         // Try to load polyfill first (for built-in modules like path, events, etc.)
@@ -849,7 +868,14 @@ export class NodeProcess {
         return module.exports;
       }
 
+      // Expose _requireFrom globally so module polyfill can access it
+      globalThis._requireFrom = _requireFrom;
+
     `);
+
+    // Initialize module polyfill (now that _requireFrom and _resolveModule are available)
+    const modulePolyfillCode = generateModulePolyfill();
+    await context.eval(modulePolyfillCode);
 
     // Set up comprehensive process object
     const processPolyfillCode = generateProcessPolyfill(this.processConfig);

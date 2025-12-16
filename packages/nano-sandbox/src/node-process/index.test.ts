@@ -1867,4 +1867,185 @@ describe("NodeProcess", () => {
       });
     });
   });
+
+  describe("Phase 6: module.createRequire", () => {
+    it("should load module module", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const m = require('module');
+        module.exports = {
+          hasCreateRequire: typeof m.createRequire === 'function',
+          hasBuiltinModules: Array.isArray(m.builtinModules),
+          hasIsBuiltin: typeof m.isBuiltin === 'function'
+        };
+      `);
+      expect(result.exports).toEqual({
+        hasCreateRequire: true,
+        hasBuiltinModules: true,
+        hasIsBuiltin: true
+      });
+    });
+
+    it("should create require from filename", async () => {
+      const dir = new Directory();
+      const systemBridge = new SystemBridge(dir);
+      // Create directories first (wasmer Directory doesn't auto-create parents)
+      systemBridge.mkdir("/app");
+      systemBridge.mkdir("/app/lib");
+      systemBridge.writeFile("/app/lib/util.js", "module.exports = { name: 'util' };");
+      systemBridge.writeFile("/app/package.json", "{}");
+
+      proc = new NodeProcess({ systemBridge });
+
+      const result = await proc.run(`
+        const { createRequire } = require('module');
+        const requireFromApp = createRequire('/app/package.json');
+        const util = requireFromApp('./lib/util');
+        module.exports = util.name;
+      `);
+      expect(result.exports).toBe("util");
+    });
+
+    it("should support file:// URLs", async () => {
+      const dir = new Directory();
+      const systemBridge = new SystemBridge(dir);
+      systemBridge.mkdir("/app");
+      systemBridge.writeFile("/app/mod.js", "module.exports = 42;");
+
+      proc = new NodeProcess({ systemBridge });
+
+      const result = await proc.run(`
+        const { createRequire } = require('module');
+        const req = createRequire('file:///app/index.js');
+        module.exports = req('./mod');
+      `);
+      expect(result.exports).toBe(42);
+    });
+
+    it("should share module cache", async () => {
+      const dir = new Directory();
+      const systemBridge = new SystemBridge(dir);
+      systemBridge.mkdir("/a");
+      systemBridge.mkdir("/b");
+      systemBridge.writeFile("/a/mod.js", "module.exports = { count: 0 };");
+      systemBridge.writeFile("/b/index.js", "");
+
+      proc = new NodeProcess({ systemBridge });
+
+      const result = await proc.run(`
+        const { createRequire } = require('module');
+        const reqA = createRequire('/a/index.js');
+        const reqB = createRequire('/b/index.js');
+
+        const mod1 = reqA('./mod');
+        mod1.count++;
+
+        const mod2 = reqB('../a/mod');
+        module.exports = mod2.count; // Should be 1 if cache is shared
+      `);
+      expect(result.exports).toBe(1);
+    });
+
+    it("should have require.resolve", async () => {
+      const dir = new Directory();
+      const systemBridge = new SystemBridge(dir);
+      systemBridge.mkdir("/app");
+      systemBridge.mkdir("/app/lib");
+      systemBridge.writeFile("/app/lib/util.js", "module.exports = {};");
+
+      proc = new NodeProcess({ systemBridge });
+
+      const result = await proc.run(`
+        const { createRequire } = require('module');
+        const req = createRequire('/app/index.js');
+        module.exports = req.resolve('./lib/util');
+      `);
+      expect(result.exports).toBe("/app/lib/util.js");
+    });
+
+    it("should have require.resolve.paths", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const { createRequire } = require('module');
+        const req = createRequire('/app/index.js');
+
+        module.exports = {
+          builtinPaths: req.resolve.paths('fs'),
+          relativePaths: req.resolve.paths('./foo'),
+          barePaths: req.resolve.paths('lodash')
+        };
+      `);
+      expect(result.exports).toMatchObject({
+        builtinPaths: null,
+        relativePaths: ["/app"]
+      });
+      // barePaths should include node_modules paths
+      expect((result.exports as { barePaths: string[] }).barePaths).toContain("/app/node_modules");
+    });
+
+    it("should have require.cache reference", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const { createRequire } = require('module');
+        const req = createRequire('/app/index.js');
+        module.exports = typeof req.cache === 'object';
+      `);
+      expect(result.exports).toBe(true);
+    });
+
+    it("should have module.isBuiltin", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const m = require('module');
+        module.exports = {
+          fsIsBuiltin: m.isBuiltin('fs'),
+          nodefsIsBuiltin: m.isBuiltin('node:fs'),
+          lodashIsBuiltin: m.isBuiltin('lodash')
+        };
+      `);
+      expect(result.exports).toEqual({
+        fsIsBuiltin: true,
+        nodefsIsBuiltin: true,
+        lodashIsBuiltin: false
+      });
+    });
+
+    it("should have module.builtinModules", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const m = require('module');
+        module.exports = {
+          hasFs: m.builtinModules.includes('fs'),
+          hasPath: m.builtinModules.includes('path'),
+          hasOs: m.builtinModules.includes('os')
+        };
+      `);
+      expect(result.exports).toEqual({
+        hasFs: true,
+        hasPath: true,
+        hasOs: true
+      });
+    });
+
+    it("should require built-in modules via createRequire", async () => {
+      proc = new NodeProcess();
+      const result = await proc.run(`
+        const { createRequire } = require('module');
+        const req = createRequire('/app/index.js');
+
+        // Should be able to require built-in modules
+        const path = req('path');
+        const events = req('events');
+
+        module.exports = {
+          hasJoin: typeof path.join === 'function',
+          hasEventEmitter: typeof events.EventEmitter === 'function'
+        };
+      `);
+      expect(result.exports).toEqual({
+        hasJoin: true,
+        hasEventEmitter: true
+      });
+    });
+  });
 });
