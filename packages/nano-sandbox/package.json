@@ -12,6 +12,7 @@
   },
   "scripts": {
     "check-types": "tsc --noEmit",
+    "build:wasix": "./wasix-runtime/build.sh",
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest"

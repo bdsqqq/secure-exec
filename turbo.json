@@ -1,8 +1,12 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "tasks": {
+    "build:wasix": {
+      "outputs": ["assets/runtime.webc"],
+      "cache": false
+    },
     "build": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["^build", "build:wasix"],
       "outputs": ["dist/**"]
     },
     "check-types": {

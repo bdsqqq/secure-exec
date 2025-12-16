@@ -1,0 +1,18 @@
+[package]
+name = "nano-sandbox/wasix-runtime"
+version = "0.1.0"
+description = "WASIX runtime with Node.js shim using file-based IPC polling"
+
+[dependencies]
+"sharrattj/coreutils" = "1.0.16"
+"sharrattj/bash" = "*"
+
+[[module]]
+name = "wasix-runtime"
+source = "target/wasm32-wasip1/release/wasix-runtime.wasm"
+abi = "wasi"
+
+[[command]]
+name = "node"
+module = "wasix-runtime"
+runner = "wasi"
