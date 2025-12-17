@@ -123,7 +123,7 @@ describe("NPM CLI Integration", () => {
 		);
 	});
 
-	describe.skip("Step 2: npm config list", () => {
+	describe("Step 2: npm config list", () => {
 		it(
 			"should run npm config list and show configuration",
 			async () => {
@@ -277,7 +277,7 @@ describe("NPM CLI Integration", () => {
 		);
 	});
 
-	describe.skip("Step 7: npm pack", () => {
+	describe("Step 7: npm pack", () => {
 		it(
 			"should run npm pack and create a tarball",
 			async () => {
@@ -301,7 +301,7 @@ describe("NPM CLI Integration", () => {
 					"module.exports = { hello: 'world' };",
 				);
 
-				const result = await runNpm(vm, ["pack"]);
+				const result = await runNpm(vm, ["pack", "/data/app", "--pack-destination", "/data/app"]);
 
 				console.log("stdout:", result.stdout);
 				console.log("stderr:", result.stderr);
@@ -346,7 +346,7 @@ describe("NPM CLI Integration", () => {
 					),
 				);
 
-				const result = await runNpm(vm, ["install"]);
+				const result = await runNpm(vm, ["install", "--prefix", "/data/app"]);
 
 				console.log("stdout:", result.stdout);
 				console.log("stderr:", result.stderr);
