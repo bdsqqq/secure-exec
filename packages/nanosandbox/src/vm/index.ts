@@ -103,6 +103,11 @@ export class VirtualMachine {
 			memoryLimit: this.options.memoryLimit,
 		});
 
+		// Connect NodeProcess to WasixInstance for child_process support
+		// This allows code running in NodeProcess to spawn child processes
+		// via the WASM environment
+		this.nodeProcess.setCommandExecutor(this.wasixInstance);
+
 		this.initialized = true;
 	}
 

@@ -102,6 +102,13 @@ export class WasixInstance {
 	async exec(commandString: string): Promise<ExecResult> {
 		await this.init();
 
+		// When NodeProcess is configured, always use IPC to support nested node calls.
+		// This is essential for child_process.exec() calls from within NodeProcess
+		// that might invoke node.
+		if (this.nodeProcess) {
+			return this.runWithIpc("bash", ["-c", commandString]);
+		}
+
 		if (!wasixRuntime) {
 			throw new Error("WASIX not properly initialized");
 		}
@@ -127,6 +134,13 @@ export class WasixInstance {
 	 */
 	async run(commandName: string, args: string[] = []): Promise<ExecResult> {
 		await this.init();
+
+		// When NodeProcess is configured, always use IPC to support nested node calls.
+		// This is essential for child_process.spawn() calls from within NodeProcess
+		// that might invoke node (e.g., npm init spawning npm-init).
+		if (this.nodeProcess) {
+			return this.runWithIpc(commandName, args);
+		}
 
 		if (!wasixRuntime) {
 			throw new Error("WASIX not properly initialized");
