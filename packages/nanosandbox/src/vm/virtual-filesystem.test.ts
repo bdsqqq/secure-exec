@@ -9,8 +9,144 @@ describe("VirtualFileSystem", () => {
 		vm?.dispose();
 	});
 
-	describe("path normalization", () => {
-		it("should read file with direct path (no /data prefix)", async () => {
+	describe("operations with /data prefix", () => {
+		it("should readTextFile with /data prefix", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			vm.writeFile("/test.txt", "hello from data");
+			const vfs = vm.createVirtualFileSystem();
+
+			const content = await vfs.readTextFile(`${DATA_MOUNT_PATH}/test.txt`);
+			expect(content).toBe("hello from data");
+		});
+
+		it("should readFile (binary) with /data prefix", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			const binaryData = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+			vm.writeFile("/image.png", binaryData);
+
+			const vfs = vm.createVirtualFileSystem();
+			const result = await vfs.readFile(`${DATA_MOUNT_PATH}/image.png`);
+
+			expect(result).toEqual(binaryData);
+		});
+
+		it("should writeFile with /data prefix", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			const vfs = vm.createVirtualFileSystem();
+			vfs.writeFile(`${DATA_MOUNT_PATH}/written.txt`, "data write");
+
+			const content = await vm.readFile("/written.txt");
+			expect(content).toBe("data write");
+		});
+
+		it("should writeFile binary with /data prefix", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			const vfs = vm.createVirtualFileSystem();
+			const binaryData = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+			vfs.writeFile(`${DATA_MOUNT_PATH}/binary.bin`, binaryData);
+
+			const result = await vm.readFileBinary("/binary.bin");
+			expect(result).toEqual(binaryData);
+		});
+
+		it("should readDir with /data prefix", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			vm.mkdir("/mydir");
+			vm.writeFile("/mydir/a.txt", "a");
+			vm.writeFile("/mydir/b.txt", "b");
+
+			const vfs = vm.createVirtualFileSystem();
+			const entries = await vfs.readDir(`${DATA_MOUNT_PATH}/mydir`);
+
+			expect(entries).toContain("a.txt");
+			expect(entries).toContain("b.txt");
+		});
+
+		it("should createDir with /data prefix", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			const vfs = vm.createVirtualFileSystem();
+			vfs.createDir(`${DATA_MOUNT_PATH}/newdir`);
+			vfs.writeFile(`${DATA_MOUNT_PATH}/newdir/file.txt`, "test");
+
+			const entries = await vm.readDir("/newdir");
+			expect(entries).toContain("file.txt");
+		});
+
+		it("should removeFile with /data prefix", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			vm.writeFile("/to-remove.txt", "delete me");
+			expect(await vm.exists("/to-remove.txt")).toBe(true);
+
+			const vfs = vm.createVirtualFileSystem();
+			await vfs.removeFile(`${DATA_MOUNT_PATH}/to-remove.txt`);
+
+			expect(await vm.exists("/to-remove.txt")).toBe(false);
+		});
+
+		it("should removeDir with /data prefix", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			vm.mkdir("/empty-dir");
+			expect(await vm.exists("/empty-dir")).toBe(true);
+
+			const vfs = vm.createVirtualFileSystem();
+			await vfs.removeDir(`${DATA_MOUNT_PATH}/empty-dir`);
+
+			expect(await vm.exists("/empty-dir")).toBe(false);
+		});
+
+		it("should normalize /data alone to root", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			vm.writeFile("/root-file.txt", "at root");
+
+			const vfs = vm.createVirtualFileSystem();
+			const entries = await vfs.readDir(DATA_MOUNT_PATH);
+
+			expect(entries).toContain("root-file.txt");
+		});
+
+		it("should throw for nonexistent file with /data prefix", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			const vfs = vm.createVirtualFileSystem();
+
+			await expect(
+				vfs.readTextFile(`${DATA_MOUNT_PATH}/nonexistent.txt`),
+			).rejects.toThrow();
+		});
+
+		it("should throw for nonexistent directory with /data prefix", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			const vfs = vm.createVirtualFileSystem();
+
+			await expect(
+				vfs.readDir(`${DATA_MOUNT_PATH}/nonexistent-dir`),
+			).rejects.toThrow();
+		});
+	});
+
+	describe("operations with direct path (no /data prefix)", () => {
+		it("should readTextFile with direct path", async () => {
 			vm = new VirtualMachine({ loadNpm: false });
 			await vm.init();
 
@@ -21,44 +157,43 @@ describe("VirtualFileSystem", () => {
 			expect(content).toBe("hello world");
 		});
 
-		it("should read file with /data prefix", async () => {
+		it("should readFile (binary) with direct path", async () => {
 			vm = new VirtualMachine({ loadNpm: false });
 			await vm.init();
 
-			vm.writeFile("/test.txt", "hello from data");
-			const vfs = vm.createVirtualFileSystem();
+			const binaryData = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+			vm.writeFile("/image.png", binaryData);
 
-			// Access via /data prefix - should strip it
-			const content = await vfs.readTextFile(`${DATA_MOUNT_PATH}/test.txt`);
-			expect(content).toBe("hello from data");
+			const vfs = vm.createVirtualFileSystem();
+			const result = await vfs.readFile("/image.png");
+
+			expect(result).toEqual(binaryData);
 		});
 
-		it("should write file with direct path", async () => {
+		it("should writeFile with direct path", async () => {
 			vm = new VirtualMachine({ loadNpm: false });
 			await vm.init();
 
 			const vfs = vm.createVirtualFileSystem();
 			vfs.writeFile("/written.txt", "direct write");
 
-			// Verify via VirtualMachine
 			const content = await vm.readFile("/written.txt");
 			expect(content).toBe("direct write");
 		});
 
-		it("should write file with /data prefix", async () => {
+		it("should writeFile binary with direct path", async () => {
 			vm = new VirtualMachine({ loadNpm: false });
 			await vm.init();
 
 			const vfs = vm.createVirtualFileSystem();
-			// Write via /data prefix
-			vfs.writeFile(`${DATA_MOUNT_PATH}/data-written.txt`, "data write");
+			const binaryData = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+			vfs.writeFile("/binary.bin", binaryData);
 
-			// Verify via VirtualMachine (without /data prefix)
-			const content = await vm.readFile("/data-written.txt");
-			expect(content).toBe("data write");
+			const result = await vm.readFileBinary("/binary.bin");
+			expect(result).toEqual(binaryData);
 		});
 
-		it("should read directory with direct path", async () => {
+		it("should readDir with direct path", async () => {
 			vm = new VirtualMachine({ loadNpm: false });
 			await vm.init();
 
@@ -73,98 +208,56 @@ describe("VirtualFileSystem", () => {
 			expect(entries).toContain("file2.txt");
 		});
 
-		it("should read directory with /data prefix", async () => {
-			vm = new VirtualMachine({ loadNpm: false });
-			await vm.init();
-
-			vm.mkdir("/datadir");
-			vm.writeFile("/datadir/a.txt", "a");
-			vm.writeFile("/datadir/b.txt", "b");
-
-			const vfs = vm.createVirtualFileSystem();
-			// Access via /data prefix
-			const entries = await vfs.readDir(`${DATA_MOUNT_PATH}/datadir`);
-
-			expect(entries).toContain("a.txt");
-			expect(entries).toContain("b.txt");
-		});
-
-		it("should create directory with /data prefix", async () => {
+		it("should createDir with direct path", async () => {
 			vm = new VirtualMachine({ loadNpm: false });
 			await vm.init();
 
 			const vfs = vm.createVirtualFileSystem();
-			// Create via /data prefix
-			vfs.createDir(`${DATA_MOUNT_PATH}/newdir`);
-			vfs.writeFile(`${DATA_MOUNT_PATH}/newdir/file.txt`, "test");
+			vfs.createDir("/newdir");
+			vfs.writeFile("/newdir/file.txt", "test");
 
-			// Verify via VirtualMachine
 			const entries = await vm.readDir("/newdir");
 			expect(entries).toContain("file.txt");
 		});
 
-		it("should normalize /data alone to root", async () => {
-			vm = new VirtualMachine({ loadNpm: false });
-			await vm.init();
-
-			vm.writeFile("/root-file.txt", "at root");
-
-			const vfs = vm.createVirtualFileSystem();
-			// Reading /data should list root contents
-			const entries = await vfs.readDir(DATA_MOUNT_PATH);
-
-			expect(entries).toContain("root-file.txt");
-		});
-
-		it("should read binary files with path normalization", async () => {
-			vm = new VirtualMachine({ loadNpm: false });
-			await vm.init();
-
-			const binaryData = new Uint8Array([0x89, 0x50, 0x4e, 0x47]); // PNG magic bytes
-			vm.writeFile("/image.png", binaryData);
-
-			const vfs = vm.createVirtualFileSystem();
-			// Read via /data prefix
-			const result = await vfs.readFile(`${DATA_MOUNT_PATH}/image.png`);
-
-			expect(result).toEqual(binaryData);
-		});
-
-		it("should remove file with /data prefix", async () => {
+		it("should removeFile with direct path", async () => {
 			vm = new VirtualMachine({ loadNpm: false });
 			await vm.init();
 
 			vm.writeFile("/to-remove.txt", "delete me");
+			expect(await vm.exists("/to-remove.txt")).toBe(true);
 
 			const vfs = vm.createVirtualFileSystem();
-			// Remove via /data prefix
-			await vfs.removeFile(`${DATA_MOUNT_PATH}/to-remove.txt`);
+			await vfs.removeFile("/to-remove.txt");
 
-			// Verify file is gone
 			expect(await vm.exists("/to-remove.txt")).toBe(false);
 		});
 
-		it("should handle nested paths with /data prefix", async () => {
+		it("should removeDir with direct path", async () => {
 			vm = new VirtualMachine({ loadNpm: false });
 			await vm.init();
 
-			vm.mkdir("/deep");
-			vm.mkdir("/deep/nested");
-			vm.mkdir("/deep/nested/path");
-			vm.writeFile("/deep/nested/path/file.txt", "deep content");
+			vm.mkdir("/empty-dir");
+			expect(await vm.exists("/empty-dir")).toBe(true);
 
 			const vfs = vm.createVirtualFileSystem();
-			// Read via /data prefix with full nested path
-			const content = await vfs.readTextFile(
-				`${DATA_MOUNT_PATH}/deep/nested/path/file.txt`,
-			);
+			await vfs.removeDir("/empty-dir");
 
-			expect(content).toBe("deep content");
+			expect(await vm.exists("/empty-dir")).toBe(false);
 		});
-	});
 
-	describe("paths without normalization (non-/data)", () => {
-		it("should handle absolute paths correctly", async () => {
+		it("should throw for nonexistent file with direct path", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			const vfs = vm.createVirtualFileSystem();
+
+			// Direct paths that don't exist in Directory will try shell fallback
+			// Since the file doesn't exist anywhere, it should throw
+			await expect(vfs.readTextFile("/nonexistent.txt")).rejects.toThrow();
+		});
+
+		it("should handle paths in /etc", async () => {
 			vm = new VirtualMachine({ loadNpm: false });
 			await vm.init();
 
@@ -172,12 +265,11 @@ describe("VirtualFileSystem", () => {
 			vm.writeFile("/etc/config.json", '{"key": "value"}');
 
 			const vfs = vm.createVirtualFileSystem();
-			// Direct path access (no /data prefix)
 			const content = await vfs.readTextFile("/etc/config.json");
 			expect(content).toBe('{"key": "value"}');
 		});
 
-		it("should handle paths in node_modules", async () => {
+		it("should handle paths in /node_modules", async () => {
 			vm = new VirtualMachine({ loadNpm: false });
 			await vm.init();
 
@@ -199,7 +291,7 @@ describe("VirtualFileSystem", () => {
 				version: "1.0.0",
 			});
 
-			// Same path via /data prefix
+			// Same path via /data prefix should also work
 			const content2 = await vfs.readTextFile(
 				`${DATA_MOUNT_PATH}/node_modules/my-pkg/package.json`,
 			);
@@ -210,14 +302,177 @@ describe("VirtualFileSystem", () => {
 		});
 	});
 
-	describe("shell fallback for WASM-only paths", () => {
-		it("should read /bin directory via shell fallback", async () => {
-			// This test verifies that paths not in Directory fall back to shell.
-			// /bin exists in WASM (from webc - coreutils) but NOT in Directory.
+	describe("nested paths and edge cases", () => {
+		it("should list root directory", async () => {
 			vm = new VirtualMachine({ loadNpm: false });
 			await vm.init();
 
-			// First verify that direct spawn works - /bin has coreutils
+			vm.writeFile("/root-file.txt", "at root");
+			vm.mkdir("/subdir");
+
+			const vfs = vm.createVirtualFileSystem();
+			const entries = await vfs.readDir("/");
+
+			expect(entries).toContain("root-file.txt");
+			expect(entries).toContain("subdir");
+		});
+
+		it("should handle deeply nested paths", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			vm.mkdir("/a");
+			vm.mkdir("/a/b");
+			vm.mkdir("/a/b/c");
+			vm.mkdir("/a/b/c/d");
+			vm.writeFile("/a/b/c/d/deep.txt", "deep content");
+
+			const vfs = vm.createVirtualFileSystem();
+
+			// Read via direct path
+			const content1 = await vfs.readTextFile("/a/b/c/d/deep.txt");
+			expect(content1).toBe("deep content");
+
+			// Read via /data prefix
+			const content2 = await vfs.readTextFile(
+				`${DATA_MOUNT_PATH}/a/b/c/d/deep.txt`,
+			);
+			expect(content2).toBe("deep content");
+
+			// List each level
+			expect(await vfs.readDir("/a")).toContain("b");
+			expect(await vfs.readDir("/a/b")).toContain("c");
+			expect(await vfs.readDir("/a/b/c")).toContain("d");
+			expect(await vfs.readDir("/a/b/c/d")).toContain("deep.txt");
+		});
+
+		it("should handle files with same name at different levels", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			vm.writeFile("/config.json", '{"level": "root"}');
+			vm.mkdir("/app");
+			vm.writeFile("/app/config.json", '{"level": "app"}');
+			vm.mkdir("/app/sub");
+			vm.writeFile("/app/sub/config.json", '{"level": "sub"}');
+
+			const vfs = vm.createVirtualFileSystem();
+
+			expect(await vfs.readTextFile("/config.json")).toBe('{"level": "root"}');
+			expect(await vfs.readTextFile("/app/config.json")).toBe(
+				'{"level": "app"}',
+			);
+			expect(await vfs.readTextFile("/app/sub/config.json")).toBe(
+				'{"level": "sub"}',
+			);
+		});
+
+		it("should handle empty directories", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			vm.mkdir("/empty");
+
+			const vfs = vm.createVirtualFileSystem();
+			const entries = await vfs.readDir("/empty");
+
+			expect(entries).toEqual([]);
+		});
+
+		it("should overwrite existing files", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			const vfs = vm.createVirtualFileSystem();
+
+			vfs.writeFile("/overwrite.txt", "original");
+			expect(await vfs.readTextFile("/overwrite.txt")).toBe("original");
+
+			// Note: wasmer Directory has a bug where shorter content doesn't truncate
+			// Use equal or longer content to work around this
+			vfs.writeFile("/overwrite.txt", "modified!");
+			expect(await vfs.readTextFile("/overwrite.txt")).toBe("modified!");
+		});
+
+		it("should handle mixed /data and direct path access to same file", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			const vfs = vm.createVirtualFileSystem();
+
+			// Write via /data prefix
+			vfs.writeFile(`${DATA_MOUNT_PATH}/mixed.txt`, "written via data");
+
+			// Read via direct path
+			expect(await vfs.readTextFile("/mixed.txt")).toBe("written via data");
+
+			// Overwrite via direct path
+			vfs.writeFile("/mixed.txt", "written directly");
+
+			// Read via /data prefix
+			expect(await vfs.readTextFile(`${DATA_MOUNT_PATH}/mixed.txt`)).toBe(
+				"written directly",
+			);
+		});
+
+		it("should handle special characters in filenames", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			const vfs = vm.createVirtualFileSystem();
+
+			// Spaces and dashes
+			vfs.writeFile("/my-file name.txt", "content");
+			expect(await vfs.readTextFile("/my-file name.txt")).toBe("content");
+
+			// Dots
+			vfs.writeFile("/file.test.backup.txt", "backup");
+			expect(await vfs.readTextFile("/file.test.backup.txt")).toBe("backup");
+		});
+
+		it("should handle unicode content", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			const vfs = vm.createVirtualFileSystem();
+
+			const unicodeContent = "Hello 世界 🌍 émojis";
+			vfs.writeFile("/unicode.txt", unicodeContent);
+
+			expect(await vfs.readTextFile("/unicode.txt")).toBe(unicodeContent);
+		});
+
+		it("should handle empty file content", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			const vfs = vm.createVirtualFileSystem();
+
+			vfs.writeFile("/empty.txt", "");
+			expect(await vfs.readTextFile("/empty.txt")).toBe("");
+		});
+
+		it("should handle large file content", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			const vfs = vm.createVirtualFileSystem();
+
+			// Create a ~100KB string
+			const largeContent = "x".repeat(100 * 1024);
+			vfs.writeFile("/large.txt", largeContent);
+
+			expect(await vfs.readTextFile("/large.txt")).toBe(largeContent);
+		});
+	});
+
+	describe("shell fallback for WASM-only paths", () => {
+		it("should readDir /bin via shell fallback", async () => {
+			// /bin exists in WASM (from webc - coreutils) but NOT in Directory
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			// Verify direct spawn works first
 			const spawnResult = await vm.spawn("ls", ["-1", "/bin"]);
 			expect(spawnResult.code).toBe(0);
 			expect(spawnResult.stdout.length).toBeGreaterThan(0);
@@ -227,10 +482,28 @@ describe("VirtualFileSystem", () => {
 			// This should fall back to 'ls' via shell
 			const entries = await vfs.readDir("/bin");
 
-			// These should exist in the webc's /bin (coreutils)
 			expect(entries.length).toBeGreaterThan(0);
-			// Verify we got actual binary names, not empty strings
 			expect(entries.some((e) => e.length > 0)).toBe(true);
+		});
+
+		it("should readTextFile via shell fallback (cat)", async () => {
+			// Test reading a file that exists in WASM but not in Directory
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			// First verify the file exists via shell
+			const catResult = await vm.spawn("cat", ["/etc/passwd"]);
+			// /etc/passwd may or may not exist depending on the webc
+			// Let's try a file we know exists - check if there's anything in /bin
+			const lsResult = await vm.spawn("ls", ["/bin"]);
+			expect(lsResult.code).toBe(0);
+
+			// If /etc/passwd exists, test reading it
+			if (catResult.code === 0) {
+				const vfs = vm.createVirtualFileSystem();
+				const content = await vfs.readTextFile("/etc/passwd");
+				expect(content.length).toBeGreaterThan(0);
+			}
 		});
 
 		it("should NOT use shell fallback for /data paths that don't exist", async () => {
@@ -256,6 +529,24 @@ describe("VirtualFileSystem", () => {
 
 			// File exists in Directory, should read from there (not shell)
 			const content = await vfs.readTextFile("/myfile.txt");
+			expect(content).toBe("from directory");
+		});
+
+		it("should prefer Directory over shell for overlapping paths", async () => {
+			vm = new VirtualMachine({ loadNpm: false });
+			await vm.init();
+
+			// Create /bin in Directory (shadows WASM /bin)
+			vm.mkdir("/bin");
+			vm.writeFile("/bin/mytest", "from directory");
+
+			const vfs = vm.createVirtualFileSystem();
+
+			// Should read from Directory, not WASM
+			const entries = await vfs.readDir("/bin");
+			expect(entries).toContain("mytest");
+
+			const content = await vfs.readTextFile("/bin/mytest");
 			expect(content).toBe("from directory");
 		});
 	});
