@@ -683,7 +683,9 @@ describe("NodeProcess", () => {
 		it("should detect .mjs as ESM regardless of content", async () => {
 			proc = new NodeProcess();
 			// Even without import/export, .mjs should be treated as ESM
-			const result = await proc.exec(`console.log("from mjs");`, "/test.mjs");
+			const result = await proc.exec(`console.log("from mjs");`, {
+				filePath: "/test.mjs",
+			});
 
 			expect(result.code).toBe(0);
 			expect(result.stdout).toContain("from mjs");
@@ -693,7 +695,7 @@ describe("NodeProcess", () => {
 			proc = new NodeProcess();
 			const result = await proc.exec(
 				`module.exports = 42; console.log("from cjs");`,
-				"/test.cjs",
+				{ filePath: "/test.cjs" },
 			);
 
 			expect(result.code).toBe(0);

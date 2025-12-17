@@ -19,6 +19,12 @@ export interface SpawnResult {
 	code: number;
 }
 
+export interface SpawnOptions {
+	args?: string[];
+	env?: Record<string, string>;
+	cwd?: string;
+}
+
 export interface VirtualMachineOptions {
 	memoryLimit?: number; // MB, default 128 for isolates
 	loadNpm?: boolean; // Load npm/npx into filesystem (default: true)
@@ -300,27 +306,33 @@ node /data/opt/npm/bin/npx-cli.js "$@"
 	 * Spawn a command in the virtual machine.
 	 * Routes to appropriate runtime (node -> NodeProcess, others -> WasixInstance)
 	 */
-	async spawn(command: string, args: string[] = []): Promise<SpawnResult> {
+	async spawn(command: string, options: SpawnOptions = {}): Promise<SpawnResult> {
 		await this.init();
 
 		if (!this.nodeProcess || !this.wasixInstance || !this.vfs) {
 			throw new Error("VirtualMachine not properly initialized");
 		}
 
+		const { args = [], env, cwd } = options;
+
 		// Route node commands to NodeProcess
 		if (command === "node") {
-			return this.spawnNode(args);
+			return this.spawnNode(args, env, cwd);
 		}
 
 		// Route all other commands to WasixInstance with IPC support
 		// This allows shell scripts to call node via IPC
-		return this.wasixInstance.runWithIpc(command, args);
+		return this.wasixInstance.runWithIpc(command, args, env, cwd);
 	}
 
 	/**
 	 * Execute node via NodeProcess
 	 */
-	private async spawnNode(args: string[]): Promise<SpawnResult> {
+	private async spawnNode(
+		args: string[],
+		env?: Record<string, string>,
+		cwd?: string,
+	): Promise<SpawnResult> {
 		if (!this.nodeProcess || !this.vfs) {
 			throw new Error("NodeProcess not initialized");
 		}
@@ -354,7 +366,7 @@ node /data/opt/npm/bin/npx-cli.js "$@"
 		}
 
 		// Pass the script path so __dirname/__filename are set correctly
-		const result = await this.nodeProcess.exec(code, scriptPath);
+		const result = await this.nodeProcess.exec(code, { filePath: scriptPath, env, cwd });
 		return {
 			stdout: result.stdout,
 			stderr: result.stderr,

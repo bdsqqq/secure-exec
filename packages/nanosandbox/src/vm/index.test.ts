@@ -170,10 +170,9 @@ describe("VirtualMachine", () => {
 		it("should route node -e commands to NodeProcess", async () => {
 			const vm = new VirtualMachine();
 			try {
-				const result = await vm.spawn("node", [
-					"-e",
-					'console.log("hello from node")',
-				]);
+				const result = await vm.spawn("node", {
+					args: ["-e", 'console.log("hello from node")'],
+				});
 				expect(result.stdout).toContain("hello from node");
 				expect(result.code).toBe(0);
 			} finally {
@@ -187,7 +186,7 @@ describe("VirtualMachine", () => {
 				await vm.init();
 				await vm.writeFile("/data/script.js", 'console.log("script output")');
 
-				const result = await vm.spawn("node", ["/data/script.js"]);
+				const result = await vm.spawn("node", { args: ["/data/script.js"] });
 				expect(result.stdout).toContain("script output");
 				expect(result.code).toBe(0);
 			} finally {
@@ -202,7 +201,7 @@ describe("VirtualMachine", () => {
 				await vm.writeFile("/data/test.txt", "content");
 
 				// Files are mounted at DATA_MOUNT_PATH
-				const result = await vm.spawn("ls", [DATA_MOUNT_PATH]);
+				const result = await vm.spawn("ls", { args: [DATA_MOUNT_PATH] });
 				expect(result.stdout).toContain("test.txt");
 			} finally {
 				vm.dispose();
@@ -212,7 +211,7 @@ describe("VirtualMachine", () => {
 		it("should execute echo command via WasixInstance", async () => {
 			const vm = new VirtualMachine();
 			try {
-				const result = await vm.spawn("echo", ["hello world"]);
+				const result = await vm.spawn("echo", { args: ["hello world"] });
 				expect(result.stdout.trim()).toBe("hello world");
 				expect(result.code).toBe(0);
 			} finally {
@@ -228,10 +227,9 @@ describe("VirtualMachine", () => {
 
 				// bash runs in WASM, node call bridges via IPC to NodeProcess
 				// Script is at DATA_MOUNT_PATH
-				const result = await vm.spawn("bash", [
-					"-c",
-					`echo before && node ${DATA_MOUNT_PATH}/script.js && echo after`,
-				]);
+				const result = await vm.spawn("bash", {
+					args: ["-c", `echo before && node ${DATA_MOUNT_PATH}/script.js && echo after`],
+				});
 				expect(result.stdout).toContain("before");
 				expect(result.stdout).toContain("from node");
 				expect(result.stdout).toContain("after");
@@ -243,10 +241,9 @@ describe("VirtualMachine", () => {
 		it("should handle node errors properly", async () => {
 			const vm = new VirtualMachine();
 			try {
-				const result = await vm.spawn("node", [
-					"-e",
-					"throw new Error('oops')",
-				]);
+				const result = await vm.spawn("node", {
+					args: ["-e", "throw new Error('oops')"],
+				});
 				expect(result.code).toBe(1);
 				expect(result.stderr).toContain("oops");
 			} finally {
@@ -257,7 +254,7 @@ describe("VirtualMachine", () => {
 		it("should handle missing script file", async () => {
 			const vm = new VirtualMachine();
 			try {
-				const result = await vm.spawn("node", ["/data/nonexistent.js"]);
+				const result = await vm.spawn("node", { args: ["/data/nonexistent.js"] });
 				expect(result.code).toBe(1);
 				expect(result.stderr).toContain("Cannot find module");
 			} finally {
@@ -288,7 +285,7 @@ describe("VirtualMachine", () => {
         `,
 				);
 
-				const result = await vm.spawn("node", ["/data/test-ms.js"]);
+				const result = await vm.spawn("node", { args: ["/data/test-ms.js"] });
 				expect(result.code).toBe(0);
 				expect(result.stdout).toContain("3600000"); // 1h in ms
 				expect(result.stdout).toContain("172800000"); // 2d in ms
@@ -316,7 +313,7 @@ describe("VirtualMachine", () => {
         `,
 				);
 
-				const result = await vm.spawn("node", ["/data/test-fs.js"]);
+				const result = await vm.spawn("node", { args: ["/data/test-fs.js"] });
 				expect(result.code).toBe(0);
 				expect(result.stdout).toContain('{"hello":"world"}');
 
@@ -344,7 +341,7 @@ describe("VirtualMachine", () => {
         `,
 				);
 
-				const result = await vm.spawn("node", ["/data/test-path.js"]);
+				const result = await vm.spawn("node", { args: ["/data/test-path.js"] });
 				expect(result.code).toBe(0);
 				expect(result.stdout).toContain("/foo/bar/baz.txt");
 				expect(result.stdout).toContain("/foo/bar");
@@ -368,7 +365,7 @@ describe("VirtualMachine", () => {
 
 				// Verify we can ls the npm directory
 				if (!npmPath) throw new Error("npm path should not be null");
-				const result = await vm.spawn("ls", [npmPath]);
+				const result = await vm.spawn("ls", { args: [npmPath] });
 				expect(result.code).toBe(0);
 				// npm should have bin, lib directories
 				expect(result.stdout).toContain("bin");
@@ -386,7 +383,7 @@ describe("VirtualMachine", () => {
 				const npmPath = vm.getNpmPath();
 				if (!npmPath) throw new Error("npm path should not be null");
 				// Verify we can read the npm-cli.js file
-				const result = await vm.spawn("cat", [`${npmPath}/bin/npm-cli.js`]);
+				const result = await vm.spawn("cat", { args: [`${npmPath}/bin/npm-cli.js`] });
 				expect(result.code).toBe(0);
 				expect(result.stdout).toContain("lib/cli.js");
 			} finally {
@@ -400,7 +397,7 @@ describe("VirtualMachine", () => {
 				await vm.init();
 
 				// Check that the wrapper exists
-				const result = await vm.spawn("cat", [`${DATA_MOUNT_PATH}/bin/npm`]);
+				const result = await vm.spawn("cat", { args: [`${DATA_MOUNT_PATH}/bin/npm`] });
 				expect(result.code).toBe(0);
 				expect(result.stdout).toContain("npm-cli.js");
 			} finally {

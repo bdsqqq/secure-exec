@@ -422,7 +422,7 @@ describe("VirtualFileSystem", () => {
 			await vm.init();
 
 			// Verify direct spawn works first
-			const spawnResult = await vm.spawn("ls", ["-1", "/bin"]);
+			const spawnResult = await vm.spawn("ls", { args: ["-1", "/bin"] });
 			expect(spawnResult.code).toBe(0);
 			expect(spawnResult.stdout.length).toBeGreaterThan(0);
 
@@ -441,10 +441,10 @@ describe("VirtualFileSystem", () => {
 			await vm.init();
 
 			// First verify the file exists via shell
-			const catResult = await vm.spawn("cat", ["/etc/passwd"]);
+			const catResult = await vm.spawn("cat", { args: ["/etc/passwd"] });
 			// /etc/passwd may or may not exist depending on the webc
 			// Let's try a file we know exists - check if there's anything in /bin
-			const lsResult = await vm.spawn("ls", ["/bin"]);
+			const lsResult = await vm.spawn("ls", { args: ["/bin"] });
 			expect(lsResult.code).toBe(0);
 
 			// If /etc/passwd exists, test reading it

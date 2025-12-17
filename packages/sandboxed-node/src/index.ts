@@ -303,6 +303,12 @@ export interface RunResult<T = unknown> {
 	exports?: T;
 }
 
+export interface ExecOptions {
+	filePath?: string;
+	env?: Record<string, string>;
+	cwd?: string;
+}
+
 export interface ExecResult {
 	stdout: string;
 	stderr: string;
@@ -1769,7 +1775,9 @@ export class NodeProcess {
 	 * Execute code like a script with console output capture
 	 * Supports both CJS and ESM syntax
 	 */
-	async exec(code: string, filePath?: string): Promise<ExecResult> {
+	async exec(code: string, options?: ExecOptions): Promise<ExecResult> {
+		const { filePath, env, cwd } = options ?? {};
+
 		// Clear caches for fresh run
 		this.esmModuleCache.clear();
 		this.dynamicImportCache.clear();
@@ -1790,6 +1798,11 @@ export class NodeProcess {
 				// ESM path
 				await this.setupESMGlobals(context, jail);
 
+				// Override process.env and process.cwd if provided
+				if (env || cwd) {
+					await this.overrideProcessConfig(context, env, cwd);
+				}
+
 				// Transform dynamic import() to __dynamicImport()
 				const transformedCode = transformDynamicImport(code);
 
@@ -1804,6 +1817,11 @@ export class NodeProcess {
 				// CJS path
 				await this.setupRequire(context, jail);
 				await context.eval("globalThis.module = { exports: {} };");
+
+				// Override process.env and process.cwd if provided
+				if (env || cwd) {
+					await this.overrideProcessConfig(context, env, cwd);
+				}
 
 				// Set up __filename and __dirname if a file path is provided
 				// This is critical for relative require() calls to work correctly
@@ -1880,6 +1898,28 @@ export class NodeProcess {
 			};
 		} finally {
 			context.release();
+		}
+	}
+
+	/**
+	 * Override process.env and process.cwd for a specific execution context
+	 */
+	private async overrideProcessConfig(
+		context: ivm.Context,
+		env?: Record<string, string>,
+		cwd?: string,
+	): Promise<void> {
+		if (env) {
+			// Merge provided env with existing env
+			await context.eval(`
+				Object.assign(process.env, ${JSON.stringify(env)});
+			`);
+		}
+		if (cwd) {
+			// Override cwd
+			await context.eval(`
+				process.cwd = () => ${JSON.stringify(cwd)};
+			`);
 		}
 	}
 

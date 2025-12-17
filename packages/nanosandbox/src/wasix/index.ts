@@ -196,6 +196,8 @@ export class WasixInstance {
 	async runWithIpc(
 		commandName: string,
 		args: string[] = [],
+		env?: Record<string, string>,
+		cwd?: string,
 	): Promise<ExecResult> {
 		await this.init();
 
@@ -269,6 +271,10 @@ export class WasixInstance {
 					[DATA_MOUNT_PATH]: this.directory,
 					[IPC_MOUNT_PATH]: ipcDir,
 				},
+				// Wasmer SDK expects env as [string, string][] array of tuples
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				env: env ? (Object.entries(env) as any) : undefined,
+				cwd,
 			});
 
 			const result = await instance.wait();

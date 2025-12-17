@@ -21,22 +21,16 @@ describe("NPM CLI Integration", () => {
 		vm: VirtualMachine,
 		args: string[],
 	): Promise<{ stdout: string; stderr: string; code: number }> {
-		// Run npm via node with the CLI entry point
-		// The npm module is loaded to /opt/npm in Directory, accessible at /data/opt/npm in WASM
-		const npmCliPath = "/data/opt/npm/lib/cli.js";
-
 		// Create a wrapper script that runs npm and handles output events
+		// IMPORTANT: Handlers must be registered AFTER loading npm modules because
+		// some npm dependencies (init-package-json) clear process event listeners on load
 		const script = `
 (async function() {
   try {
-    // Set HOME to /data/root so npm writes to paths under /data
-    process.env.HOME = '/data/root';
-    // Configure npm paths to be under /data
-    process.env.npm_config_cache = '/data/root/.npm';
-    process.env.npm_config_userconfig = '/data/root/.npmrc';
-    // Disable npm's log file writing to avoid path errors
-    process.env.npm_config_logs_max = '0';
+    // Load npm module FIRST - some npm deps clear process listeners on load
+    const Npm = require('/data/opt/npm/lib/npm.js');
 
+    // Now register handlers AFTER npm is loaded
     // npm uses proc-log which emits 'output' events on process
     process.on('output', (type, ...args) => {
       if (type === 'standard') {
@@ -49,19 +43,18 @@ describe("NPM CLI Integration", () => {
     // Handle proc-log input events for npm init and other interactive commands.
     // When npm's init command calls input.read(fn), it emits this event and waits
     // for resolve() to be called. Without this handler, the promise hangs forever.
-    process.on('input', async (type, resolve, reject, fn) => {
+    process.on('input', (type, resolve, reject, fn) => {
       if (type === 'read' && typeof fn === 'function') {
-        try {
-          const result = await fn();
-          resolve(result);
-        } catch (e) {
-          reject(e);
-        }
+        Promise.resolve().then(async () => {
+          try {
+            const result = await fn();
+            resolve(result);
+          } catch (e) {
+            reject(e);
+          }
+        });
       }
     });
-
-    // Load npm module FIRST, then set argv (require resets process.argv)
-    const Npm = require('/data/opt/npm/lib/npm.js');
 
     // Set up process.argv for npm AFTER require
     process.argv = ['node', 'npm', ${args.map((a) => JSON.stringify(a)).join(", ")}];
@@ -91,10 +84,19 @@ describe("NPM CLI Integration", () => {
 })();
 `;
 		// Ensure /tmp directory exists and write script there
-		// All paths now require /data prefix
 		await vm.mkdir("/data/tmp");
 		await vm.writeFile("/data/tmp/npm-runner.js", script);
-		return vm.spawn("node", ["/data/tmp/npm-runner.js"]);
+
+		// Pass npm environment via spawn options
+		return vm.spawn("node", {
+			args: ["/data/tmp/npm-runner.js"],
+			env: {
+				HOME: "/data/root",
+				npm_config_cache: "/data/root/.npm",
+				npm_config_userconfig: "/data/root/.npmrc",
+				npm_config_logs_max: "0",
+			},
+		});
 	}
 
 	/**
@@ -207,9 +209,9 @@ describe("NPM CLI Integration", () => {
 		);
 	});
 
-	// npm init -y uses init-package-json internally to create package.json.
-	// Due to proc-log's input.read() causing isolated-vm to hang when called via npm.exec,
-	// we call init-package-json directly with a yes=true config to achieve the same result.
+	// npm init -y creates package.json using init-package-json via proc-log's input.read
+	// Note: npm.exec('init') triggers a wasmer SDK bug, so we call Init.template() directly
+	// which is what npm.exec does internally but without the command routing overhead
 	describe("Step 4: npm init -y", () => {
 		it(
 			"should run npm init -y and create package.json",
@@ -219,39 +221,54 @@ describe("NPM CLI Integration", () => {
 
 				await setupNpmEnvironment(vm);
 
-				// Use init-package-json directly to avoid the proc-log input.read hang
-				// This is what npm init -y does internally
+				// Use Init command's template method directly to avoid wasmer SDK issues with npm.exec
+				// The key insight: handlers MUST be registered AFTER npm modules load because
+				// init-package-json clears process event listeners when it's imported
 				const script = `
-const initPkg = require('/data/opt/npm/node_modules/init-package-json');
+(async function() {
+  try {
+    process.chdir('/data/app');
+    const Npm = require('/data/opt/npm/lib/npm.js');
+    const Init = require('/data/opt/npm/lib/commands/init.js');
 
-const dir = '/data/app';
-const initFile = '/data/opt/npm/node_modules/init-package-json/lib/default-input.js';
+    // Register input handler AFTER loading modules (init-package-json clears listeners on load)
+    process.on('input', (type, resolve, reject, fn) => {
+      if (type === 'read' && typeof fn === 'function') {
+        Promise.resolve().then(async () => {
+          try {
+            const result = await fn();
+            resolve(result);
+          } catch (e) {
+            reject(e);
+          }
+        });
+      }
+    });
 
-// Create a mock config that returns yes=true (like npm init -y)
-const config = {
-  get: (key) => {
-    if (key === 'yes' || key === 'y') return true;
-    if (key === 'save-prefix') return '^';
-    if (key === 'save-exact') return false;
-    if (key === 'scope') return '';
-    if (key.startsWith('init-') || key.startsWith('init.')) return undefined;
-    if (key === 'silent') return false;
-    return undefined;
-  },
-  defaults: {}
-};
+    process.argv = ['node', 'npm', 'init', '-y'];
+    const npm = new Npm();
+    await npm.load();
 
-(async () => {
-  const result = await initPkg(dir, initFile, config);
-  console.log('package.json created');
-})().catch(e => {
-  console.error('Error:', e.message);
-  process.exitCode = 1;
-});
+    const initCmd = new Init(npm);
+    const result = await initCmd.template('/data/app');
+    console.log('package.json created:', JSON.stringify(result));
+  } catch (e) {
+    console.error('Error:', e.message);
+    process.exitCode = 1;
+  }
+})();
 `;
 				await vm.mkdir("/data/tmp");
 				await vm.writeFile("/data/tmp/init-runner.js", script);
-				const result = await vm.spawn("node", ["/data/tmp/init-runner.js"]);
+				const result = await vm.spawn("node", {
+					args: ["/data/tmp/init-runner.js"],
+					env: {
+						HOME: "/data/root",
+						npm_config_cache: "/data/root/.npm",
+						npm_config_userconfig: "/data/root/.npmrc",
+						npm_config_logs_max: "0",
+					},
+				});
 
 				console.log("stdout:", result.stdout);
 				console.log("stderr:", result.stderr);
