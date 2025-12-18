@@ -9,8 +9,8 @@ import { VirtualMachine } from "nanosandbox";
 describe("NPM CLI Integration", () => {
 	let vm: VirtualMachine;
 
-	afterEach(() => {
-		vm?.dispose();
+	afterEach(async () => {
+		await vm?.disposeAsync();
 	});
 
 	/**

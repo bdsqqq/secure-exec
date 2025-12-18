@@ -404,4 +404,15 @@ node /data/opt/npm/bin/npx-cli.js "$@"
 		this.directory = null;
 		this.initialized = false;
 	}
+
+	/**
+	 * Dispose of resources and wait for async cleanup to settle.
+	 * Use this in tests to avoid wasmer SDK async cleanup errors.
+	 */
+	async disposeAsync(): Promise<void> {
+		this.dispose();
+		// Give wasmer SDK time to complete async cleanup operations
+		// This works around wasmer-js bugs where cleanup throws after disposal
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
 }
