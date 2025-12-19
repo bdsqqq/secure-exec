@@ -9,9 +9,8 @@
 
 ## short term
 
-- clean up where load runtime is (it shoudl be part of runtime.load())
-- impl remaining signals functionality
-- bind all of this functionality to nodejs
+- fix streaming stdin
+- clean up where load runtime is (it should be part of runtime.load())
 - implement child process with the host process context
 - remove js cruft from npm tests (raw npm should work fine)
 - get npm working in terminal
@@ -52,6 +51,7 @@
 - wasmer-js TTY mode stdin bug - spawn() uses wasmer-js TTY mode which echoes stdin to stdout, but the input is NOT actually delivered to the program's stdin. E.g., bash's `read` command receives empty input even though we see TTY echo. For true interactive streaming, need wasmer-js fix. Workaround: use run() with stdin option for batch input.
 
 ## other
+- fix stdin
 - get claude code cli working in this emulator
 - emulate npm
 - native addon polyfills - npm packages with native C/C++ bindings won't work in isolated-vm. may need a polyfill registry mapping them to pure-JS alternatives (e.g. esbuild→esbuild-wasm, bcrypt→bcryptjs, sharp→sharp-wasm, sqlite3→sql.js)
