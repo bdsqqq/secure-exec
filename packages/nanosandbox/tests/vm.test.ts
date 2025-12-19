@@ -1,135 +1,83 @@
-import { describe, expect, it } from "vitest";
-import { VirtualMachine } from "../src/vm/index.js";
+import { describe, expect, it, beforeAll } from "vitest";
+import { Runtime } from "../src/runtime/index.js";
 
 describe("VirtualMachine", () => {
-	describe("Basic spawn functionality", () => {
+	let runtime: Runtime;
+
+	beforeAll(async () => {
+		runtime = await Runtime.load();
+	});
+
+	describe("Basic run functionality", () => {
 		it("should execute echo command", async () => {
-			const vm = new VirtualMachine();
-			try {
-				const result = await vm.spawn("echo", { args: ["hello world"] });
-				expect(result.stdout.trim()).toBe("hello world");
-				expect(result.code).toBe(0);
-			} finally {
-				vm.dispose();
-			}
+			const vm = await runtime.run("echo", { args: ["hello world"] });
+			expect(vm.stdout.trim()).toBe("hello world");
+			expect(vm.code).toBe(0);
 		});
 
 		it("should execute ls command on root", async () => {
-			const vm = new VirtualMachine();
-			try {
-				const result = await vm.spawn("ls", { args: ["/"] });
-				expect(result.code).toBe(0);
-				// Root should have standard directories
-				expect(result.stdout).toContain("bin");
-			} finally {
-				vm.dispose();
-			}
+			const vm = await runtime.run("ls", { args: ["/"] });
+			expect(vm.code).toBe(0);
+			expect(vm.stdout).toContain("bin");
 		});
 
 		it("should execute bash with echo builtin", async () => {
-			const vm = new VirtualMachine();
-			try {
-				// echo is a bash builtin, so this works without subprocess spawning
-				const result = await vm.spawn("bash", {
-					args: ["-c", "echo foo; echo bar"],
-				});
-				// Note: bash may return non-zero exit codes in WASIX even for successful commands
-				expect(result.stdout).toContain("foo");
-				expect(result.stdout).toContain("bar");
-			} finally {
-				vm.dispose();
-			}
+			const vm = await runtime.run("bash", {
+				args: ["-c", "echo foo; echo bar"],
+			});
+			expect(vm.stdout).toContain("foo");
+			expect(vm.stdout).toContain("bar");
 		});
 
 		it("should handle command failure", async () => {
-			const vm = new VirtualMachine();
-			try {
-				const result = await vm.spawn("ls", { args: ["/nonexistent"] });
-				expect(result.code).not.toBe(0);
-			} finally {
-				vm.dispose();
-			}
+			const vm = await runtime.run("ls", { args: ["/nonexistent"] });
+			expect(vm.code).not.toBe(0);
 		});
 	});
 
 	describe("Filesystem via bash builtins", () => {
 		it("should write files via redirection and read via bash", async () => {
-			const vm = new VirtualMachine();
-			try {
-				// Use bash builtins only - echo and redirection work
-				// Then use bash read builtin to verify
-				const result = await vm.spawn("bash", {
-					args: ["-c", 'echo "hello" > /data/test.txt; read -r line < /data/test.txt; echo "$line"'],
-				});
-				// Note: bash may return non-zero exit codes in WASIX even for successful commands
-				expect(result.stdout.trim()).toBe("hello");
-			} finally {
-				vm.dispose();
-			}
+			const vm = await runtime.run("bash", {
+				args: ["-c", 'echo "hello" > /data/test.txt; read -r line < /data/test.txt; echo "$line"'],
+			});
+			expect(vm.stdout.trim()).toBe("hello");
 		});
 
 		it("should check file existence via bash test", async () => {
-			const vm = new VirtualMachine();
-			try {
-				const result = await vm.spawn("bash", {
-					args: [
-						"-c",
-						'echo test > /data/exists.txt; if [ -f /data/exists.txt ]; then echo "exists"; fi',
-					],
-				});
-				// Note: bash may return non-zero exit codes in WASIX even for successful commands
-				expect(result.stdout.trim()).toBe("exists");
-			} finally {
-				vm.dispose();
-			}
+			const vm = await runtime.run("bash", {
+				args: ["-c", 'echo test > /data/exists.txt; if [ -f /data/exists.txt ]; then echo "exists"; fi'],
+			});
+			expect(vm.stdout.trim()).toBe("exists");
 		});
 	});
 
 	describe("Node via IPC", () => {
 		it("should execute node -e directly", async () => {
-			const vm = new VirtualMachine();
-			try {
-				// Direct node command goes through IPC
-				const result = await vm.spawn("node", {
-					args: ["-e", "console.log('hello from node')"],
-				});
-				expect(result.stdout).toContain("hello from node");
-				expect(result.code).toBe(0);
-			} finally {
-				vm.dispose();
-			}
+			const vm = await runtime.run("node", {
+				args: ["-e", "console.log('hello from node')"],
+			});
+			expect(vm.stdout).toContain("hello from node");
+			expect(vm.code).toBe(0);
 		});
 
 		it("should handle node errors properly", async () => {
-			const vm = new VirtualMachine();
-			try {
-				const result = await vm.spawn("node", {
-					args: ["-e", "throw new Error('oops')"],
-				});
-				expect(result.code).not.toBe(0);
-			} finally {
-				vm.dispose();
-			}
+			const vm = await runtime.run("node", {
+				args: ["-e", "throw new Error('oops')"],
+			});
+			expect(vm.code).not.toBe(0);
 		});
 	});
 
 	describe("Isolation", () => {
-		it("should have isolated filesystems between spawns", async () => {
-			const vm = new VirtualMachine();
-			try {
-				// First spawn creates a file
-				await vm.spawn("bash", {
-					args: ["-c", "echo hello > /data/isolated.txt"],
-				});
+		it("should have isolated filesystems between runs", async () => {
+			await runtime.run("bash", {
+				args: ["-c", "echo hello > /data/isolated.txt"],
+			});
 
-				// Second spawn should NOT see the file (isolated filesystem)
-				const result = await vm.spawn("bash", {
-					args: ["-c", 'if [ -f /data/isolated.txt ]; then echo "found"; else echo "not found"; fi'],
-				});
-				expect(result.stdout.trim()).toBe("not found");
-			} finally {
-				vm.dispose();
-			}
+			const vm = await runtime.run("bash", {
+				args: ["-c", 'if [ -f /data/isolated.txt ]; then echo "found"; else echo "not found"; fi'],
+			});
+			expect(vm.stdout.trim()).toBe("not found");
 		});
 	});
 });
