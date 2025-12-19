@@ -88,31 +88,27 @@ describe("VirtualMachine", () => {
 				args: ["-c", "while read line; do echo \"OUT:$line\"; done"],
 			});
 
-			// Helper to poll stdout until we see expected output (TTY echo)
-			const pollForOutput = async (expected: string, timeoutMs = 5000): Promise<string> => {
+			// Helper to poll stdout until we get the expected exact output
+			const pollForOutput = async (expected: string, timeoutMs = 5000): Promise<void> => {
 				const startTime = Date.now();
-				let accumulated = "";
 				while (Date.now() - startTime < timeoutMs) {
-					const chunk = await proc.readStdout();
-					accumulated += chunk;
-					if (accumulated.includes(expected)) {
-						return accumulated;
-					}
+					const output = await proc.readStdout();
+					if (output === expected) return;
+					if (output !== "") throw new Error(`Expected "${expected}", got "${output}"`);
 					await new Promise(r => setTimeout(r, 50));
 				}
-				throw new Error(`Timeout waiting for "${expected}" in stdout. Got: "${accumulated}"`);
+				throw new Error(`Timeout waiting for "${expected}"`);
 			};
 
 			// Streaming test: write stdin, poll for TTY echo, repeat
-			// Note: We only see TTY echo, not command output (wasmer-js limitation)
 			await proc.writeStdin("ping1\n");
-			await pollForOutput("ping1");
+			await pollForOutput("ping1\n");
 
 			await proc.writeStdin("ping2\n");
-			await pollForOutput("ping2");
+			await pollForOutput("ping2\n");
 
 			await proc.writeStdin("ping3\n");
-			await pollForOutput("ping3");
+			await pollForOutput("ping3\n");
 
 			await proc.closeStdin();
 			await proc.wait();
