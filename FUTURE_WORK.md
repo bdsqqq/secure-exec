@@ -9,7 +9,6 @@
 
 ## short term
 
-- fix streaming stdin
 - clean up where load runtime is (it should be part of runtime.load())
 - implement child process with the host process context
 - remove js cruft from npm tests (raw npm should work fine)
@@ -68,6 +67,7 @@
 - integrate pino
 - snapshots/live migration
 - custom images
+- fix streaming stdin
 - move incoming and outgoing networking to using the virtual network in wasix
     - right now, node & vm cannot access each other
 

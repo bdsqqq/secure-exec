@@ -1,13 +1,10 @@
 # libsandbox
 
-**Run running fast, secure Linux-compatible sandboxes anywhere Node.js runs — no external providers or nested virtualization.**
+![libsandbox logo](./.github/media/sb-logo.svg)
+
+**Run fast, secure, Linux-compatible sandboxes anywhere Node.js runs — no external providers or nested virtualization.**
 
 By compiling Linux tools to WebAssembly (WASIX) and combining with a V8 Isolate accelerator for speeding up Node.js performance, libsandbox provides a sandboxed, Linux-compatible environment anywhere Node.js runs in two lines of code:
-
-```
-import { VM } from "libsandbox";
-const vm = await VM.start();
-```
 
 Useful for one-off code evals, coding agents, and dev servers.
 
@@ -20,7 +17,10 @@ Useful for one-off code evals, coding agents, and dev servers.
 
 ## Examples
 
-```
+```typescript
+import { VM } from "libsandbox";
+const vm = await VM.start();
+
 // Shell
 await vm.exec("bash", { interactive: true });
 
