@@ -88,6 +88,23 @@ describe("VirtualMachine", () => {
 			expect(vm.stdout.trim()).toBe("got: hello world");
 		});
 
+		// Child process spawning from Node - currently only supports spawning other node processes
+		// because hostExecHandler only handles "node" commands. Full WASM command spawning
+		// requires additional work in the scheduler to spawn new WASM instances.
+		it.skip("should spawn child node process from node", async () => {
+			const script = `
+				const { spawn } = require('child_process');
+				const child = spawn('node', ['-e', 'console.log("child output")']);
+				child.stdout.on('data', (d) => console.log('from child:', d.toString().trim()));
+				child.on('close', (code) => console.log('child exited:', code));
+			`;
+			const vm = await runtime.run("node", {
+				args: ["-e", script],
+			});
+			expect(vm.stdout).toContain("from child: child output");
+			expect(vm.stdout).toContain("child exited: 0");
+		});
+
 		// Streaming stdin tests are skipped due to wasmer-js TTY bug.
 		// See: docs/research/wasmer-js-tty-stdin-bug.md
 		it.skip("should stream stdin to bash with spawn()", async () => {
