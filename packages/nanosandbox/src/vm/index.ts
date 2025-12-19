@@ -94,6 +94,159 @@ let runtimePackage: Awaited<ReturnType<typeof Wasmer.fromFile>> | null = null;
 let wasmerRuntime: Runtime | null = null;
 
 /**
+ * Create a spawnChildStreaming function that spawns WASM instances.
+ * This allows sandboxed Node.js code to spawn child processes that run as WASM.
+ */
+function createSpawnChildStreaming(
+	parentCwd: string,
+	parentEnv: Record<string, string>,
+): HostExecContext["spawnChildStreaming"] {
+	return (command, args, options) => {
+		// Track state
+		let exited = false;
+		let exitCode = 0;
+		let exitResolve: ((code: number) => void) | null = null;
+		let killed = false;
+		let instance: Awaited<ReturnType<Awaited<ReturnType<typeof Wasmer.fromFile>>["commands"][string]["run"]>> | null = null;
+		let stdinWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
+
+		// Start the process asynchronously
+		const startProcess = async () => {
+			const pkg = await loadRuntimePackage();
+			const cmd = pkg.commands[command];
+			if (!cmd) {
+				// Command not found - report error and exit
+				const errorMsg = `Error: Command '${command}' not found\n`;
+				if (options.onStderr) {
+					options.onStderr(new TextEncoder().encode(errorMsg));
+				}
+				exitCode = 127;
+				exited = true;
+				if (exitResolve) {
+					exitResolve(exitCode);
+				}
+				return;
+			}
+
+			// Merge environment: parent env + child options env
+			const mergedEnv = { ...parentEnv, ...options.env };
+
+			// Create a new Directory for the child process
+			const directory = new Directory();
+
+			// Spawn the instance
+			instance = await cmd.run({
+				args,
+				env: mergedEnv,
+				cwd: options.cwd || parentCwd,
+				mount: {
+					[DATA_MOUNT_PATH]: directory,
+				},
+			});
+
+			// Get stdin writer for streaming
+			if (instance.stdin) {
+				stdinWriter = instance.stdin.getWriter();
+			}
+
+			// Stream stdout
+			if (options.onStdout && instance.stdout) {
+				const reader = instance.stdout.getReader();
+				(async () => {
+					try {
+						while (true) {
+							const { done, value } = await reader.read();
+							if (done || killed) break;
+							if (value && options.onStdout) {
+								options.onStdout(value);
+							}
+						}
+					} catch (err) {
+						// Stream closed
+					}
+				})();
+			}
+
+			// Stream stderr
+			if (options.onStderr && instance.stderr) {
+				const reader = instance.stderr.getReader();
+				(async () => {
+					try {
+						while (true) {
+							const { done, value } = await reader.read();
+							if (done || killed) break;
+							if (value && options.onStderr) {
+								options.onStderr(value);
+							}
+						}
+					} catch (err) {
+						// Stream closed
+					}
+				})();
+			}
+
+			// Wait for process to complete
+			try {
+				const result = await instance.wait();
+				exitCode = result.code ?? 0;
+			} catch (err) {
+				exitCode = 1;
+			}
+			exited = true;
+			if (exitResolve) {
+				exitResolve(exitCode);
+			}
+		};
+
+		// Start the process
+		startProcess().catch((err) => {
+			const errorMsg = `Error spawning ${command}: ${err instanceof Error ? err.message : String(err)}\n`;
+			if (options.onStderr) {
+				options.onStderr(new TextEncoder().encode(errorMsg));
+			}
+			exitCode = 1;
+			exited = true;
+			if (exitResolve) {
+				exitResolve(exitCode);
+			}
+		});
+
+		// Return SpawnedProcess handle
+		return {
+			writeStdin(data: Uint8Array | string): void {
+				if (stdinWriter && !killed) {
+					const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+					stdinWriter.write(bytes).catch(() => {});
+				}
+			},
+			closeStdin(): void {
+				if (stdinWriter) {
+					stdinWriter.close().catch(() => {});
+					stdinWriter = null;
+				}
+			},
+			kill(_signal?: number): void {
+				killed = true;
+				// Note: wasmer-js doesn't have a direct kill API for instances
+				// Closing stdin is the best we can do
+				if (stdinWriter) {
+					stdinWriter.abort().catch(() => {});
+					stdinWriter = null;
+				}
+			},
+			wait(): Promise<number> {
+				if (exited) {
+					return Promise.resolve(exitCode);
+				}
+				return new Promise((resolve) => {
+					exitResolve = resolve;
+				});
+			},
+		};
+	};
+}
+
+/**
  * Handle host_exec syscalls from WASM.
  *
  * For "node" commands, uses sandboxed-node's NodeProcess (V8 isolate) instead
@@ -228,8 +381,15 @@ async function handleNodeCommand(ctx: HostExecContext): Promise<number> {
 		? new TextDecoder().decode(Buffer.concat(stdinChunks.map(c => Buffer.from(c))))
 		: undefined;
 
-	// Create CommandExecutor for child process support (if available)
-	const commandExecutor = createCommandExecutor(ctx);
+	// Add spawnChildStreaming to the context for child process support
+	// This allows sandboxed Node.js to spawn child processes that run as WASM instances
+	const ctxWithChildSpawn: HostExecContext = {
+		...ctx,
+		spawnChildStreaming: createSpawnChildStreaming(ctx.cwd || "/", ctx.env || {}),
+	};
+
+	// Create CommandExecutor for child process support
+	const commandExecutor = createCommandExecutor(ctxWithChildSpawn);
 
 	// Create NodeProcess with context from host_exec
 	const nodeProcess = new NodeProcess({
