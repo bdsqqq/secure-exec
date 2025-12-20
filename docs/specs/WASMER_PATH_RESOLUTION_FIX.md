@@ -371,6 +371,83 @@ The native wasmer runtime (Rust) correctly:
 The wasmer-js integration has issues with:
 1. ~~setTimeout incompatibility with Node.js~~ (fixed)
 2. Child process result delivery to waiting spawnSync
-3. Possibly the scheduler/threading model in WASM environment
+3. ~~Possibly the scheduler/threading model in WASM environment~~ (root cause identified below)
 
 The `which` hack workaround in nanosandbox is the correct approach until wasmer-js is fixed.
+
+---
+
+## Definitive Root Cause Analysis (2024-12-20)
+
+### The Problem
+
+WASM subprocess spawning fails in wasmer-js because **`virtual_fs::Pipe` uses tokio channels which cannot work across Web Workers**.
+
+### Technical Details
+
+**Native Wasmer (works):**
+- Subprocesses run in real OS threads
+- Threads share the same memory space
+- `tokio::sync::mpsc` channels work via shared memory pointers
+- Parent and child can communicate via inherited pipe file descriptors
+
+**Wasmer-JS (fails):**
+- Subprocesses run in separate Web Workers
+- Web Workers have **isolated memory spaces**
+- `tokio::sync::mpsc` channels are **copied, not shared** when spawning a Worker
+- The copied channels point to different memory - writes never reach the reader
+
+### Code Analysis
+
+In `lib/virtual-fs/src/pipe.rs`:
+```rust
+pub struct Pipe {
+    send: PipeTx,
+    recv: PipeRx,
+}
+
+pub struct PipeTx {
+    tx: Option<mpsc::UnboundedSender<Vec<u8>>>,  // ← tokio channel
+    rx_end: Weak<Mutex<PipeReceiver>>,
+}
+```
+
+When `proc_spawn2` spawns a child:
+1. The child's `WasiEnv` is serialized and sent to a new Web Worker
+2. The `Pipe` is cloned/copied during this process
+3. The tokio channel `mpsc::UnboundedSender` becomes **disconnected** from the original receiver
+4. Child writes to stdout → goes to a dead channel → parent never receives
+
+### Why This Manifests as Hangs
+
+1. Parent process waits for child output via `waitpid` equivalent
+2. Child runs and exits normally (hence "exit code 0" in logs)
+3. But child's stdout/stderr data never reaches parent
+4. Parent blocks forever waiting for data that will never arrive
+
+### Potential Fixes
+
+The fix must be in wasmer-js, not wasmer core. Options:
+
+1. **SharedArrayBuffer-based Pipes**: Replace tokio channels with SharedArrayBuffer + Atomics for cross-Worker communication (complex but performant)
+
+2. **Route via Scheduler**: All subprocess stdio flows through the main thread scheduler using postMessage (simpler but adds latency)
+
+3. **Disable WASM Subprocesses**: Document that WASM-to-WASM spawning isn't supported; only host_exec for real processes
+
+### Current Workaround
+
+The nanosandbox `which` hack remains the correct approach:
+- Resolve command paths before spawning
+- Use host_exec for process spawning (routes through Node.js)
+- Avoid relying on WASIX's posix_spawnp PATH resolution
+
+### Files Involved
+
+| File | Role |
+|------|------|
+| `lib/virtual-fs/src/pipe.rs` | Pipe implementation using tokio channels |
+| `lib/wasix/src/syscalls/wasix/proc_spawn2.rs` | Subprocess spawning syscall |
+| `lib/wasix/src/bin_factory/exec.rs` | WASM task spawning via `task_wasm()` |
+| `wasmer-js/src/tasks/task_wasm.rs` | Worker-based WASM task execution |
+| `wasmer-js/src/tasks/worker_handle.rs` | Web Worker management |
