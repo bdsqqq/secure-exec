@@ -428,19 +428,35 @@ fn handle_spawn_request(
     // This is where coreutils binaries are located
     std::env::set_var("PATH", "/bin");
 
-    // Resolve command using PATH - WASIX libc's posix_spawn doesn't search PATH,
-    // so we need to use the `which` crate to find the absolute path
-    let command_path = if spawn_req.command.starts_with('/') {
-        // Already absolute path
-        std::path::PathBuf::from(&spawn_req.command)
+    // Check if we should skip the `which` hack to test wasmer's PATH resolution
+    // Prefix command with "nowhich:" to test without the which hack
+    // e.g., "nowhich:echo" will spawn "echo" without resolving via which
+    let (skip_which, command) = if spawn_req.command.starts_with("nowhich:") {
+        (true, spawn_req.command.strip_prefix("nowhich:").unwrap().to_string())
     } else {
-        // Use `which` to search PATH
-        match which::which(&spawn_req.command) {
+        (false, spawn_req.command.clone())
+    };
+
+    // Resolve command using PATH
+    let command_path = if command.starts_with('/') {
+        // Already absolute path
+        std::path::PathBuf::from(&command)
+    } else if skip_which {
+        // TEST MODE: Skip `which` hack to test wasmer's proc_spawn2 PATH resolution
+        // When this is set, Command::new("echo") relies on posix_spawnp which
+        // should search PATH via wasmer's find_executable_in_path()
+        // Note: This is known to be broken - see docs/specs/WASIX_LIBC_PATH_FIX.md
+        eprintln!("[wasix-shim] nowhich: testing - using relative path: {}", command);
+        std::path::PathBuf::from(&command)
+    } else {
+        // Use `which` to search PATH (workaround for wasmer PATH resolution bug)
+        // See docs/specs/WASIX_LIBC_PATH_FIX.md for details
+        match which::which(&command) {
             Ok(path) => path,
             Err(e) => {
                 let error_msg = format!(
                     "[wasix-shim] Command not found: {} (PATH=/bin, error: {})\n",
-                    spawn_req.command, e
+                    command, e
                 );
                 eprintln!("{}", error_msg);
 
@@ -472,8 +488,6 @@ fn handle_spawn_request(
         }
     };
 
-    eprintln!("[wasix-shim] Resolved command path: {}", command_path.display());
-
     // Spawn the command - WASIX provides commands from dependencies (coreutils, bash)
     // as WASM modules that can be executed via Command::new with absolute paths
     let result = Command::new(&command_path)
@@ -494,7 +508,10 @@ fn handle_spawn_request(
             });
         }
         Err(e) => {
-            let error_msg = format!("[wasix-shim] Failed to spawn child {} ({}): {}\n", spawn_req.child_id, spawn_req.command, e);
+            let error_msg = format!(
+                "[wasix-shim] Failed to spawn child {} ({}): {}\n",
+                spawn_req.child_id, command, e
+            );
             eprintln!("{}", error_msg);
 
             // Send error to child's stderr so it's visible in test output
