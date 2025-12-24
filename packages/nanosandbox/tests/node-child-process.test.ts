@@ -196,21 +196,23 @@ describe("Child Process from Sandboxed Node", () => {
 		}, 30000);
 	});
 
-	// Environment variable passing to child processes doesn't work in WASIX.
-	// The env option is parsed correctly but WASIX's proc_spawn/posix_spawnp
-	// syscalls don't pass environment variables to child processes.
-	// Workaround: export variables in a shell script instead of using env option.
-	describe.skip("environment variables (blocked by WASIX limitation)", () => {
+	// Environment variable passing works via bash workaround.
+	// WASIX's proc_spawn doesn't pass env vars natively, but the runtime
+	// works around this by wrapping commands with bash -c 'export ...'.
+	describe("environment variables", () => {
 		it("should pass env vars to child via spawnSync", async () => {
+			// Test env option - the runtime handles the workaround internally
 			const script = `
 				const { spawnSync } = require('child_process');
 				const result = spawnSync('printenv', ['MY_VAR'], {
 					env: { MY_VAR: 'test_value_123', PATH: '/bin' }
 				});
 				console.log('env value:', result.stdout.toString().trim());
+				console.log('status:', result.status);
 			`;
 			const vm = await runtime.run("node", { args: ["-e", script] });
 			expect(vm.stdout).toContain("env value: test_value_123");
+			expect(vm.stdout).toContain("status: 0");
 		}, 30000);
 
 		it("should pass env vars to child via spawn", async () => {

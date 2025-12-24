@@ -426,6 +426,16 @@ fn run_event_loop(session: u64) {
     }
 }
 
+/// Escape a string for use in a shell command
+fn shell_escape(s: &str) -> String {
+    // If the string only contains safe characters, return as-is
+    if s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/') {
+        return s.to_string();
+    }
+    // Otherwise, wrap in single quotes and escape any single quotes
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Handle a SPAWN_REQUEST message - spawn a new child process natively in WASIX
 fn handle_spawn_request(
     parent_session: u64,
@@ -514,15 +524,43 @@ fn handle_spawn_request(
     //
     // Note: Command::envs() doesn't work in WASIX - environment variables aren't
     // passed to child processes. This is a WASIX limitation (proc_spawn doesn't
-    // forward env). Workaround: export vars in shell script instead of using env option.
-    let result = Command::new(&command_path)
-        .args(&spawn_req.args)
-        .envs(&spawn_req.env)
-        .current_dir(if spawn_req.cwd.is_empty() { "/" } else { &spawn_req.cwd })
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
+    // forward env). Workaround: Use bash with export statements.
+    let result = if spawn_req.env.is_empty() {
+        // No env vars - spawn directly
+        Command::new(&command_path)
+            .args(&spawn_req.args)
+            .current_dir(if spawn_req.cwd.is_empty() { "/" } else { &spawn_req.cwd })
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+    } else {
+        // Use bash with export statements to set env vars
+        // Format: bash -c 'export K1=V1; export K2=V2; exec /path/to/command args...'
+        // Using 'exec' replaces the bash process with the command, preserving the environment
+        let mut script = String::new();
+        for (key, value) in &spawn_req.env {
+            // Escape single quotes in values by replacing ' with '\''
+            let escaped_value = value.replace('\'', "'\\''");
+            script.push_str(&format!("export {}='{}'; ", key, escaped_value));
+        }
+
+        // Build the command with properly escaped arguments
+        script.push_str("exec ");
+        script.push_str(&shell_escape(command_path.to_string_lossy().as_ref()));
+        for arg in &spawn_req.args {
+            script.push(' ');
+            script.push_str(&shell_escape(arg));
+        }
+
+        Command::new("/bin/bash")
+            .args(["-c", &script])
+            .current_dir(if spawn_req.cwd.is_empty() { "/" } else { &spawn_req.cwd })
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+    };
 
     match result {
         Ok(child) => {
