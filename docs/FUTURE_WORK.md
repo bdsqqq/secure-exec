@@ -11,6 +11,7 @@
 
 - fix subprocesses
 - verify npm child process tests work with the same test suite for subprocesses
+- get nextjs working (??)
 
 ---
 
@@ -23,6 +24,10 @@
 - get basic ecosystem tests working
 - switch back to wasmer 0.10
 - document how to work with the branches in the other repos
+
+## sandbox api
+
+- add .fetch  https://developers.cloudflare.com/workers/runtime-apis/bindings/worker-loader/
 
 ## cleanup
 

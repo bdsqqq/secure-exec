@@ -22,3 +22,10 @@ The wasmer-js SDK has two filesystem layers:
 ## sandboxed-node V8 Accelerator
 
 When WASM runs `node`, the `host_exec` syscalls delegate to sandboxed-node's `NodeProcess` (V8 isolate) instead of spawning a real process. See [docs/HOST_EXEC_IPC.md](docs/HOST_EXEC_IPC.md) for architecture details.
+
+## wasix-builds (~/misc/wasix-builds)
+
+WASIX build system for building tools for WASM. Uses Makefile-based builds with patch files:
+- Put unified diff patches in `builds/{name}/patches/*.patch`
+- Patches use `-p1` format (a/ b/ prefixes)
+- See `~/misc/wasix-builds/CLAUDE.md` for full documentation

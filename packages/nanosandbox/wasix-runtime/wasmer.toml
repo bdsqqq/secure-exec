@@ -5,7 +5,8 @@ description = "WASIX runtime with Node.js shim for IPC-based Node execution"
 
 [dependencies]
 "wasmer/bash" = "*"
-"wasmer/coreutils" = "*"
+# Patched coreutils with pwd fix (wasmer/coreutils has canonicalize panic on WASI)
+"nathanflurry/coreutils" = "0.1.0"
 
 [[module]]
 name = "wasix-runtime"

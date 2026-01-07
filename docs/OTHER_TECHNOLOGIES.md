@@ -21,6 +21,7 @@
 
 - compile js runtime to wasm
     - quickjs (without wasm) is 45x (https://zoo.js.org/?arch=amd64) faster than quickjs even when compiled to js
+    - winterjs is the wasmer approach, currently have not benchmarked. js is increidbly perf sensitive compared to other languages.
     - spidermonkey might be faster
     - both are too slow
 - use deno

@@ -5,7 +5,7 @@
 
 <b>Run fast, secure, Linux-compatible sandboxes anywhere Node.js runs — no external SaaS or nested virtualization.</b>
 
-By compiling Linux tools to WebAssembly (WASIX) and attaching a V8 Isolate Accelerator (for sandboxed Node.js performance), libsandbox provides portable sandboxes anywhere.
+By compiling Linux tools to WebAssembly (WASIX) and attaching a V8 Isolate Accelerator (for performant sandboxed Node.js code), libsandbox provides portable Linux-like sandboxes anywhere.
 
 Works for one-off code evals, long-running coding agents, and dev servers.
 </div>
@@ -13,7 +13,7 @@ Works for one-off code evals, long-running coding agents, and dev servers.
 ## Features
 
 - **Portable**: Runs anywhere Node.js runs (including Vercel Fluid Compute, Railway), does not require nested virtualization or Docker-in-Docker 
-- **Incredibly Fast**: WebAssembly and V8 isolates provide near-native performance with less memory than microVMs
+- **Fast**: WebAssembly and V8 isolates provide near-native performance with less memory than microVMs
 - **Secure**: Powered by WebAssembly & V8 isolates, using the same technology as Chromium and Cloudflare Workers
 - **Compatible With Coding Agents**: Provides tools coding agents are trained to use heavily (e.g. `rg`, `sed`, `awk`, `git`), not best-effort re-implementations. Coding agents don't need to do anything special, it just works.
 
