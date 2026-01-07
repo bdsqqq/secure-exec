@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { startTerminal } from "./index.js";
+import { startTerminal, runCommand } from "./index.js";
 
 async function main() {
 	const argv = process.argv.slice(2);
@@ -18,9 +18,9 @@ async function main() {
 			debug = true;
 		} else if (arg === "--help" || arg === "-h") {
 			console.log(`
-nanosandbox - Interactive terminal for nanosandbox VM
+nanosandbox - Run commands in nanosandbox VM
 
-Usage: nanosandbox [options] [command] [...args]
+Usage: nanosandbox [options] <command> [...args]
 
 Options:
   -p, --path <dir>     Load files from host directory into VM
@@ -28,11 +28,10 @@ Options:
   -h, --help           Show this help message
 
 Examples:
-  nanosandbox                              # Start bash shell
-  nanosandbox -p ./project                 # Start with project files loaded
-  nanosandbox sh                           # Start sh instead of bash
-  nanosandbox bash -c "echo hello"         # Run a command
+  nanosandbox echo hello                   # Run echo
+  nanosandbox ls /                         # List root directory
   nanosandbox node -e "console.log('hi')"  # Run node
+  nanosandbox bash -c "echo hello"         # Run bash command
 `);
 			process.exit(0);
 		} else if (arg === "--") {
@@ -52,11 +51,15 @@ Examples:
 	const command = positionalArgs[0];
 	const args = positionalArgs.slice(1);
 
-	try {
-		console.log("Starting nanosandbox terminal...");
-		console.log("Press Ctrl+C to exit, Ctrl+D to send EOF\n");
+	if (!command) {
+		console.error("Error: No command specified");
+		console.error("Usage: nanosandbox <command> [...args]");
+		console.error("Run 'nanosandbox --help' for more information");
+		process.exit(1);
+	}
 
-		const exitCode = await startTerminal({
+	try {
+		const exitCode = await runCommand({
 			hostPath,
 			command,
 			args,

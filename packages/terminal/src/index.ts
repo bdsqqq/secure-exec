@@ -11,8 +11,44 @@ export interface TerminalOptions {
 	debug?: boolean;
 }
 
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
+/**
+ * Run a command non-interactively and print output
+ */
+export async function runCommand(
+	options: TerminalOptions = {},
+): Promise<number> {
+	const debug = options.debug ?? false;
+	const startTime = Date.now();
+	const logTiming = (step: string) => {
+		if (debug) {
+			console.error(`[terminal] ${step} (${Date.now() - startTime}ms)`);
+		}
+	};
+
+	// Load runtime
+	logTiming("Loading runtime...");
+	const runtime = await Runtime.load();
+	logTiming("Runtime loaded");
+
+	// Get the command to run
+	const commandName = options.command ?? "echo";
+	const commandArgs = options.args ?? [];
+	logTiming(`Running '${commandName} ${commandArgs.join(" ")}'...`);
+
+	// Run command (non-interactive)
+	const vm = await runtime.run(commandName, { args: commandArgs });
+	logTiming("Command completed");
+
+	// Print output
+	if (vm.stdout) {
+		process.stdout.write(vm.stdout);
+	}
+	if (vm.stderr) {
+		process.stderr.write(vm.stderr);
+	}
+
+	return vm.code;
+}
 
 /**
  * Connect terminal streams to spawned process
@@ -67,7 +103,7 @@ function connectStreams(proc: Process): void {
 }
 
 /**
- * Start an interactive terminal session
+ * Start an interactive terminal session (currently broken due to wasmer-js stdin limitation)
  */
 export async function startTerminal(
 	options: TerminalOptions = {},
