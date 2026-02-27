@@ -4,7 +4,7 @@
 Define runtime execution contracts, module loading behavior, async completion semantics, and dynamic import behavior.
 ## Requirements
 ### Requirement: Unified Sandbox Execution Interface
-The project SHALL provide a stable sandbox execution interface for both Node and browser runtimes, with each runtime exposing an `exec` path for running untrusted code and returning structured execution results. Dynamic `import()` expressions within executed code SHALL evaluate lazily at call time rather than eagerly during setup.
+The project SHALL provide a stable sandbox execution interface for both Node and browser runtimes, with each runtime exposing an `exec` path for running untrusted code and returning structured execution results. The Node runtime SHALL also expose a `run` path that returns module export results (`module.exports` for CommonJS and namespace exports for ESM). Dynamic `import()` expressions within executed code SHALL evaluate lazily at call time rather than eagerly during setup.
 
 #### Scenario: Execute code in Node runtime
 - **WHEN** a caller creates `NodeProcess` with a valid driver and invokes `exec`
@@ -13,6 +13,14 @@ The project SHALL provide a stable sandbox execution interface for both Node and
 #### Scenario: Execute code in browser runtime
 - **WHEN** a caller creates `BrowserSandbox` and invokes `exec`
 - **THEN** the sandbox MUST execute code in a Worker-backed isolated context and return structured output for the caller
+
+#### Scenario: Run CommonJS module and retrieve exports
+- **WHEN** a caller invokes `run()` with CommonJS code that assigns to `module.exports`
+- **THEN** the result's `exports` field MUST contain the value assigned to `module.exports`
+
+#### Scenario: Run ESM module and retrieve namespace exports
+- **WHEN** a caller invokes `run()` with ESM code that declares named and/or default exports
+- **THEN** the result's `exports` field MUST contain an object with all exported bindings, including `default` when declared
 
 #### Scenario: Dynamic imports in executed code evaluate lazily
 - **WHEN** a caller invokes `exec` with code containing `import()` expressions
@@ -93,11 +101,15 @@ Dynamically imported modules (`import()`) SHALL be evaluated only when the impor
 - **THEN** the counter MUST equal 1 after both imports, and both calls MUST return the same module namespace
 
 ### Requirement: Precompilation Without Evaluation
-The precompilation phase SHALL resolve and compile dynamic import targets but MUST NOT instantiate or evaluate them.
+The precompilation phase SHALL resolve and compile dynamic import targets but MUST NOT instantiate or evaluate them before user code reaches the corresponding `import()` expression.
 
 #### Scenario: Precompiled module has no side effects before user code
 - **WHEN** a module targeted by a static `import("./target")` specifier logs to console on evaluation
 - **THEN** no console output from that module SHALL appear before user code begins executing
+
+#### Scenario: Dynamic import side effects preserve surrounding user-code order
+- **WHEN** user code logs `before`, awaits `import("./side-effect")`, and then logs `after`, where `./side-effect` logs during evaluation
+- **THEN** stdout MUST contain `before`, module side effects, and `after` in that order
 
 ### Requirement: Async Dynamic Import Resolution
 The `__dynamicImport` bridge function SHALL return a Promise that resolves to the module namespace, performing instantiation and evaluation on demand.
@@ -183,4 +195,94 @@ When dynamic `import()` resolves a CommonJS module, the returned namespace objec
 #### Scenario: Null CommonJS export is accessible as default
 - **WHEN** sandboxed code executes `await import("./nullish.cjs")` and `nullish.cjs` sets `module.exports = null`
 - **THEN** the namespace result MUST expose `default === null` without throwing during namespace construction
+
+### Requirement: Host-Side Parse Boundaries Protect Runtime Stability
+The Node runtime MUST validate isolate-originated serialized payload size before every host-side `JSON.parse` call that consumes isolate-originated data, and MUST fail requests that exceed the configured limit.
+
+#### Scenario: Oversized serialized payload is rejected before parsing
+- **WHEN** an isolate-originated payload exceeds the runtime JSON parse size limit
+- **THEN** the runtime MUST fail the operation with a deterministic overflow error and MUST NOT call `JSON.parse` on that payload
+
+#### Scenario: All isolate-originated parse entry points are guarded
+- **WHEN** host runtime code in `packages/sandboxed-node/src/index.ts` parses isolate-originated JSON payloads for bridged operations
+- **THEN** each parse entry point MUST apply the same pre-parse size validation before invoking `JSON.parse`
+
+#### Scenario: In-limit serialized payload preserves existing behavior
+- **WHEN** an isolate-originated payload is within the runtime JSON parse size limit and JSON-valid
+- **THEN** the runtime MUST parse and process the request using existing bridge/runtime behavior
+
+### Requirement: Boundary Overflow Errors Are Deterministic and Non-Fatal to Host
+When boundary payload validation fails for isolate-originated data, runtime behavior MUST produce a deterministic failure contract without crashing the host process.
+
+#### Scenario: Boundary overflow returns stable failure contract
+- **WHEN** a base64 transfer or isolate-originated JSON payload exceeds configured runtime limits
+- **THEN** execution MUST return a stable error contract for the operation and MUST NOT terminate the host process
+
+### Requirement: Runtime Parse Limits Use UTF-8 Serialized Byte Length
+The Node runtime MUST measure isolate-originated JSON payload size using UTF-8 byte length of the serialized JSON text before host-side parsing.
+
+#### Scenario: JSON parse size guard uses UTF-8 byte length
+- **WHEN** the runtime evaluates whether isolate-originated JSON input exceeds the parse limit
+- **THEN** it MUST compute size from the UTF-8 byte length of the serialized payload string before calling `JSON.parse`
+
+### Requirement: Payload Limits Are Host-Configurable Within Safety Bounds
+The Node runtime MUST allow host configuration of isolate-boundary payload limits while enforcing bounded minimum/maximum safety constraints.
+
+#### Scenario: Host configures in-range payload limits
+- **WHEN** a host creates `NodeProcess` with payload-limit overrides within runtime safety bounds
+- **THEN** the runtime MUST apply those configured limits for base64 transfer and isolate-originated JSON parse checks
+
+#### Scenario: Host configures out-of-range payload limits
+- **WHEN** a host provides payload-limit overrides outside runtime safety bounds
+- **THEN** `NodeProcess` construction MUST fail with a deterministic validation error and MUST NOT disable payload-size enforcement
+
+### Requirement: Runtime Bootstrap MUST Harden Custom Non-Stdlib Globals
+Runtime bootstrap paths that expose custom non-stdlib globals into the isolate MUST install those bindings using hardened descriptors (`writable: false`, `configurable: false`) by default.
+
+#### Scenario: Runtime exposes custom import or bridge coordination binding
+- **WHEN** runtime setup publishes a custom non-stdlib global used for module loading or bridge coordination
+- **THEN** that global binding MUST be non-writable and non-configurable unless explicitly classified as required mutable runtime state
+
+### Requirement: Runtime MUST Maintain Classified Custom-Global Inventory
+Runtime and bridge custom non-stdlib globals exposed into the isolate MUST be tracked in a maintained inventory that classifies each global as hardened or intentionally mutable runtime state.
+
+#### Scenario: New custom global exposure is introduced
+- **WHEN** a runtime or bridge change introduces a new custom non-stdlib global on `globalThis`
+- **THEN** that global MUST be added to the inventory with a classification and rationale in the same change
+
+### Requirement: Runtime Mutable Global State MUST Be Explicitly Classified
+Runtime globals that remain mutable for correct execution behavior MUST be explicitly classified as mutable runtime state and MUST NOT be hardened by default.
+
+#### Scenario: Runtime updates per-execution mutable state
+- **WHEN** execution setup updates mutable runtime-state globals (for example per-run module or stdin state)
+- **THEN** those updates MUST continue to work and the mutable classification for those globals MUST be intentional and documented
+
+### Requirement: Runtime Filesystem Metadata Access Is Driver-Native
+Sandbox runtime filesystem metadata operations MUST use driver metadata APIs and MUST NOT derive metadata by reading full file contents.
+
+#### Scenario: Stat call on large file does not require content read
+- **WHEN** sandboxed code performs `stat` on a large file path
+- **THEN** the runtime MUST resolve metadata via driver `stat` behavior and MUST NOT read the file body to compute size/type
+
+#### Scenario: Exists check uses metadata/access path
+- **WHEN** sandboxed code performs an existence check on a file or directory path
+- **THEN** the runtime MUST use metadata/access operations and MUST NOT probe existence by loading entire file contents
+
+### Requirement: Runtime Directory Type Enumeration Avoids Per-Entry Re-Probing
+When sandboxed code requests directory entries with type information, the runtime MUST return type metadata from one directory traversal and MUST NOT perform an additional directory probe per entry.
+
+#### Scenario: Mixed directory listing returns types without N+1 probes
+- **WHEN** a directory contains both files and subdirectories and sandboxed code requests typed entries
+- **THEN** the runtime MUST return each entry with correct `isDirectory` information without issuing per-entry `readDir` probes
+
+### Requirement: Runtime Rename Delegates to Driver Rename Semantics
+Runtime rename behavior MUST delegate to the active driver `rename` operation and MUST NOT emulate rename with copy-write-delete in the default runtime path.
+
+#### Scenario: Atomic rename path is preserved when supported
+- **WHEN** the active driver supports atomic rename semantics
+- **THEN** sandboxed `rename` MUST complete through that atomic driver operation
+
+#### Scenario: Unsupported atomic rename is explicit and deterministic
+- **WHEN** the active driver cannot provide atomic rename semantics
+- **THEN** the runtime MUST expose deterministic documented behavior for that driver and MUST NOT silently perform copy-write-delete emulation as if it were atomic
 

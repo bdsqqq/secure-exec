@@ -157,3 +157,55 @@ Changes to security-relevant runtime contracts MUST update canonical security mo
 #### Scenario: Security-first compatibility trade-offs remain explicit
 - **WHEN** a security mitigation intentionally diverges from default Node.js compatibility behavior
 - **THEN** the canonical security model and compatibility/friction artifacts MUST explicitly document that security requirements take precedence and MUST describe any supported compatibility mode or opt-out path
+
+### Requirement: Isolate Boundary Payload Limits Are Explicitly Documented
+Any change that introduces or modifies isolate-boundary payload size limits MUST document the compatibility and security rationale in canonical project documentation.
+
+#### Scenario: Boundary limit contract changes
+- **WHEN** runtime or bridge payload-size limits are introduced or changed for isolate-originated data
+- **THEN** `docs-internal/friction/sandboxed-node.md` MUST be updated with the behavior change, rationale, and resolution notes
+
+#### Scenario: Security model reflects boundary guardrails
+- **WHEN** isolate-boundary payload limits are introduced or changed
+- **THEN** `docs/security-model.mdx` MUST describe the boundary guardrail, deterministic overflow behavior, and compatibility trade-off against unconstrained host Node behavior
+
+### Requirement: Global Exposure Hardening Policy MUST Be Documented With Exceptions
+Changes that harden isolate global exposure MUST document the policy split between hardened custom globals and compatibility-preserved Node stdlib globals in compatibility/friction artifacts in the same change.
+
+#### Scenario: Custom globals are hardened
+- **WHEN** runtime or bridge code applies descriptor hardening to custom globals
+- **THEN** documentation MUST identify the hardened global categories and the rationale
+
+#### Scenario: Stdlib globals are intentionally not force-frozen
+- **WHEN** stdlib globals remain mutable/configurable for Node compatibility
+- **THEN** documentation MUST explicitly record that this is an intentional compatibility decision, not an implementation gap
+
+### Requirement: Descriptor Policy Changes MUST Include Exhaustive Custom-Global Regression Coverage
+Any change to global exposure descriptor policy SHALL include exhaustive tests that verify every hardened custom global in the maintained inventory resists overwrite/redefine attempts, while stdlib compatibility behavior remains intact.
+
+#### Scenario: Exhaustive hardened coverage and compatibility paths are tested
+- **WHEN** a change updates global descriptor policy
+- **THEN** tests MUST cover all hardened custom globals in the inventory and at least one stdlib global compatibility case
+
+#### Scenario: Inventory and test coverage stay in sync
+- **WHEN** a new hardened custom global is added to the inventory
+- **THEN** the same change MUST add or update tests that assert overwrite/redefine resistance for that global
+
+### Requirement: Filesystem Metadata and Rename Deviations Must Be Documented
+Any intentional deviation from default Node.js behavior for filesystem metadata access patterns or rename atomicity MUST be documented in compatibility/friction artifacts in the same change.
+
+#### Scenario: Driver cannot provide atomic rename semantics
+- **WHEN** a runtime/driver path cannot satisfy Node-like atomic rename behavior
+- **THEN** `docs-internal/friction/sandboxed-node.md` MUST record the limitation and supported behavior contract in the same change
+
+#### Scenario: Metadata behavior intentionally differs from Node expectations
+- **WHEN** filesystem metadata behavior diverges from default Node semantics for performance or platform constraints
+- **THEN** compatibility documentation MUST explicitly describe the divergence and mitigation/expected impact
+
+### Requirement: Compatibility Matrix Coverage Is Updated for Filesystem Semantics Changes
+Changes to runtime or bridge filesystem metadata/rename behavior SHALL update compatibility project-matrix coverage with black-box fixtures that compare host Node and sandboxed-node normalized outputs.
+
+#### Scenario: Metadata behavior change is implemented
+- **WHEN** a change modifies `stat`, `exists`, typed `readdir`, or rename semantics in sandboxed-node
+- **THEN** the compatibility project-matrix MUST include fixture coverage that exercises the changed behavior under host Node and sandboxed-node comparison
+

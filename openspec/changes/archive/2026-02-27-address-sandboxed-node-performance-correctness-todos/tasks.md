@@ -23,7 +23,7 @@
 - [x] 4.2 Extract module resolution logic into `packages/sandboxed-node/src/module-resolver.ts`.
 - [x] 4.3 Extract ESM compilation/wrapping logic into `packages/sandboxed-node/src/esm-compiler.ts`.
 - [x] 4.4 Extract bridge reference wiring into `packages/sandboxed-node/src/bridge-setup.ts`.
-- [ ] 4.5 Extract execution orchestration into `packages/sandboxed-node/src/execution.ts` and reduce `index.ts` to API surface/composition.
+- [x] 4.5 Extract execution orchestration into `packages/sandboxed-node/src/execution.ts` and reduce `index.ts` to API surface/composition.
 
 ## 5. Compatibility, Friction, and Verification
 

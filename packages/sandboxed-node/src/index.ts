@@ -3,7 +3,7 @@ import { randomFillSync, randomUUID } from "node:crypto";
 import { createInitialBridgeGlobalsCode } from "./bridge-setup.js";
 import { getBridgeWithConfig } from "./bridge-loader.js";
 import { createBuiltinESMWrapper } from "./esm-compiler.js";
-import { formatCapturedOutput } from "./execution.js";
+import { executeWithRuntime } from "./execution.js";
 import { mkdir } from "./fs-helpers.js";
 import {
 	DEFAULT_TIMING_MITIGATION,
@@ -1520,195 +1520,59 @@ export class NodeProcess {
 		cpuTimeLimitMs?: number;
 		timingMitigation?: TimingMitigation;
 	}): Promise<RunResult<T>> {
-		// Clear caches for fresh run
-		this.esmModuleCache.clear();
-		this.dynamicImportCache.clear();
-		this.dynamicImportPending.clear();
-		this.moduleFormatCache.clear();
-		this.packageTypeCache.clear();
-		this.activeHttpServerIds.clear();
-
-		const context = await this.isolate.createContext();
-		const stdout: string[] = [];
-		const stderr: string[] = [];
-		const timingMitigation = this.getTimingMitigation(options.timingMitigation);
-		const frozenTimeMs = Date.now();
-		const cpuTimeLimitMs = this.getExecutionTimeoutMs(options.cpuTimeLimitMs);
-		const executionDeadlineMs = this.getExecutionDeadlineMs(cpuTimeLimitMs);
-		let recycleIsolateAfterTimeout = false;
-
-		try {
-			const jail = context.global;
-			await jail.set("global", jail.derefInto());
-
-			// Set up console capture
-			await this.setupConsole(context, jail, stdout, stderr);
-
-			let exports: T | undefined;
-			const transformedCode = transformDynamicImport(options.code);
-			const entryReferrerPath = options.filePath ?? "/";
-
-			// Detect ESM vs CJS using module metadata first.
-			if (await this.shouldRunAsESM(options.code, options.filePath)) {
-				await this.setupESMGlobals(
-					context,
-					jail,
-					timingMitigation,
-					frozenTimeMs,
-				);
-
-				if (options.mode === "exec") {
-					await this.applyExecutionOverrides(
-						context,
-						options.env,
-						options.cwd,
-						options.stdin,
-					);
-				}
-
-				await this.precompileDynamicImports(
-					transformedCode,
-					context,
-					entryReferrerPath,
-				);
-					await this.setupDynamicImport(
+		return executeWithRuntime<T>(
+			{
+				isolate: this.isolate,
+				esmModuleCache: this.esmModuleCache,
+				dynamicImportCache: this.dynamicImportCache,
+				dynamicImportPending: this.dynamicImportPending,
+				moduleFormatCache: this.moduleFormatCache,
+				packageTypeCache: this.packageTypeCache,
+				activeHttpServerIds: this.activeHttpServerIds,
+				getTimingMitigation: (mode) => this.getTimingMitigation(mode),
+				getExecutionTimeoutMs: (override) =>
+					this.getExecutionTimeoutMs(override),
+				getExecutionDeadlineMs: (timeoutMs) =>
+					this.getExecutionDeadlineMs(timeoutMs),
+				setupConsole: (context, jail, stdout, stderr) =>
+					this.setupConsole(context, jail, stdout, stderr),
+				shouldRunAsESM: (code, filePath) => this.shouldRunAsESM(code, filePath),
+				setupESMGlobals: (context, jail, timingMitigation, frozenTimeMs) =>
+					this.setupESMGlobals(context, jail, timingMitigation, frozenTimeMs),
+				applyExecutionOverrides: (context, env, cwd, stdin) =>
+					this.applyExecutionOverrides(context, env, cwd, stdin),
+				precompileDynamicImports: (transformedCode, context, referrerPath) =>
+					this.precompileDynamicImports(transformedCode, context, referrerPath),
+				setupDynamicImport: (context, jail, referrerPath, executionDeadlineMs) =>
+					this.setupDynamicImport(
 						context,
 						jail,
-						entryReferrerPath,
+						referrerPath,
 						executionDeadlineMs,
-					);
-					await this.applyCustomGlobalExposurePolicy(context);
-
-					const esmResult = await this.runESM(
-					transformedCode,
-					context,
-					options.filePath,
-					executionDeadlineMs,
-				);
-				if (options.mode === "run") {
-					exports = esmResult as T;
-				}
-			} else {
-		await this.setupRequire(context, jail, timingMitigation, frozenTimeMs);
-		await context.eval(`
-			      var { exposeMutableRuntimeStateGlobal: __runtimeExposeMutableGlobal } = ${ISOLATE_GLOBAL_EXPOSURE_HELPER_SOURCE};
-			      __runtimeExposeMutableGlobal("module", { exports: {} });
-			      __runtimeExposeMutableGlobal("exports", globalThis.module.exports);
-			    `);
-
-				if (options.mode === "exec") {
-					await this.applyExecutionOverrides(
-						context,
-						options.env,
-						options.cwd,
-						options.stdin,
-					);
-
-					if (options.filePath) {
-						await this.setCommonJsFileGlobals(context, options.filePath);
-					}
-				}
-
-				await this.precompileDynamicImports(
-					transformedCode,
-					context,
-					entryReferrerPath,
-				);
-					await this.setupDynamicImport(
-						context,
-						jail,
-						entryReferrerPath,
-						executionDeadlineMs,
-					);
-					await this.applyCustomGlobalExposurePolicy(context);
-
-					if (options.mode === "exec") {
-					// Capture eval() result and await it if script returns a Promise.
-					const wrappedCode = `
-            globalThis.__scriptResult__ = eval(${JSON.stringify(transformedCode)});
-          `;
-					const script = await this.isolate.compileScript(wrappedCode);
-					await script.run(
-						context,
-						this.getExecutionRunOptions(executionDeadlineMs),
-					);
-					await this.awaitScriptResult(context, executionDeadlineMs);
-				} else {
-					const script = await this.isolate.compileScript(transformedCode);
-					await script.run(
-						context,
-						this.getExecutionRunOptions(executionDeadlineMs),
-					);
-					exports = (await context.eval("module.exports", {
-						copy: true,
-						...this.getExecutionRunOptions(executionDeadlineMs),
-					})) as T;
-				}
-			}
-
-			// Wait for any active handles (child processes, etc.) to complete.
-			await this.runWithExecutionDeadline(
-				context.eval(
-					'typeof _waitForActiveHandles === "function" ? _waitForActiveHandles() : Promise.resolve()',
-					{
-						promise: true,
-						...this.getExecutionRunOptions(executionDeadlineMs),
-					},
-				),
-				executionDeadlineMs,
-			);
-
-			// Get exit code from process.exitCode if set.
-			const exitCode = (await context.eval("process.exitCode || 0", {
-				copy: true,
-				...this.getExecutionRunOptions(executionDeadlineMs),
-			})) as number;
-
-			return {
-				stdout: formatCapturedOutput(stdout),
-				stderr: formatCapturedOutput(stderr),
-				code: exitCode,
-				exports,
-			};
-		} catch (err) {
-			if (this.isExecutionTimeoutError(err)) {
-				recycleIsolateAfterTimeout = true;
-				stderr.push(TIMEOUT_ERROR_MESSAGE);
-				return {
-					stdout: formatCapturedOutput(stdout),
-					stderr: formatCapturedOutput(stderr),
-					code: TIMEOUT_EXIT_CODE,
-					exports: undefined as T,
-				};
-			}
-
-			// Handle controlled process exits from process.exit(N).
-			const errMessage = err instanceof Error ? err.message : String(err);
-			const exitMatch = errMessage.match(/process\.exit\((\d+)\)/);
-
-			if (exitMatch) {
-				const exitCode = parseInt(exitMatch[1], 10);
-				return {
-					stdout: formatCapturedOutput(stdout),
-					stderr: formatCapturedOutput(stderr),
-					code: exitCode,
-					exports: undefined as T,
-				};
-			}
-
-			stderr.push(errMessage);
-			return {
-				stdout: formatCapturedOutput(stdout),
-				stderr: formatCapturedOutput(stderr),
-				code: 1,
-				exports: undefined as T,
-			};
-		} finally {
-			context.release();
-			if (recycleIsolateAfterTimeout) {
-				this.recycleIsolate();
-			}
-		}
+					),
+				runESM: (code, context, filePath, executionDeadlineMs) =>
+					this.runESM(code, context, filePath, executionDeadlineMs),
+				setupRequire: (context, jail, timingMitigation, frozenTimeMs) =>
+					this.setupRequire(context, jail, timingMitigation, frozenTimeMs),
+				initCommonJsModuleGlobals: (context) =>
+					this.initCommonJsModuleGlobals(context),
+				applyCustomGlobalExposurePolicy: (context) =>
+					this.applyCustomGlobalExposurePolicy(context),
+				setCommonJsFileGlobals: (context, filePath) =>
+					this.setCommonJsFileGlobals(context, filePath),
+				awaitScriptResult: (context, executionDeadlineMs) =>
+					this.awaitScriptResult(context, executionDeadlineMs),
+				getExecutionRunOptions: (executionDeadlineMs) =>
+					this.getExecutionRunOptions(executionDeadlineMs),
+				runWithExecutionDeadline: (operation, executionDeadlineMs) =>
+					this.runWithExecutionDeadline(operation, executionDeadlineMs),
+				isExecutionTimeoutError: (error) => this.isExecutionTimeoutError(error),
+				recycleIsolate: () => this.recycleIsolate(),
+				timeoutErrorMessage: TIMEOUT_ERROR_MESSAGE,
+				timeoutExitCode: TIMEOUT_EXIT_CODE,
+			},
+			options,
+		);
 	}
 
 	/**
@@ -1726,6 +1590,17 @@ export class NodeProcess {
 		if (stdin !== undefined) {
 			await this.setStdinData(context, stdin);
 		}
+	}
+
+	/**
+	 * Initialize mutable CommonJS globals before script execution.
+	 */
+	private async initCommonJsModuleGlobals(context: ivm.Context): Promise<void> {
+		await context.eval(`
+	      var { exposeMutableRuntimeStateGlobal: __runtimeExposeMutableGlobal } = ${ISOLATE_GLOBAL_EXPOSURE_HELPER_SOURCE};
+	      __runtimeExposeMutableGlobal("module", { exports: {} });
+	      __runtimeExposeMutableGlobal("exports", globalThis.module.exports);
+	    `);
 	}
 
 	/**

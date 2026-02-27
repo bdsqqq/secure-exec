@@ -1,4 +1,5 @@
 import ivm from "isolated-vm";
+import { transformDynamicImport } from "./shared/esm-utils.js";
 import type {
 	RunResult,
 	TimingMitigation,
@@ -72,6 +73,8 @@ type ExecutionRuntime = {
 		timingMitigation: TimingMitigation,
 		frozenTimeMs: number,
 	): Promise<void>;
+	initCommonJsModuleGlobals(context: ivm.Context): Promise<void>;
+	applyCustomGlobalExposurePolicy(context: ivm.Context): Promise<void>;
 	setCommonJsFileGlobals(context: ivm.Context, filePath: string): Promise<void>;
 	awaitScriptResult(
 		context: ivm.Context,
@@ -117,9 +120,7 @@ export async function executeWithRuntime<T = unknown>(
 		await runtime.setupConsole(context, jail, stdout, stderr);
 
 		let exports: T | undefined;
-		const transformedCode = options.code.includes("import(")
-			? options.code.replace(/\bimport\s*\(/g, "__dynamicImport(")
-			: options.code;
+		const transformedCode = transformDynamicImport(options.code);
 		const entryReferrerPath = options.filePath ?? "/";
 
 		if (await runtime.shouldRunAsESM(options.code, options.filePath)) {
@@ -150,6 +151,7 @@ export async function executeWithRuntime<T = unknown>(
 				entryReferrerPath,
 				executionDeadlineMs,
 			);
+			await runtime.applyCustomGlobalExposurePolicy(context);
 
 			const esmResult = await runtime.runESM(
 				transformedCode,
@@ -162,7 +164,7 @@ export async function executeWithRuntime<T = unknown>(
 			}
 		} else {
 			await runtime.setupRequire(context, jail, timingMitigation, frozenTimeMs);
-			await context.eval("globalThis.module = { exports: {} };");
+			await runtime.initCommonJsModuleGlobals(context);
 
 			if (options.mode === "exec") {
 				await runtime.applyExecutionOverrides(
@@ -188,6 +190,7 @@ export async function executeWithRuntime<T = unknown>(
 				entryReferrerPath,
 				executionDeadlineMs,
 			);
+			await runtime.applyCustomGlobalExposurePolicy(context);
 
 			if (options.mode === "exec") {
 				const wrappedCode = `

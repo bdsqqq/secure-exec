@@ -34,6 +34,10 @@
    - Symptom: runtime-owned global bindings were exposed through mixed assignment patterns, letting sandbox code overwrite control-plane globals in some paths.
    - Fix: custom global exposure now uses shared helper policy in `packages/sandboxed-node/src/shared/global-exposure.ts` with hardened defaults (`writable: false`, `configurable: false`), plus explicit mutable runtime-state allowlist entries. Node stdlib globals remain compatibility-oriented and are not force-frozen by this policy.
 
+9. TODO: convert IO handling to a generalized implementation reusable across runtimes.
+   - Symptom: runtime-specific IO paths are still implemented separately, which increases duplication and behavior drift risk between Node and browser runtime surfaces.
+   - Next step: define a shared IO abstraction (request/response/stream/error contracts) and migrate runtime-specific adapters to that interface with parity tests across runtimes.
+
 ## 2026-02-26
 
 1. **[resolved]** Bridging `@hono/node-server` violated strict sandbox boundary policy.

@@ -113,12 +113,20 @@ The following `fs` APIs SHALL be classified as Deferred with deterministic error
 - **WHEN** sandboxed code calls `require("child_process").fork("script.js")`
 - **THEN** the call MUST throw an error matching `"child_process.fork is not supported in sandbox"`
 
-### Requirement: Crypto Is Stub Tier with Insecurity Warning
-The `crypto` module SHALL be classified as Stub (Tier 3). The compatibility matrix MUST document that `getRandomValues()` is backed by `Math.random()` and is not cryptographically secure. `subtle.*` methods MUST throw unsupported errors.
+### Requirement: Crypto Is Stub Tier with Secure Randomness Contract
+The `crypto` module SHALL be classified as Stub (Tier 3). `getRandomValues()` and `randomUUID()` MUST use host `node:crypto` cryptographically secure randomness when available, and MUST throw deterministic unsupported errors if secure host entropy cannot be obtained. `subtle.*` methods MUST throw unsupported errors.
 
-#### Scenario: Documentation of crypto insecurity
+#### Scenario: Documentation of crypto randomness contract
 - **WHEN** a user or contributor reads the crypto section of the compatibility matrix
-- **THEN** the entry MUST contain a warning that `getRandomValues()` is not cryptographically secure
+- **THEN** the entry MUST document host-backed secure randomness behavior for `getRandomValues()`/`randomUUID()` and MUST NOT claim `Math.random()`-backed entropy
+
+#### Scenario: Host entropy unavailable for getRandomValues
+- **WHEN** sandboxed code calls `crypto.getRandomValues(array)` and host secure entropy is unavailable
+- **THEN** the call MUST throw a deterministic error indicating `crypto.getRandomValues` is not supported in sandbox
+
+#### Scenario: Host entropy unavailable for randomUUID
+- **WHEN** sandboxed code calls `crypto.randomUUID()` and host secure entropy is unavailable
+- **THEN** the call MUST throw a deterministic error indicating `crypto.randomUUID` is not supported in sandbox
 
 #### Scenario: Calling crypto.subtle.digest
 - **WHEN** sandboxed code calls `crypto.subtle.digest("SHA-256", data)`
@@ -163,4 +171,3 @@ For bridged built-in modules exposed to ESM, the runtime MUST provide both defau
 #### Scenario: path named import is available in ESM
 - **WHEN** sandboxed ESM code executes `import { sep } from "node:path"`
 - **THEN** `sep` MUST resolve to the same value as `default.sep`
-
