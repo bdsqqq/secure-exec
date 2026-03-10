@@ -2,6 +2,7 @@ import { filterEnv } from "./shared/permissions.js";
 import type {
 	ExecOptions,
 	ExecResult,
+	PythonRunOptions,
 	PythonRunResult,
 	StdioHook,
 } from "./shared/api-types.js";
@@ -53,10 +54,7 @@ export class PythonRuntime {
 
 	async run<T = unknown>(
 		code: string,
-		options: {
-			filePath?: string;
-			globals?: string[];
-		} = {},
+		options: PythonRunOptions = {},
 	): Promise<PythonRunResult<T>> {
 		return this.runtimeDriver.run<T>(code, options);
 	}

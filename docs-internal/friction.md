@@ -1,5 +1,12 @@
 # Sandboxed Node Friction Log
 
+## 2026-03-09
+
+1. **[resolved]** Python `exec()` env overrides bypassed `permissions.env`.
+   - Symptom: `PyodideRuntimeDriver` filtered constructor-level runtime env, but per-execution `exec(..., { env })` overrides were forwarded into the worker without permission filtering.
+   - Fix: Python `exec()` now filters override keys through the shared `filterEnv(...)` path before applying them in the worker, matching Node runtime behavior.
+   - Follow-up: keep future Python capability additions on the same host-side permission boundary so worker-facing APIs never receive unapproved capability input.
+
 ## 2026-03-03
 
 1. **[resolved]** Python runtime contract split needed explicit cross-runtime `exec()` parity and warm-state guardrails.

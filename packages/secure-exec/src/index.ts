@@ -27,6 +27,7 @@ export type {
 	ExecOptions,
 	ExecResult,
 	OSConfig,
+	PythonRunOptions,
 	PythonRunResult,
 	ProcessConfig,
 	RunResult,

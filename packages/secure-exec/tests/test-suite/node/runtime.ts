@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from "vitest";
-import type { NodeRuntimeOptions } from "../../src/browser-runtime.js";
+import type { NodeRuntimeOptions } from "../../../src/browser-runtime.js";
 
-export type RuntimeTarget = "node" | "browser";
+export type NodeRuntimeTarget = "node" | "browser";
 
 type RuntimeOptions = Omit<NodeRuntimeOptions, "systemDriver" | "runtimeDriverFactory">;
 
@@ -29,13 +29,13 @@ type RuntimeLike = {
 	terminate: () => Promise<void>;
 };
 
-export type SharedSuiteContext = {
-	target: RuntimeTarget;
+export type NodeSuiteContext = {
+	target: NodeRuntimeTarget;
 	createRuntime(options?: RuntimeOptions): Promise<RuntimeLike>;
 	teardown(): Promise<void>;
 };
 
-export function runRuntimeSuite(context: SharedSuiteContext): void {
+export function runNodeSuite(context: NodeSuiteContext): void {
 	afterEach(async () => {
 		await context.teardown();
 	});

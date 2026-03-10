@@ -8,12 +8,12 @@ import {
 	createInMemoryFileSystem,
 	createNodeDriver,
 	createNodeRuntimeDriverFactory,
-} from "../src/index.js";
-import { createTestNodeRuntime } from "./test-utils.js";
+} from "../../../src/index.js";
+import { createTestNodeRuntime } from "../../test-utils.js";
 import {
 	HARDENED_NODE_CUSTOM_GLOBALS,
 	MUTABLE_NODE_CUSTOM_GLOBALS,
-} from "../src/shared/global-exposure.js";
+} from "../../../src/shared/global-exposure.js";
 
 function createFs() {
 	return createInMemoryFileSystem();

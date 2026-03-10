@@ -4,9 +4,9 @@ import {
 	allowAllNetwork,
 	NodeRuntime,
 	createInMemoryFileSystem,
-} from "../src/index.js";
-import type { NetworkAdapter } from "../src/types.js";
-import { createTestNodeRuntime } from "./test-utils.js";
+} from "../../../src/index.js";
+import type { NetworkAdapter } from "../../../src/types.js";
+import { createTestNodeRuntime } from "../../test-utils.js";
 
 const DEFAULT_BRIDGE_BASE64_TRANSFER_BYTES = 16 * 1024 * 1024;
 const DEFAULT_ISOLATE_JSON_PAYLOAD_BYTES = 4 * 1024 * 1024;

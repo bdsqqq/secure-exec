@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from "vitest";
-import type { SharedSuiteContext } from "./runtime.js";
+import type { NodeSuiteContext } from "./runtime.js";
 
-export function runRuntimeNetworkSuite(context: SharedSuiteContext): void {
+export function runNodeNetworkSuite(context: NodeSuiteContext): void {
 	afterEach(async () => {
 		await context.teardown();
 	});

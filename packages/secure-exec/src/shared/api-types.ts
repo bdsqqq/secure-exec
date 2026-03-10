@@ -49,6 +49,16 @@ export interface RunResult<T = unknown> extends ExecutionStatus {
 	exports?: T;
 }
 
+export interface PythonRunOptions {
+	filePath?: string;
+	globals?: string[];
+	env?: Record<string, string>;
+	cwd?: string;
+	stdin?: string;
+	cpuTimeLimitMs?: number;
+	onStdio?: StdioHook;
+}
+
 export interface PythonRunResult<T = unknown> extends ExecutionStatus {
 	value?: T;
 	globals?: Record<string, unknown>;

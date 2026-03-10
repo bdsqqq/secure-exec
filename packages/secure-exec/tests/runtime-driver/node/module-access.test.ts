@@ -7,8 +7,8 @@ import {
 	NodeRuntime,
 	createInMemoryFileSystem,
 	createNodeDriver,
-} from "../src/index.js";
-import { createTestNodeRuntime } from "./test-utils.js";
+} from "../../../src/index.js";
+import { createTestNodeRuntime } from "../../test-utils.js";
 
 type PackageFiles = Record<string, string | Uint8Array>;
 
