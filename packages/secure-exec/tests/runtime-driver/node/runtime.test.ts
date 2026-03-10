@@ -3,9 +3,9 @@ import {
 	NodeRuntime,
 	createNodeDriver,
 	createNodeRuntimeDriverFactory,
-} from "../../src/index.js";
-import type { NodeRuntimeOptions } from "../../src/index.js";
-import type { NodeRuntimeDriverFactory } from "../../src/types.js";
+} from "../../../src/index.js";
+import type { NodeRuntimeOptions } from "../../../src/index.js";
+import type { NodeRuntimeDriverFactory } from "../../../src/types.js";
 
 type RuntimeOptions = Omit<NodeRuntimeOptions, "systemDriver" | "runtimeDriverFactory">;
 

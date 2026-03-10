@@ -15,6 +15,7 @@ import {
 import type {
 	ExecOptions,
 	ExecResult,
+	PythonRunOptions,
 	PythonRunResult,
 	StdioHook,
 } from "../shared/api-types.js";
@@ -31,11 +32,6 @@ const PYTHON_PACKAGE_UNSUPPORTED_ERROR =
 const PACKAGE_INSTALL_PATHWAYS_PATTERN =
 	/\b(micropip|loadPackagesFromImports|loadPackage)\b/;
 const MAX_SERIALIZED_VALUE_BYTES = 4 * 1024 * 1024;
-
-type PythonRunOptions = {
-	filePath?: string;
-	globals?: string[];
-};
 
 type WorkerRequestType = "init" | "exec" | "run";
 
@@ -235,9 +231,6 @@ async function ensurePyodide(payload) {
 		read_text_file: async (path) => callHost("fsReadTextFile", { path }),
 		fetch: async (url, options) =>
 			callHost("networkFetch", { url, options: options || {} }),
-		install_package: () => {
-			throw new Error(payload?.packageInstallError || "package install unsupported");
-		},
 	});
 
 	return pyodide;
@@ -246,7 +239,7 @@ async function ensurePyodide(payload) {
 async function applyExecOverrides(py, options) {
 	if (!options) {
 		py.setStdin();
-		return;
+		return async () => {};
 	}
 	if (typeof options.stdin === "string") {
 		const lines = options.stdin.split(/\r?\n/);
@@ -266,30 +259,63 @@ async function applyExecOverrides(py, options) {
 		py.setStdin();
 	}
 
-	if (options.env && typeof options.env === "object") {
-		py.globals.set("__secure_exec_env_overrides__", options.env);
-		try {
-			await py.runPythonAsync(
-				"import os\nfor _k, _v in __secure_exec_env_overrides__.items():\n    os.environ[str(_k)] = str(_v)",
-			);
-		} finally {
+	const cleanup = [];
+	const runCleanup = async () => {
+		for (let index = cleanup.length - 1; index >= 0; index -= 1) {
 			try {
-				py.globals.delete("__secure_exec_env_overrides__");
+				await cleanup[index]();
 			} catch {}
 		}
-	}
+	};
 
-	if (typeof options.cwd === "string") {
-		py.globals.set("__secure_exec_cwd_override__", options.cwd);
-		try {
-			await py.runPythonAsync(
-				"import os\nos.chdir(str(__secure_exec_cwd_override__))",
+	try {
+		if (options.env && typeof options.env === "object") {
+			py.globals.set(
+				"__secure_exec_env_overrides_json__",
+				JSON.stringify(options.env),
 			);
-		} finally {
 			try {
-				py.globals.delete("__secure_exec_cwd_override__");
-			} catch {}
+				await py.runPythonAsync(
+					"import json\nimport os\n__secure_exec_env_restore__ = {}\nfor _k, _v in json.loads(__secure_exec_env_overrides_json__).items():\n    _key = str(_k)\n    __secure_exec_env_restore__[_key] = os.environ.get(_key)\n    os.environ[_key] = str(_v)",
+				);
+				cleanup.push(async () => {
+					try {
+						await py.runPythonAsync(
+							"import os\nfor _k, _v in __secure_exec_env_restore__.items():\n    if _v is None:\n        os.environ.pop(_k, None)\n    else:\n        os.environ[_k] = str(_v)\ntry:\n    del __secure_exec_env_restore__\nexcept NameError:\n    pass",
+						);
+					} catch {}
+				});
+			} finally {
+				try {
+					py.globals.delete("__secure_exec_env_overrides_json__");
+				} catch {}
+			}
 		}
+
+		if (typeof options.cwd === "string") {
+			py.globals.set("__secure_exec_cwd_override__", options.cwd);
+			try {
+				await py.runPythonAsync(
+					"import os\n__secure_exec_previous_cwd__ = os.getcwd()\nos.chdir(str(__secure_exec_cwd_override__))",
+				);
+				cleanup.push(async () => {
+					try {
+						await py.runPythonAsync(
+							"import os\nos.chdir(__secure_exec_previous_cwd__)\ntry:\n    del __secure_exec_previous_cwd__\nexcept NameError:\n    pass",
+						);
+					} catch {}
+				});
+			} finally {
+				try {
+					py.globals.delete("__secure_exec_cwd_override__");
+				} catch {}
+			}
+		}
+
+		return runCleanup;
+	} catch (error) {
+		await runCleanup();
+		throw error;
 	}
 }
 
@@ -363,33 +389,41 @@ parentPort.on("message", async (message) => {
 		}
 
 		const payload = message.payload || {};
-		await applyExecOverrides(py, payload.options);
+		const cleanup = await applyExecOverrides(py, payload.options);
+		try {
+			if (message.type === "exec") {
+				await py.runPythonAsync(payload.code, {
+					filename: payload.options?.filePath || "<exec>",
+				});
+				parentPort.postMessage({
+					type: "response",
+					id: message.id,
+					ok: true,
+					result: { code: 0 },
+				});
+				return;
+			}
 
-		if (message.type === "exec") {
-			await py.runPythonAsync(payload.code, {
-				filename: payload.options?.filePath || "<exec>",
+			const rawValue = await py.runPythonAsync(payload.code, {
+				filename: payload.options?.filePath || "<run>",
 			});
-			parentPort.postMessage({ type: "response", id: message.id, ok: true, result: { code: 0 } });
-			return;
+			const serializedValue = serializeValue(rawValue);
+			if (rawValue && typeof rawValue.destroy === "function") {
+				try {
+					rawValue.destroy();
+				} catch {}
+			}
+			const globals = collectGlobals(py, payload.options?.globals);
+			const result = {
+				code: 0,
+				value: serializedValue,
+				globals,
+			};
+			assertSerializedSize(result, payload.maxSerializedBytes || 4194304);
+			parentPort.postMessage({ type: "response", id: message.id, ok: true, result });
+		} finally {
+			await cleanup();
 		}
-
-		const rawValue = await py.runPythonAsync(payload.code, {
-			filename: payload.options?.filePath || "<run>",
-		});
-		const serializedValue = serializeValue(rawValue);
-		if (rawValue && typeof rawValue.destroy === "function") {
-			try {
-				rawValue.destroy();
-			} catch {}
-		}
-		const globals = collectGlobals(py, payload.options?.globals);
-		const result = {
-			code: 0,
-			value: serializedValue,
-			globals,
-		};
-		assertSerializedSize(result, payload.maxSerializedBytes || 4194304);
-		parentPort.postMessage({ type: "response", id: message.id, ok: true, result });
 	} catch (error) {
 		parentPort.postMessage({
 			type: "response",
@@ -650,15 +684,27 @@ export class PyodideRuntimeDriver implements PythonRuntimeDriver {
 		try {
 			ensurePackageInstallPathwaysAreDisabled(code);
 			await this.ensureWorkerReady();
-			const timeoutMs = this.defaultCpuTimeLimitMs;
-			const hook = this.defaultOnStdio;
+			const timeoutMs = normalizeCpuTimeLimitMs(
+				options.cpuTimeLimitMs ?? this.defaultCpuTimeLimitMs,
+			);
+			const hook = options.onStdio ?? this.defaultOnStdio;
+			const envOverrides =
+				options.env === undefined
+					? undefined
+					: filterEnv(options.env, this.options.system.permissions);
 			const result = await this.runWithTimeout(
 				() =>
 					this.callWorker<PythonRunResult<T>>(
 						"run",
 						{
 							code,
-							options,
+							options: {
+								filePath: options.filePath,
+								globals: options.globals,
+								cwd: options.cwd,
+								env: envOverrides,
+								stdin: options.stdin,
+							},
 							maxSerializedBytes: MAX_SERIALIZED_VALUE_BYTES,
 						},
 						hook,
@@ -690,6 +736,10 @@ export class PyodideRuntimeDriver implements PythonRuntimeDriver {
 				options?.cpuTimeLimitMs ?? this.defaultCpuTimeLimitMs,
 			);
 			const hook = options?.onStdio ?? this.defaultOnStdio;
+			const envOverrides =
+				options?.env === undefined
+					? undefined
+					: filterEnv(options.env, this.options.system.permissions);
 			const result = await this.runWithTimeout(
 				() =>
 					this.callWorker<ExecResult>(
@@ -698,7 +748,7 @@ export class PyodideRuntimeDriver implements PythonRuntimeDriver {
 							code,
 							options: {
 								cwd: options?.cwd,
-								env: options?.env,
+								env: envOverrides,
 								stdin: options?.stdin,
 								filePath: options?.filePath,
 							},

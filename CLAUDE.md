@@ -37,6 +37,13 @@
 - the matrix runs each fixture in host Node and secure-exec and compares normalized `code`, `stdout`, and `stderr`
 - no known-mismatch classification is allowed; parity mismatches stay failing until runtime/bridge behavior is fixed
 
+## Test Structure
+
+- `tests/test-suite/{node,python}.test.ts` are integration suite drivers; `tests/test-suite/{node,python}/` hold the shared suite definitions
+- test suites test generic runtime functionality with any pluggable SystemDriver (exec, run, stdio, env, filesystem, network, timeouts, log buffering); prefer adding tests here because they run against all environments (node, browser, python)
+- `tests/runtime-driver/` tests behavior specific to a single runtime driver (e.g. Node-only `memoryLimit`/`timingMitigation`, Python-only warm state or `secure_exec` hooks) that cannot be expressed through the shared suite context
+- within `test-suite/{node,python}/`, files are named by domain (e.g. `runtime.ts`, `network.ts`)
+
 ## Comment Pattern
 
 Follow the style in `packages/secure-exec/src/index.ts`.

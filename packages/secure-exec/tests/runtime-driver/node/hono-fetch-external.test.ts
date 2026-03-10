@@ -10,13 +10,13 @@ import {
 	allowAllFs,
 	NodeFileSystem,
 	NodeRuntime,
-} from "../src/index.js";
-import { createTestNodeRuntime } from "./test-utils.js";
+} from "../../../src/index.js";
+import { createTestNodeRuntime } from "../../test-utils.js";
 
 const execFileAsync = promisify(execFile);
 const TEST_TIMEOUT_MS = 55_000;
 const COMMAND_TIMEOUT_MS = 45_000;
-const TESTS_ROOT = path.dirname(fileURLToPath(import.meta.url));
+const TESTS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const FIXTURE_ROOT = path.join(TESTS_ROOT, "fixtures", "hono-fetch-external");
 
 const allowFsNetworkEnv = {

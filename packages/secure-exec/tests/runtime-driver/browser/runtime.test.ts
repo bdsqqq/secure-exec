@@ -4,8 +4,8 @@ import {
 	allowAllNetwork,
 	createBrowserDriver,
 	createBrowserRuntimeDriverFactory,
-} from "../../src/browser-runtime.js";
-import type { NodeRuntimeOptions } from "../../src/browser-runtime.js";
+} from "../../../src/browser-runtime.js";
+import type { NodeRuntimeOptions } from "../../../src/browser-runtime.js";
 
 const IS_BROWSER_ENV =
 	typeof window !== "undefined" && typeof Worker !== "undefined";

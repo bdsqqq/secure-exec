@@ -64,6 +64,10 @@
 
 ## Security & Hardening
 
+- [x] Filter Python `exec(..., { env })` overrides through `permissions.env`.
+  - Fix: `PyodideRuntimeDriver.exec()` now applies the shared `filterEnv(...)` gate before env overrides reach the worker, and runtime-driver tests cover both denied-by-default and explicitly-allowed cases.
+  - `packages/secure-exec/src/python/driver.ts`, `packages/secure-exec/tests/runtime-driver/python.test.ts`
+
 - [x] Bridge `crypto.getRandomValues` / `randomUUID` to host `node:crypto` instead of `Math.random()`.
   - Fix: runtime now wires host `node:crypto` references from `packages/secure-exec/src/index.ts` into the isolate and uses them in `packages/secure-exec/src/bridge/process.ts`.
   - Fail-closed contract: bridge throws deterministic `crypto.getRandomValues is not supported in sandbox` / `crypto.randomUUID is not supported in sandbox` errors when host entropy hooks are unavailable.

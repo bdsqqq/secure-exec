@@ -5,14 +5,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { NodeRuntime, allowAllFs, createNodeDriver } from "../src/index.js";
-import { createTestNodeRuntime } from "./test-utils.js";
+import { NodeRuntime, allowAllFs, createNodeDriver } from "../../../src/index.js";
+import { createTestNodeRuntime } from "../../test-utils.js";
 
 const execFileAsync = promisify(execFile);
 const TEST_TIMEOUT_MS = 55_000;
 const COMMAND_TIMEOUT_MS = 45_000;
 
-const TESTS_ROOT = path.dirname(fileURLToPath(import.meta.url));
+const TESTS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const FIXTURE_SOURCE = path.join(TESTS_ROOT, "projects", "module-access-pass");
 
 type CapturedConsoleEvent = {

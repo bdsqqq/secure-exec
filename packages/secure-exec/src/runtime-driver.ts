@@ -3,6 +3,7 @@ import type {
 	ExecOptions,
 	ExecResult,
 	OSConfig,
+	PythonRunOptions,
 	PythonRunResult,
 	ProcessConfig,
 	RunResult,
@@ -51,13 +52,7 @@ export interface NodeRuntimeDriver extends SharedRuntimeDriver {
 }
 
 export interface PythonRuntimeDriver extends SharedRuntimeDriver {
-	run<T = unknown>(
-		code: string,
-		options?: {
-			filePath?: string;
-			globals?: string[];
-		},
-	): Promise<PythonRunResult<T>>;
+	run<T = unknown>(code: string, options?: PythonRunOptions): Promise<PythonRunResult<T>>;
 }
 
 export interface NodeRuntimeDriverFactory {

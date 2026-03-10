@@ -1,10 +1,14 @@
 import { describe } from "vitest";
-import { allowAll } from "../src/browser-runtime.js";
+import { allowAll } from "../../src/browser-runtime.js";
 import {
-	runExecParitySuite,
-	runPythonExecSuite,
+	runPythonNetworkSuite,
+} from "./python/network.js";
+import {
+	runPythonParitySuite,
+	runPythonRuntimeSuite,
+	type PythonCreateRuntimeOptions,
 	type PythonSuiteContext,
-} from "./test-suite/python.js";
+} from "./python/runtime.js";
 
 type DisposableRuntime = {
 	dispose(): void;
@@ -31,35 +35,41 @@ function createPythonSuiteContext(): PythonSuiteContext {
 				}
 			}
 		},
-		async createNodeRuntime(options = {}) {
+		async createNodeRuntime(options: PythonCreateRuntimeOptions = {}) {
+			const { systemDriver, ...runtimeOptions } = options;
 			const {
 				NodeRuntime: NodeRuntimeClass,
 				createNodeDriver,
 				createNodeRuntimeDriverFactory,
-			} = await import("../src/index.js");
+			} = await import("../../src/index.js");
 			const runtime = new NodeRuntimeClass({
-				...options,
-				systemDriver: createNodeDriver({
-					useDefaultNetwork: true,
-					permissions: allowAll,
-				}),
+				...runtimeOptions,
+				systemDriver:
+					systemDriver ??
+					createNodeDriver({
+						useDefaultNetwork: true,
+						permissions: allowAll,
+					}),
 				runtimeDriverFactory: createNodeRuntimeDriverFactory(),
 			});
 			runtimes.add(runtime);
 			return runtime;
 		},
-		async createPythonRuntime(options = {}) {
+		async createPythonRuntime(options: PythonCreateRuntimeOptions = {}) {
+			const { systemDriver, ...runtimeOptions } = options;
 			const {
 				PythonRuntime: PythonRuntimeClass,
 				createNodeDriver,
 				createPyodideRuntimeDriverFactory,
-			} = await import("../src/index.js");
+			} = await import("../../src/index.js");
 			const runtime = new PythonRuntimeClass({
-				...options,
-				systemDriver: createNodeDriver({
-					useDefaultNetwork: true,
-					permissions: allowAll,
-				}),
+				...runtimeOptions,
+				systemDriver:
+					systemDriver ??
+					createNodeDriver({
+						useDefaultNetwork: true,
+						permissions: allowAll,
+					}),
 				runtimeDriverFactory: createPyodideRuntimeDriverFactory(),
 			});
 			runtimes.add(runtime);
@@ -70,6 +80,7 @@ function createPythonSuiteContext(): PythonSuiteContext {
 
 describe.skipIf(!isNodeTargetAvailable())("python runtime integration suite", () => {
 	const context = createPythonSuiteContext();
-	runExecParitySuite(context);
-	runPythonExecSuite(context);
+	runPythonParitySuite(context);
+	runPythonRuntimeSuite(context);
+	runPythonNetworkSuite(context);
 });

@@ -4,26 +4,26 @@ import {
 	allowAllNetwork,
 	createBrowserDriver,
 	createBrowserRuntimeDriverFactory,
-} from "../src/browser-runtime.js";
-import type { NodeRuntimeOptions } from "../src/browser-runtime.js";
-import { runRuntimeNetworkSuite } from "./test-suite/network.js";
+} from "../../src/browser-runtime.js";
+import type { NodeRuntimeOptions } from "../../src/browser-runtime.js";
+import { runNodeNetworkSuite } from "./node/network.js";
 import {
-	runRuntimeSuite,
-	type RuntimeTarget,
-	type SharedSuiteContext,
-} from "./test-suite/runtime.js";
+	runNodeSuite,
+	type NodeRuntimeTarget,
+	type NodeSuiteContext,
+} from "./node/runtime.js";
 
 type RuntimeOptions = Omit<NodeRuntimeOptions, "systemDriver" | "runtimeDriverFactory">;
-type SharedSuite = (context: SharedSuiteContext) => void;
+type NodeSharedSuite = (context: NodeSuiteContext) => void;
 
 type DisposableRuntime = {
 	dispose(): void;
 	terminate(): Promise<void>;
 };
 
-const RUNTIME_TARGETS: RuntimeTarget[] = ["node", "browser"];
-const SHARED_SUITES: SharedSuite[] = [runRuntimeSuite, runRuntimeNetworkSuite];
-const NODE_ENTRYPOINT = "../src/index.js";
+const RUNTIME_TARGETS: NodeRuntimeTarget[] = ["node", "browser"];
+const NODE_SUITES: NodeSharedSuite[] = [runNodeSuite, runNodeNetworkSuite];
+const NODE_ENTRYPOINT = "../../src/index.js";
 
 function isNodeTargetAvailable(): boolean {
 	return typeof process !== "undefined" && Boolean(process.versions?.node);
@@ -33,7 +33,7 @@ function isBrowserTargetAvailable(): boolean {
 	return typeof window !== "undefined" && typeof Worker !== "undefined";
 }
 
-function isTargetAvailable(target: RuntimeTarget): boolean {
+function isTargetAvailable(target: NodeRuntimeTarget): boolean {
 	if (target === "node") {
 		return isNodeTargetAvailable();
 	}
@@ -44,7 +44,7 @@ async function importNodeEntrypoint() {
 	return import(/* @vite-ignore */ NODE_ENTRYPOINT);
 }
 
-function createSuiteContext(target: RuntimeTarget): SharedSuiteContext {
+function createSuiteContext(target: NodeRuntimeTarget): NodeSuiteContext {
 	const runtimes = new Set<DisposableRuntime>();
 
 	return {
@@ -77,7 +77,7 @@ function createSuiteContext(target: RuntimeTarget): SharedSuiteContext {
 				...options,
 				systemDriver,
 				runtimeDriverFactory: createBrowserRuntimeDriverFactory({
-					workerUrl: new URL("../src/browser/worker.ts", import.meta.url),
+					workerUrl: new URL("../../src/browser/worker.ts", import.meta.url),
 				}),
 			});
 			runtimes.add(runtime);
@@ -98,7 +98,7 @@ function createSuiteContext(target: RuntimeTarget): SharedSuiteContext {
 	};
 }
 
-describe("test suite", () => {
+describe("node runtime integration suite", () => {
 	for (const target of RUNTIME_TARGETS) {
 		const label = `runtime-target:${target}`;
 		if (!isTargetAvailable(target)) {
@@ -108,7 +108,7 @@ describe("test suite", () => {
 
 		const context = createSuiteContext(target);
 		describe(label, () => {
-			for (const runSuite of SHARED_SUITES) {
+			for (const runSuite of NODE_SUITES) {
 				runSuite(context);
 			}
 		});
