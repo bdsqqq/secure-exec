@@ -428,8 +428,8 @@
         "Tests pass"
       ],
       "priority": 24,
-      "passes": false,
-      "notes": "writeStdin exists on ManagedProcess and routes to DriverProcess.writeStdin. This path has zero test coverage. It is critical for pipes (US-022) and interactive processes. Without working stdin, cross-runtime pipes cannot function."
+      "passes": true,
+      "notes": "Implemented writeStdin/closeStdin for all three drivers. Kernel test verifies MockRuntimeDriver receives bytes. Node driver buffers stdin data and passes to exec() as stdin option. WasmVM driver uses kernel pipe (pipe+dup2+fdWrite) routed to worker via stdinReader. All tests use unconditional assertions."
     },
     {
       "id": "US-025",

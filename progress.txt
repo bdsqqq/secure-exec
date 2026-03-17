@@ -45,6 +45,9 @@ Started: 2026-03-16
 - Rust FFI proc_spawn takes argv_ptr+len, envp_ptr+len, stdin/stdout/stderr FDs, cwd_ptr+len, ret_pid (10 params)
 - fd_pipe host import packs read+write FDs: low 16 bits = readFd, high 16 bits = writeFd in intResult
 - WasmVM stdout writer is redirected through fdWrite RPC when stdout is piped (init.stdoutFd !== undefined)
+- WasmVM stdin pipe: kernel.pipe(pid) + fdDup2(pid, readFd, 0) + polyfill.setStdinReader() for kernel-backed stdin streaming
+- Node driver stdin: buffer writeStdin data, closeStdin resolves Promise passed to exec({ stdin }); auto-resolves via queueMicrotask for no-stdin processes
+- Bridge process.stdin does NOT emit 'end' for empty stdin ("") — pass undefined to exec() for no-stdin case
 
 ---
 
@@ -373,4 +376,31 @@ Started: 2026-03-16
   - wrapCommandExecutor deny-by-default: if no permissions.childProcess callback exists, ALL child_process spawns throw EACCES — always pass allowAllChildProcess when child_process routing through kernel is intended
   - Bridge child_process.execSync sends command="bash" args=["-c", "actual command"] — test mocks must handle this bash wrapper pattern
   - WasmVM real execution tests need describe.skipIf(!hasWasmBinary) with existsSync check on multicall.wasm path
+---
+
+## 2026-03-16 - US-024
+- Implemented writeStdin/closeStdin for all three runtime drivers and added comprehensive tests
+- Kernel tests (4 new):
+  - MockRuntimeDriver now captures writeStdin data via stdinCapture config + onCloseStdin callback
+  - Tests: writeStdin delivers bytes, string-to-Uint8Array conversion, closeStdin callback, multiple chunks in order
+- Node driver implementation:
+  - writeStdin buffers data in Uint8Array chunks
+  - closeStdin resolves a Promise with concatenated data decoded as string (or undefined if no writes)
+  - _executeAsync awaits stdinPromise before calling exec(), passes as `stdin` option
+  - queueMicrotask auto-resolves with undefined for processes that don't receive stdin
+  - Tests: writeStdin delivers data (event-based read), closeStdin without write (process.stdin.read() returns null → 0 bytes)
+- WasmVM driver implementation:
+  - spawn() creates kernel pipe via kernel.pipe(pid), dup2 read end onto FD 0, keeps write FD
+  - writeStdin → kernel.fdWrite(pid, writeFd, data), closeStdin → kernel.fdClose(pid, writeFd)
+  - kernel-worker.ts sets polyfill.setStdinReader() when stdinFd is set — routes reads through fdRead RPC → kernel pipe
+  - Test: writeStdin to cat (skipped when WASM binary not built)
+- Files changed: packages/kernel/test/helpers.ts, packages/kernel/test/kernel-integration.test.ts, packages/runtime/node/src/driver.ts, packages/runtime/node/test/driver.test.ts, packages/runtime/wasmvm/src/driver.ts, packages/runtime/wasmvm/src/kernel-worker.ts, packages/runtime/wasmvm/test/driver.test.ts
+- 16 kernel tests pass, 22 Node driver tests pass, 23 WasmVM driver tests pass (5 skipped), 441 total tests pass, typecheck passes
+- **Learnings for future iterations:**
+  - Bridge process.stdin does NOT emit 'end' event when stdin data is empty string "" — _emitStdinData() returns early on !getStdinData()
+  - For "no stdin" case, pass undefined (not empty string) to exec() — undefined skips setStdinData entirely
+  - WasmVM polyfill reads stdin via _stdinReader when set (streaming mode), otherwise from _stdinData (buffered mode)
+  - Kernel pipe(pid) + fdDup2(pid, readFd, 0) + fdClose(pid, readFd) is the pattern for wiring stdin to a pipe
+  - _isFdPiped() in WasmVM driver correctly detects piped FD 0 after dup2, telling worker to use stdinReader
+  - Node driver's stdinPromise auto-resolves via queueMicrotask — writeStdin must be called synchronously after spawn() returns
 ---

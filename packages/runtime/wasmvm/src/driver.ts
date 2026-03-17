@@ -127,15 +127,21 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
       };
     });
 
+    // Set up stdin pipe so writeStdin/closeStdin deliver data through kernel FD 0
+    const stdinPipe = kernel.pipe(ctx.pid);
+    kernel.fdDup2(ctx.pid, stdinPipe.readFd, 0);
+    kernel.fdClose(ctx.pid, stdinPipe.readFd);
+    const stdinWriteFd = stdinPipe.writeFd;
+
     const proc: DriverProcess = {
       onStdout: null,
       onStderr: null,
       onExit: null,
-      writeStdin: (_data: Uint8Array) => {
-        // TODO(US-020): pipe stdin to worker via ring buffer
+      writeStdin: (data: Uint8Array) => {
+        kernel.fdWrite(ctx.pid, stdinWriteFd, data);
       },
       closeStdin: () => {
-        // TODO(US-020): signal EOF to worker stdin
+        try { kernel.fdClose(ctx.pid, stdinWriteFd); } catch { /* already closed */ }
       },
       kill: (_signal: number) => {
         const worker = this._activeWorkers.get(ctx.pid);

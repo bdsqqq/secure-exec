@@ -182,6 +182,78 @@ describe("kernel + MockRuntimeDriver integration", () => {
 	});
 
 	// -----------------------------------------------------------------------
+	// stdin streaming
+	// -----------------------------------------------------------------------
+
+	describe("stdin streaming", () => {
+		it("writeStdin delivers bytes to MockRuntimeDriver DriverProcess", async () => {
+			const stdinCapture: Uint8Array[] = [];
+			const driver = new MockRuntimeDriver(["mock-cmd"], {
+				"mock-cmd": { exitCode: 0, stdinCapture },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const proc = kernel.spawn("mock-cmd", []);
+			proc.writeStdin(new TextEncoder().encode("test data"));
+
+			const received = new TextDecoder().decode(stdinCapture[0]);
+			expect(received).toBe("test data");
+
+			await proc.wait();
+		});
+
+		it("writeStdin converts string to Uint8Array", async () => {
+			const stdinCapture: Uint8Array[] = [];
+			const driver = new MockRuntimeDriver(["mock-cmd"], {
+				"mock-cmd": { exitCode: 0, stdinCapture },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const proc = kernel.spawn("mock-cmd", []);
+			proc.writeStdin("string data");
+
+			expect(stdinCapture.length).toBe(1);
+			expect(stdinCapture[0]).toBeInstanceOf(Uint8Array);
+			expect(new TextDecoder().decode(stdinCapture[0])).toBe("string data");
+
+			await proc.wait();
+		});
+
+		it("closeStdin triggers driver closeStdin callback", async () => {
+			let closeCalled = false;
+			const driver = new MockRuntimeDriver(["mock-cmd"], {
+				"mock-cmd": { exitCode: 0, onCloseStdin: () => { closeCalled = true; } },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const proc = kernel.spawn("mock-cmd", []);
+			proc.closeStdin();
+			expect(closeCalled).toBe(true);
+
+			await proc.wait();
+		});
+
+		it("multiple writeStdin calls accumulate in order", async () => {
+			const stdinCapture: Uint8Array[] = [];
+			const driver = new MockRuntimeDriver(["mock-cmd"], {
+				"mock-cmd": { exitCode: 0, stdinCapture },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const proc = kernel.spawn("mock-cmd", []);
+			proc.writeStdin(new TextEncoder().encode("chunk1"));
+			proc.writeStdin(new TextEncoder().encode("chunk2"));
+			proc.writeStdin(new TextEncoder().encode("chunk3"));
+
+			expect(stdinCapture.length).toBe(3);
+			const texts = stdinCapture.map((c) => new TextDecoder().decode(c));
+			expect(texts).toEqual(["chunk1", "chunk2", "chunk3"]);
+
+			await proc.wait();
+		});
+	});
+
+	// -----------------------------------------------------------------------
 	// Filesystem convenience wrappers
 	// -----------------------------------------------------------------------
 

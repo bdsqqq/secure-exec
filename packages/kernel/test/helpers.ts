@@ -213,6 +213,10 @@ export interface MockCommandConfig {
 	stderr?: string | Uint8Array;
 	/** If true, emit stdout/stderr synchronously during spawn (before callbacks are attached) */
 	emitDuringSpawn?: boolean;
+	/** If provided, writeStdin pushes received Uint8Array chunks here */
+	stdinCapture?: Uint8Array[];
+	/** If provided, called on closeStdin */
+	onCloseStdin?: () => void;
 }
 
 /**
@@ -251,8 +255,12 @@ export class MockRuntimeDriver implements RuntimeDriver {
 		const exitPromise = new Promise<number>((r) => { exitResolve = r; });
 
 		const proc: DriverProcess = {
-			writeStdin(_data) {},
-			closeStdin() {},
+			writeStdin(data) {
+				if (config.stdinCapture) config.stdinCapture.push(data);
+			},
+			closeStdin() {
+				config.onCloseStdin?.();
+			},
 			kill(_signal) { exitResolve!(128 + _signal); },
 			wait() { return exitPromise; },
 			onStdout: null,

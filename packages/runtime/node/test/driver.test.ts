@@ -377,6 +377,58 @@ describe('Node RuntimeDriver', () => {
     });
   });
 
+  describe('stdin streaming', () => {
+    let kernel: Kernel;
+
+    afterEach(async () => {
+      await kernel?.dispose();
+    });
+
+    it('writeStdin delivers data to Node process', async () => {
+      const vfs = new SimpleVFS();
+      kernel = createKernel({ filesystem: vfs as any });
+      await kernel.mount(createNodeRuntime());
+
+      const chunks: Uint8Array[] = [];
+      const proc = kernel.spawn('node', ['-e', `
+        let d = '';
+        process.stdin.on('data', c => d += c);
+        process.stdin.on('end', () => console.log(d.trim()));
+      `], {
+        onStdout: (data) => chunks.push(data),
+      });
+
+      proc.writeStdin(new TextEncoder().encode('hello from stdin'));
+      proc.closeStdin();
+
+      const code = await proc.wait();
+      const output = chunks.map(c => new TextDecoder().decode(c)).join('');
+      expect(code).toBe(0);
+      expect(output).toContain('hello from stdin');
+    });
+
+    it('closeStdin without write triggers empty EOF', async () => {
+      const vfs = new SimpleVFS();
+      kernel = createKernel({ filesystem: vfs as any });
+      await kernel.mount(createNodeRuntime());
+
+      const chunks: Uint8Array[] = [];
+      const proc = kernel.spawn('node', ['-e', `
+        const data = process.stdin.read();
+        console.log(data === null ? 0 : data.length);
+      `], {
+        onStdout: (data) => chunks.push(data),
+      });
+
+      proc.closeStdin();
+
+      const code = await proc.wait();
+      const output = chunks.map(c => new TextDecoder().decode(c)).join('');
+      expect(code).toBe(0);
+      expect(output).toContain('0');
+    });
+  });
+
   describe('exploit/abuse paths', () => {
     let kernel: Kernel;
 

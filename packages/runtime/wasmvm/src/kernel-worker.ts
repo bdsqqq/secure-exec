@@ -379,6 +379,17 @@ async function main(): Promise<void> {
     env: init.env,
   });
 
+  // Route stdin through kernel pipe when piped
+  if (init.stdinFd !== undefined) {
+    polyfill.setStdinReader((buf, offset, length) => {
+      const res = rpcCall('fdRead', { fd: 0, length });
+      if (res.errno !== 0 || res.data.length === 0) return 0; // EOF or error
+      const n = Math.min(res.data.length, length);
+      buf.set(res.data.subarray(0, n), offset);
+      return n;
+    });
+  }
+
   // Stream stdout/stderr — route through kernel pipe when FD is overridden,
   // otherwise stream to main thread via postMessage
   if (init.stdoutFd !== undefined && init.stdoutFd !== 1) {

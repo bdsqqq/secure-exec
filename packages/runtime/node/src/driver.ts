@@ -243,15 +243,42 @@ class NodeRuntimeDriver implements RuntimeDriver {
       };
     });
 
+    // Stdin buffering — writeStdin collects data, closeStdin resolves the promise
+    const stdinChunks: Uint8Array[] = [];
+    let stdinResolve: ((data: string | undefined) => void) | null = null;
+    const stdinPromise = new Promise<string | undefined>((resolve) => {
+      stdinResolve = resolve;
+      // Auto-resolve on next microtask if nobody calls writeStdin
+      queueMicrotask(() => {
+        if (stdinChunks.length === 0 && stdinResolve) {
+          stdinResolve = null;
+          resolve(undefined);
+        }
+      });
+    });
+
     const proc: DriverProcess = {
       onStdout: null,
       onStderr: null,
       onExit: null,
-      writeStdin: (_data: Uint8Array) => {
-        // TODO: pipe stdin to isolate via bridge
+      writeStdin: (data: Uint8Array) => {
+        stdinChunks.push(data);
       },
       closeStdin: () => {
-        // TODO: signal EOF to isolate stdin
+        if (stdinResolve) {
+          if (stdinChunks.length === 0) {
+            // No data written — pass undefined (no stdin), not empty string
+            stdinResolve(undefined);
+          } else {
+            // Concatenate buffered chunks and decode to string for exec()
+            const totalLen = stdinChunks.reduce((sum, c) => sum + c.length, 0);
+            const merged = new Uint8Array(totalLen);
+            let offset = 0;
+            for (const chunk of stdinChunks) { merged.set(chunk, offset); offset += chunk.length; }
+            stdinResolve(new TextDecoder().decode(merged));
+          }
+          stdinResolve = null;
+        }
       },
       kill: (_signal: number) => {
         const driver = this._activeDrivers.get(ctx.pid);
@@ -264,7 +291,7 @@ class NodeRuntimeDriver implements RuntimeDriver {
     };
 
     // Launch async — spawn() returns synchronously per RuntimeDriver contract
-    this._executeAsync(command, args, ctx, proc, resolveExit);
+    this._executeAsync(command, args, ctx, proc, resolveExit, stdinPromise);
 
     return proc;
   }
@@ -287,12 +314,16 @@ class NodeRuntimeDriver implements RuntimeDriver {
     ctx: ProcessContext,
     proc: DriverProcess,
     resolveExit: (code: number) => void,
+    stdinPromise: Promise<string | undefined>,
   ): Promise<void> {
     const kernel = this._kernel!;
 
     try {
       // Resolve the code to execute
       const { code, filePath } = await this._resolveEntry(command, args, kernel);
+
+      // Wait for stdin data (resolves immediately if no writeStdin called)
+      const stdinData = await stdinPromise;
 
       // Build kernel-backed system driver
       const commandExecutor = createKernelCommandExecutor(kernel, ctx.pid);
@@ -316,11 +347,12 @@ class NodeRuntimeDriver implements RuntimeDriver {
       });
       this._activeDrivers.set(ctx.pid, executionDriver);
 
-      // Execute with stdout/stderr capture
+      // Execute with stdout/stderr capture and stdin data
       const result = await executionDriver.exec(code, {
         filePath,
         env: ctx.env,
         cwd: ctx.cwd,
+        stdin: stdinData,
         onStdio: (event) => {
           const data = new TextEncoder().encode(event.message + '\n');
           if (event.channel === 'stdout') {
