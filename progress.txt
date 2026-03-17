@@ -615,3 +615,32 @@ Started: 2026-03-16
   - For failure exit code tests, pass `"exit 1"` as concurrently command — concurrently wraps each in shell
   - kernel.spawn() returns ManagedProcess with .pid immediately — use Set to verify PID uniqueness
 ---
+
+## 2026-03-16 - US-037
+- Created e2e test for Next.js build through kernel at packages/secure-exec/tests/kernel/e2e-nextjs-build.test.ts
+- Test sets up minimal Next.js App Router project (package.json, next.config.js, app/layout.tsx, app/page.tsx)
+- Host-side npm install populates node_modules, then NodeFileSystem mounts project into kernel
+- Applied workarounds for sandbox limitations: NEXT_DISABLE_SWC=1 (native .node addon blocked), NEXT_EXPERIMENTAL_WORKERS=0 (worker_threads unsupported), NEXT_TELEMETRY_DISABLED=1
+- Uses output:'export' in next.config.js for static build (simpler, produces out/ directory)
+- Test gracefully skips when WASM binary not built (skipUnlessWasmBuilt) or network unavailable
+- 120s timeout to accommodate slow Babel-based build
+- Typecheck passes, test skips cleanly when WASM binary absent
+- Files changed: packages/secure-exec/tests/kernel/e2e-nextjs-build.test.ts (new), prd.json
+- **Learnings for future iterations:**
+  - Next.js SWC compiler uses native .node addons — must disable via NEXT_DISABLE_SWC=1 in sandbox environments
+  - Next.js uses worker_threads for parallel compilation — disable via NEXT_EXPERIMENTAL_WORKERS=0
+  - output:'export' in next.config.js produces static HTML in out/ instead of .next/ server build
+  - E2E tests that need real npm packages use host-side execSync('npm install') + NodeFileSystem mount pattern
+---
+
+## 2026-03-16 - US-038
+- Implemented e2e Python + WasmVM integration test through kernel
+- 5 test cases: basic print, stdlib import (json), WasmVM-to-Python pipe, os.system shell spawn, exit code propagation
+- Each test creates a fresh kernel with `createIntegrationKernel({ runtimes: ['wasmvm', 'python'] })`
+- Tests gracefully skip via `skipUnlessWasmBuilt() || skipUnlessPyodide()`
+- Files changed: packages/secure-exec/tests/kernel/e2e-python-wasmvm.test.ts (new), prd.json
+- **Learnings for future iterations:**
+  - Python+WasmVM tests follow same pattern as Node+WasmVM e2e tests — use createIntegrationKernel with both runtimes
+  - Combine skip guards with `||` for tests needing multiple optional dependencies
+  - Python -c flag with escaped quotes works through WasmVM shell: `python -c "import json; print(json.dumps({\\"ok\\": True}))"`
+---

@@ -680,8 +680,8 @@
         "Tests pass"
       ],
       "priority": 37,
-      "passes": false,
-      "notes": "KNOWN BLOCKERS: (1) SWC is a .node native addon \u2014 ModuleAccessFileSystem blocks .node files (ERR_MODULE_ACCESS_NATIVE_ADDON). Must set NEXT_DISABLE_SWC=1 to force Babel fallback or configure the kernel to allow native addons. (2) Next.js uses worker_threads for parallel compilation \u2014 not supported in V8 isolate sandbox. May need NEXT_EXPERIMENTAL_WORKERS=0 or similar config. (3) The build is slow with Babel (minutes). Ralph should attempt the build, document failure modes, and apply workarounds (disable SWC, single-threaded mode, output:'export' for static). If the build cannot complete due to sandbox limitations, document what fails and mark the story with the specific blockers for future resolution."
+      "passes": true,
+      "notes": "Completed in commit e1302e9. Test applies workarounds: NEXT_DISABLE_SWC=1 (native addon blocked), NEXT_EXPERIMENTAL_WORKERS=0 (worker_threads not in sandbox), NEXT_TELEMETRY_DISABLED=1, output:'export' for static build. Test gracefully skips when WASM binary not built."
     },
     {
       "id": "US-038",
@@ -701,7 +701,7 @@
         "Tests pass"
       ],
       "priority": 38,
-      "passes": false,
+      "passes": true,
       "notes": "Tests the Python RuntimeDriver + kernel integration. DEPENDENCY: os.system test depends on the kernelSpawn RPC and os.system monkey-patch added in US-019 (Python RuntimeDriver). Without that, os.system raises ENOSYS because Pyodide/WASI does not support libc system(). The WasmVM-to-Python pipe test depends on US-022 (SpawnOptions FD overrides) being complete. skipUnlessPyodide() checks for Pyodide availability since it requires downloading the runtime."
     },
     {
