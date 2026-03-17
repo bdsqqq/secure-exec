@@ -31,6 +31,9 @@ import {
 	FILETYPE_REGULAR_FILE,
 	FILETYPE_DIRECTORY,
 	FILETYPE_PIPE,
+	SEEK_SET,
+	SEEK_CUR,
+	SEEK_END,
 } from "./types.js";
 
 export function createKernel(options: KernelOptions): Kernel {
@@ -367,13 +370,37 @@ class KernelImpl implements Kernel {
 					this.pipeManager.close(descId);
 				}
 			},
-			fdSeek: (pid, fd, offset, whence) => {
+			fdSeek: async (pid, fd, offset, whence) => {
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) throw new Error(`EBADF: bad file descriptor ${fd}`);
-				// Update cursor on the shared FileDescription
-				entry.description.cursor = offset;
-				return offset;
+
+				// Pipes are not seekable
+				if (this.pipeManager.isPipe(entry.description.id)) {
+					throw new Error("ESPIPE: illegal seek");
+				}
+
+				let newCursor: bigint;
+				switch (whence) {
+					case SEEK_SET:
+						newCursor = offset;
+						break;
+					case SEEK_CUR:
+						newCursor = entry.description.cursor + offset;
+						break;
+					case SEEK_END: {
+						const content = await this.vfs.readFile(entry.description.path);
+						newCursor = BigInt(content.length) + offset;
+						break;
+					}
+					default:
+						throw new Error(`EINVAL: invalid whence ${whence}`);
+				}
+
+				if (newCursor < 0n) throw new Error("EINVAL: negative seek position");
+
+				entry.description.cursor = newCursor;
+				return newCursor;
 			},
 			fdDup: (pid, fd) => {
 				return this.getTable(pid).dup(fd);

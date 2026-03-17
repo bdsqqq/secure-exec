@@ -182,6 +182,131 @@ describe("kernel + MockRuntimeDriver integration", () => {
 	});
 
 	// -----------------------------------------------------------------------
+	// fdSeek — SEEK_SET, SEEK_CUR, SEEK_END, pipe rejection
+	// -----------------------------------------------------------------------
+
+	describe("fdSeek", () => {
+		it("SEEK_SET resets cursor and fdRead returns content from new position", async () => {
+			const driver = new MockRuntimeDriver(["x"], { x: { neverExit: true } });
+			const { kernel: k, vfs } = await createTestKernel({ drivers: [driver] });
+			kernel = k;
+
+			await vfs.writeFile("/tmp/seek.txt", "hello world");
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("x", []);
+			const fd = ki.fdOpen(proc.pid, "/tmp/seek.txt", 0);
+
+			// Read 5 bytes to advance cursor
+			const first = await ki.fdRead(proc.pid, fd, 5);
+			expect(new TextDecoder().decode(first)).toBe("hello");
+
+			// Seek back to start
+			const pos = await ki.fdSeek(proc.pid, fd, 0n, 0); // SEEK_SET
+			expect(pos).toBe(0n);
+
+			// Read again — should get 'hello' from the beginning
+			const second = await ki.fdRead(proc.pid, fd, 5);
+			expect(new TextDecoder().decode(second)).toBe("hello");
+
+			proc.kill(9);
+			await proc.wait();
+		});
+
+		it("SEEK_CUR advances cursor relative to current position", async () => {
+			const driver = new MockRuntimeDriver(["x"], { x: { neverExit: true } });
+			const { kernel: k, vfs } = await createTestKernel({ drivers: [driver] });
+			kernel = k;
+
+			await vfs.writeFile("/tmp/seek.txt", "hello world");
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("x", []);
+			const fd = ki.fdOpen(proc.pid, "/tmp/seek.txt", 0);
+
+			// Read 5 bytes — cursor at 5
+			await ki.fdRead(proc.pid, fd, 5);
+
+			// Seek forward 1 byte from current (skip space) — cursor at 6
+			const pos = await ki.fdSeek(proc.pid, fd, 1n, 1); // SEEK_CUR
+			expect(pos).toBe(6n);
+
+			// Read rest — should get 'world'
+			const data = await ki.fdRead(proc.pid, fd, 100);
+			expect(new TextDecoder().decode(data)).toBe("world");
+
+			proc.kill(9);
+			await proc.wait();
+		});
+
+		it("SEEK_END positions cursor at file end (EOF read returns empty)", async () => {
+			const driver = new MockRuntimeDriver(["x"], { x: { neverExit: true } });
+			const { kernel: k, vfs } = await createTestKernel({ drivers: [driver] });
+			kernel = k;
+
+			await vfs.writeFile("/tmp/seek.txt", "hello world");
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("x", []);
+			const fd = ki.fdOpen(proc.pid, "/tmp/seek.txt", 0);
+
+			// Seek to end
+			const pos = await ki.fdSeek(proc.pid, fd, 0n, 2); // SEEK_END
+			expect(pos).toBe(11n); // "hello world".length
+
+			// Read at EOF — empty
+			const data = await ki.fdRead(proc.pid, fd, 10);
+			expect(data.length).toBe(0);
+
+			proc.kill(9);
+			await proc.wait();
+		});
+
+		it("SEEK_END with negative offset seeks before end of file", async () => {
+			const driver = new MockRuntimeDriver(["x"], { x: { neverExit: true } });
+			const { kernel: k, vfs } = await createTestKernel({ drivers: [driver] });
+			kernel = k;
+
+			await vfs.writeFile("/tmp/seek.txt", "hello world");
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("x", []);
+			const fd = ki.fdOpen(proc.pid, "/tmp/seek.txt", 0);
+
+			// Seek to 5 bytes before end — cursor at 6
+			const pos = await ki.fdSeek(proc.pid, fd, -5n, 2); // SEEK_END
+			expect(pos).toBe(6n);
+
+			const data = await ki.fdRead(proc.pid, fd, 100);
+			expect(new TextDecoder().decode(data)).toBe("world");
+
+			proc.kill(9);
+			await proc.wait();
+		});
+
+		it("fdSeek on pipe FD throws ESPIPE", async () => {
+			const driver = new MockRuntimeDriver(["x"], { x: { neverExit: true } });
+			const { kernel: k } = await createTestKernel({ drivers: [driver] });
+			kernel = k;
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("x", []);
+
+			// Create a pipe — both ends are in proc's FD table
+			const { readFd, writeFd } = ki.pipe(proc.pid);
+
+			// Seek on read end — should throw ESPIPE
+			await expect(ki.fdSeek(proc.pid, readFd, 0n, 0)).rejects.toThrow("ESPIPE");
+
+			// Seek on write end — should also throw ESPIPE
+			await expect(ki.fdSeek(proc.pid, writeFd, 0n, 0)).rejects.toThrow("ESPIPE");
+
+			proc.kill(9);
+			await proc.wait();
+		});
+	});
+
+	// -----------------------------------------------------------------------
 	// stdin streaming
 	// -----------------------------------------------------------------------
 

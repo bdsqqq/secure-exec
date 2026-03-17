@@ -169,7 +169,7 @@ export interface KernelInterface {
 		fd: number,
 		offset: bigint,
 		whence: number,
-	): bigint;
+	): Promise<bigint>;
 	fdDup(pid: number, fd: number): number;
 	fdDup2(pid: number, oldFd: number, newFd: number): void;
 	fdStat(pid: number, fd: number): FDStat;

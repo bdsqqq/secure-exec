@@ -8,6 +8,7 @@ PRD: ralph/kernel-hardening (46 stories)
 - Node driver creates system driver with `permissions: { ...allowAllChildProcess }` only — no fs permissions → deny-by-default → EACCES for all fs reads
 - Bridge fs.ts `createFsError` uses Node.js syscall conventions: readFileSync → "open", statSync → "stat", etc.
 - WasmVM driver.ts exports createWasmVmRuntime() — worker-based with SAB RPC for sync/async bridge
+- Kernel fdSeek is async (Promise<bigint>) — SEEK_END needs VFS readFile for file size; WasmVM driver awaits it in _handleSyscall
 - Kernel VFS uses removeFile/removeDir (not unlink/rmdir), and VirtualStat has isDirectory/isSymbolicLink (not type)
 - WasiFiletype must be re-exported from wasi-types.ts since polyfill imports it from there
 - turbo task is `check-types` — add this script to package.json alongside `typecheck`
@@ -120,4 +121,19 @@ PRD: ralph/kernel-hardening (46 stories)
   - onStdout is wired to a buffer callback at kernel.ts:237 immediately after driver.spawn() returns, so echoing in writeStdin works synchronously
   - echoStdin processes use neverExit-like behavior (no auto-exit) and resolve on closeStdin — this mirrors real process stdin semantics
   - spawnManaged replays buffered stdout when options.onStdout is set, ensuring no data loss between spawn and callback attachment
+---
+
+## 2026-03-17 - US-007
+- What was implemented: Fixed fdSeek to properly handle SEEK_SET, SEEK_CUR, SEEK_END, and pipe rejection (ESPIPE). Added 5 tests.
+- Files changed:
+  - packages/kernel/src/types.ts — changed fdSeek return type to Promise<bigint>
+  - packages/kernel/src/kernel.ts — implemented proper whence-based seek logic with VFS readFile for SEEK_END, added pipe rejection (ESPIPE), EINVAL for negative positions and invalid whence
+  - packages/runtime/wasmvm/src/driver.ts — added await to fdSeek call in _handleSyscall
+  - packages/kernel/test/kernel-integration.test.ts — added 5 tests: SEEK_SET reset+read, SEEK_CUR relative advance, SEEK_END EOF, SEEK_END with negative offset, pipe ESPIPE rejection
+  - prd.json — marked US-007 as passes: true
+- **Learnings for future iterations:**
+  - fdSeek was a stub that ignored whence and had no pipe rejection — just set cursor = offset directly
+  - Making fdSeek async was required because SEEK_END needs VFS.readFile (async) to get file size
+  - The WasmVM _handleSyscall is already async, so adding await to the fdSeek case was straightforward
+  - KernelInterface.fdSeek callers: kernel.ts implementation, WasmVM driver.ts _handleSyscall, WasmVM kernel-worker.ts (sync RPC — blocked by SAB, unaffected by async driver side)
 ---

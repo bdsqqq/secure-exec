@@ -327,7 +327,7 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
           break;
         }
         case 'fdSeek': {
-          const offset = kernel.fdSeek(pid, msg.args.fd as number, BigInt(msg.args.offset as string), msg.args.whence as number);
+          const offset = await kernel.fdSeek(pid, msg.args.fd as number, BigInt(msg.args.offset as string), msg.args.whence as number);
           intResult = Number(offset);
           break;
         }
