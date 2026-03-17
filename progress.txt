@@ -636,3 +636,18 @@ PRD: ralph/kernel-hardening (46 stories)
   - child-process.ts was nearly type-safe already — only event listener callbacks needed parameter type fixes
   - The `EventListener = (...args: unknown[]) => void` type used by the ChildProcess polyfill means all `.on()` callbacks must accept `unknown` params
 ---
+
+## 2026-03-17 - US-041
+- Removed @ts-nocheck from packages/secure-exec/src/bridge/process.ts and packages/secure-exec/src/bridge/network.ts
+- process.ts had ~24 type errors: circular self-references in stream objects (_stdout/_stderr/_stdin returning `typeof _stdout`), `Partial<typeof nodeProcess>` causing EventEmitter return type mismatches, missing `_maxTimers` declaration, `./polyfills` import missing `.js` extension, `whatwg-url` missing type declarations
+- network.ts had ~16 type errors: `satisfies Partial<typeof nodeDns>` requiring `__promisify__` on all dns functions, `Partial<typeof nodeHttp>` return type requiring full overload sets, `this` not assignable in clone() methods, implicit `any` params
+- Files changed:
+  - packages/secure-exec/src/bridge/process.ts — removed @ts-nocheck, added StdioWriteStream/StdinStream interfaces, changed process type to `Record<string, unknown> & {...}`, cast export to `typeof nodeProcess`, fixed import path, added `_maxTimers` declaration, made StdinListener param optional
+  - packages/secure-exec/src/bridge/network.ts — removed @ts-nocheck, removed `satisfies Partial<typeof nodeDns>`, changed `createHttpModule` return to `Record<string, unknown>`, fixed clone() casts, added explicit types on callback params
+  - packages/secure-exec/src/bridge/whatwg-url.d.ts — new module declaration for whatwg-url
+- **Learnings for future iterations:**
+  - Bridge polyfill objects that self-reference (`return this`) need explicit interface types to break circular inference — TypeScript can't infer `typeof x` while `x` is being defined
+  - `Partial<typeof nodeModule>` and `satisfies Partial<typeof nodeModule>` are too strict for bridge polyfills — they require matching all Node.js overloads and subproperties like `__promisify__`. Use `Record<string, unknown>` internally and cast at export boundaries
+  - The `whatwg-url` package (v15) has no built-in types — needs a local `.d.ts` module declaration
+  - For `_addListener`/`_removeListener` helper functions that return `process` (forward reference), use `unknown` return type to break the cycle
+---

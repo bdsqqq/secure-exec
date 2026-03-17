@@ -1,11 +1,10 @@
-// @ts-nocheck
 // Process module polyfill for isolated-vm
 // Provides Node.js process object and global polyfills for sandbox compatibility
 
 import type * as nodeProcess from "process";
 
 // Re-export TextEncoder/TextDecoder from polyfills (polyfills.ts is imported first in index.ts)
-import { TextEncoder, TextDecoder } from "./polyfills";
+import { TextEncoder, TextDecoder } from "./polyfills.js";
 
 // Use whatwg-url for spec-compliant URL implementation
 import { URL as WhatwgURL, URLSearchParams as WhatwgURLSearchParams } from "whatwg-url";
@@ -54,6 +53,8 @@ declare const _error: ProcessErrorBridgeRef;
 declare const _scheduleTimer: ScheduleTimerBridgeRef | undefined;
 declare const _cryptoRandomFill: CryptoRandomFillBridgeRef | undefined;
 declare const _cryptoRandomUUID: CryptoRandomUuidBridgeRef | undefined;
+// Timer budget injected by the host when resourceBudgets.maxTimers is set
+declare const _maxTimers: number | undefined;
 
 // Get config with defaults
 const config = {
@@ -171,7 +172,7 @@ function _addListener(
   event: string,
   listener: EventListener,
   once = false
-): typeof process {
+): unknown {
   const target = once ? _processOnceListeners : _processListeners;
   if (!target[event]) {
     target[event] = [];
@@ -183,7 +184,7 @@ function _addListener(
 function _removeListener(
   event: string,
   listener: EventListener
-): typeof process {
+): unknown {
   if (_processListeners[event]) {
     const idx = _processListeners[event].indexOf(listener);
     if (idx !== -1) _processListeners[event].splice(idx, 1);
@@ -219,21 +220,34 @@ function _emit(event: string, ...args: unknown[]): boolean {
   return handled;
 }
 
+// Stdio stream shape shared by stdout and stderr
+interface StdioWriteStream {
+  write(data: unknown): boolean;
+  end(): StdioWriteStream;
+  on(): StdioWriteStream;
+  once(): StdioWriteStream;
+  emit(): boolean;
+  writable: boolean;
+  isTTY: boolean;
+  columns: number;
+  rows: number;
+}
+
 // Stdout stream
-const _stdout = {
+const _stdout: StdioWriteStream = {
   write(data: unknown): boolean {
     if (typeof _log !== "undefined") {
       _log.applySync(undefined, [String(data).replace(/\n$/, "")]);
     }
     return true;
   },
-  end(): typeof _stdout {
+  end(): StdioWriteStream {
     return this;
   },
-  on(): typeof _stdout {
+  on(): StdioWriteStream {
     return this;
   },
-  once(): typeof _stdout {
+  once(): StdioWriteStream {
     return this;
   },
   emit(): boolean {
@@ -246,20 +260,20 @@ const _stdout = {
 };
 
 // Stderr stream
-const _stderr = {
+const _stderr: StdioWriteStream = {
   write(data: unknown): boolean {
     if (typeof _error !== "undefined") {
       _error.applySync(undefined, [String(data).replace(/\n$/, "")]);
     }
     return true;
   },
-  end(): typeof _stderr {
+  end(): StdioWriteStream {
     return this;
   },
-  on(): typeof _stderr {
+  on(): StdioWriteStream {
     return this;
   },
-  once(): typeof _stderr {
+  once(): StdioWriteStream {
     return this;
   },
   emit(): boolean {
@@ -273,7 +287,7 @@ const _stderr = {
 
 // Stdin stream with data support
 // These are exposed as globals so they can be set after bridge initialization
-type StdinListener = (data: unknown) => void;
+type StdinListener = (data?: unknown) => void;
 const _stdinListeners: Record<string, StdinListener[]> = {};
 const _stdinOnceListeners: Record<string, StdinListener[]> = {};
 
@@ -328,7 +342,25 @@ function _emitStdinData(): void {
   }
 }
 
-const _stdin = {
+// Stdin stream shape
+interface StdinStream {
+  readable: boolean;
+  paused: boolean;
+  encoding: string | null;
+  read(size?: number): string | null;
+  on(event: string, listener: StdinListener): StdinStream;
+  once(event: string, listener: StdinListener): StdinStream;
+  off(event: string, listener: StdinListener): StdinStream;
+  removeListener(event: string, listener: StdinListener): StdinStream;
+  emit(event: string, ...args: unknown[]): boolean;
+  pause(): StdinStream;
+  resume(): StdinStream;
+  setEncoding(enc: string): StdinStream;
+  isTTY: boolean;
+  [Symbol.asyncIterator]: () => AsyncGenerator<string, void, unknown>;
+}
+
+const _stdin: StdinStream = {
   readable: true,
   paused: true,
   encoding: null as string | null,
@@ -340,7 +372,7 @@ const _stdin = {
     return chunk;
   },
 
-  on(event: string, listener: StdinListener): typeof _stdin {
+  on(event: string, listener: StdinListener): StdinStream {
     if (!_stdinListeners[event]) _stdinListeners[event] = [];
     _stdinListeners[event].push(listener);
 
@@ -354,13 +386,13 @@ const _stdin = {
     return this;
   },
 
-  once(event: string, listener: StdinListener): typeof _stdin {
+  once(event: string, listener: StdinListener): StdinStream {
     if (!_stdinOnceListeners[event]) _stdinOnceListeners[event] = [];
     _stdinOnceListeners[event].push(listener);
     return this;
   },
 
-  off(event: string, listener: StdinListener): typeof _stdin {
+  off(event: string, listener: StdinListener): StdinStream {
     if (_stdinListeners[event]) {
       const idx = _stdinListeners[event].indexOf(listener);
       if (idx !== -1) _stdinListeners[event].splice(idx, 1);
@@ -368,7 +400,7 @@ const _stdin = {
     return this;
   },
 
-  removeListener(event: string, listener: StdinListener): typeof _stdin {
+  removeListener(event: string, listener: StdinListener): StdinStream {
     return this.off(event, listener);
   },
 
@@ -381,20 +413,20 @@ const _stdin = {
     return listeners.length > 0;
   },
 
-  pause(): typeof _stdin {
+  pause(): StdinStream {
     this.paused = true;
     setStdinFlowMode(false);
     return this;
   },
 
-  resume(): typeof _stdin {
+  resume(): StdinStream {
     this.paused = false;
     setStdinFlowMode(true);
     _emitStdinData();
     return this;
   },
 
-  setEncoding(enc: string): typeof _stdin {
+  setEncoding(enc: string): StdinStream {
     this.encoding = enc;
     return this;
   },
@@ -438,11 +470,14 @@ hrtime.bigint = function (): bigint {
 let _cwd = config.cwd;
 let _umask = 0o022;
 
-// The process object
-const process: Partial<typeof nodeProcess> & {
-  stdout: typeof _stdout;
-  stderr: typeof _stderr;
-  stdin: typeof _stdin;
+// The process object — typed loosely as a polyfill, cast to typeof nodeProcess on export
+const process: Record<string, unknown> & {
+  stdout: StdioWriteStream;
+  stderr: StdioWriteStream;
+  stdin: StdinStream;
+  pid: number;
+  ppid: number;
+  env: Record<string, string>;
   _cwd: string;
   _umask: number;
 } = {
@@ -545,7 +580,7 @@ const process: Partial<typeof nodeProcess> & {
   },
 
   abort(): never {
-    return process.exit!(1);
+    return (process as unknown as { exit: (code: number) => never }).exit(1);
   },
 
   nextTick(callback: (...args: unknown[]) => void, ...args: unknown[]): void {
@@ -649,28 +684,28 @@ const process: Partial<typeof nodeProcess> & {
     }
     // Self-kill - treat as exit
     if (!signal || signal === "SIGTERM" || signal === 15) {
-      process.exit!(143);
+      (process as unknown as { exit: (code: number) => never }).exit(143);
     }
     return true;
   },
 
   // EventEmitter methods
-  on(event: string, listener: EventListener): typeof process {
+  on(event: string, listener: EventListener) {
     return _addListener(event, listener);
   },
 
-  once(event: string, listener: EventListener): typeof process {
+  once(event: string, listener: EventListener) {
     return _addListener(event, listener, true);
   },
 
-  removeListener(event: string, listener: EventListener): typeof process {
+  removeListener(event: string, listener: EventListener) {
     return _removeListener(event, listener);
   },
 
   // off is an alias for removeListener (assigned below to be same reference)
-  off: null as unknown as (event: string, listener: EventListener) => typeof process,
+  off: null as unknown as (event: string, listener: EventListener) => unknown,
 
-  removeAllListeners(event?: string): typeof process {
+  removeAllListeners(event?: string) {
     if (event) {
       delete _processListeners[event];
       delete _processOnceListeners[event];
@@ -683,7 +718,7 @@ const process: Partial<typeof nodeProcess> & {
     return process;
   },
 
-  addListener(event: string, listener: EventListener): typeof process {
+  addListener(event: string, listener: EventListener) {
     return _addListener(event, listener);
   },
 
@@ -705,7 +740,7 @@ const process: Partial<typeof nodeProcess> & {
     );
   },
 
-  prependListener(event: string, listener: EventListener): typeof process {
+  prependListener(event: string, listener: EventListener) {
     if (!_processListeners[event]) {
       _processListeners[event] = [];
     }
@@ -713,7 +748,7 @@ const process: Partial<typeof nodeProcess> & {
     return process;
   },
 
-  prependOnceListener(event: string, listener: EventListener): typeof process {
+  prependOnceListener(event: string, listener: EventListener) {
     if (!_processOnceListeners[event]) {
       _processOnceListeners[event] = [];
     }
@@ -730,20 +765,20 @@ const process: Partial<typeof nodeProcess> & {
     ];
   },
 
-  setMaxListeners(): typeof process {
+  setMaxListeners() {
     return process;
   },
   getMaxListeners(): number {
     return 10;
   },
   rawListeners(event: string): EventListener[] {
-    return process.listeners!(event);
+    return (process as unknown as { listeners: (event: string) => EventListener[] }).listeners(event);
   },
 
   // Stdio streams
-  stdout: _stdout as unknown as typeof nodeProcess.stdout,
-  stderr: _stderr as unknown as typeof nodeProcess.stderr,
-  stdin: _stdin as unknown as typeof nodeProcess.stdin,
+  stdout: _stdout,
+  stderr: _stderr,
+  stdin: _stdin,
 
   // Process state
   connected: false,
@@ -784,7 +819,7 @@ const process: Partial<typeof nodeProcess> & {
   },
 
   _linkedBinding(name: string): Record<string, unknown> {
-    return process.binding!(name);
+    return (process as unknown as { binding: (name: string) => Record<string, unknown> }).binding(name);
   },
 
   dlopen(): void {
@@ -836,7 +871,7 @@ process.off = process.removeListener;
     return 50 * 1024 * 1024;
   };
 
-export default process;
+export default process as unknown as typeof nodeProcess;
 
 // ============================================================================
 // Global polyfills

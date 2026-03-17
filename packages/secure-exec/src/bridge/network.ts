@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Network module polyfill for isolated-vm
 // Provides fetch, http, https, and dns module emulation that bridges to host
 
@@ -116,7 +115,7 @@ export async function fetch(url: string | URL, options: FetchOptions = {}): Prom
       throw new Error("Blob not supported in sandbox");
     },
     clone(): FetchResponse {
-      return { ...this };
+      return { ...this } as FetchResponse;
     },
   };
 }
@@ -205,7 +204,7 @@ export class Request {
   }
 
   clone(): Request {
-    return new Request(this.url, this);
+    return new Request(this.url, this as unknown as FetchOptions);
   }
 }
 
@@ -240,7 +239,7 @@ export class Response {
   }
 
   clone(): Response {
-    return new Response(this._body, this);
+    return new Response(this._body, { status: this.status, statusText: this.statusText });
   }
 
   static error(): Response {
@@ -292,7 +291,7 @@ export const dns = {
     }
 
     // Simplified - just do lookup for A records
-    dns.lookup(hostname, (err, address) => {
+    dns.lookup(hostname, (err: Error | null, address?: string) => {
       if (err) {
         cb?.(err);
       } else {
@@ -327,7 +326,7 @@ export const dns = {
       });
     },
   },
-} satisfies Partial<typeof nodeDns>;
+};
 
 // Event listener type
 type EventListener = (...args: unknown[]) => void;
@@ -1275,7 +1274,7 @@ ServerResponseCallable.prototype = Object.create(ServerResponseBridge.prototype,
 });
 
 // Create HTTP module
-function createHttpModule(_protocol: string): Partial<typeof nodeHttp> {
+function createHttpModule(_protocol: string): Record<string, unknown> {
   return {
     request(options: string | URL | nodeHttp.RequestOptions, callback?: (res: IncomingMessage) => void): ClientRequest {
       let opts: nodeHttp.RequestOptions;

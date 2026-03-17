@@ -689,7 +689,7 @@
         "Tests pass"
       ],
       "priority": 41,
-      "passes": false,
+      "passes": true,
       "notes": "P6 — final two @ts-nocheck files"
     },
     {
