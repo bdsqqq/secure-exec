@@ -127,6 +127,25 @@ Bridge global keys and host/isolate boundary type contracts SHALL be defined in 
 - **WHEN** a bridge module declares host-provided bridge globals
 - **THEN** declaration shapes MUST reuse canonical shared contract types instead of redefining per-file ad-hoc reference interfaces
 
+### Requirement: Child Process Spawn Routes Through Kernel Command Registry
+When a kernel is available, bridge `child_process.spawn` and `child_process.exec` calls from sandboxed code SHALL route through the kernel command registry for command resolution and process lifecycle management.
+
+#### Scenario: Bridge child_process.spawn resolves command through kernel
+- **WHEN** sandboxed code calls `child_process.spawn(command, args)` in a kernel-mediated environment
+- **THEN** the bridge MUST route the spawn request through `kernel.spawn(command, args, options)`, which resolves the command via the kernel command registry to the appropriate mounted RuntimeDriver
+
+#### Scenario: Bridge child_process.exec routes through kernel shell
+- **WHEN** sandboxed code calls `child_process.exec(command)` in a kernel-mediated environment
+- **THEN** the bridge MUST route the execution through `kernel.exec(command, options)`, which spawns via the registered shell command (e.g., `sh -c command`)
+
+#### Scenario: Unregistered command fails with command-not-found
+- **WHEN** sandboxed code spawns a command that no mounted driver has registered
+- **THEN** the bridge MUST propagate the kernel's command-not-found error rather than silently failing or attempting host-side resolution
+
+#### Scenario: Process lifecycle is kernel-managed
+- **WHEN** a child process is spawned through the bridge in a kernel-mediated environment
+- **THEN** the process MUST be registered in the kernel process table with a PID, and kill/wait operations MUST route through the kernel process table rather than directly to the host OS
+
 ### Requirement: Bridge Global Key Registry SHALL Stay Consistent Across Runtime Layers
 The bridge global key registry consumed by host runtime setup, bridge modules, and isolate runtime typing declarations SHALL remain consistent and covered by automated verification.
 

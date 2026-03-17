@@ -60,6 +60,21 @@ Runtime capabilities SHALL be composed through host-provided system drivers so f
 - **WHEN** a caller provides runtime `process` and `os` configuration on the system driver
 - **THEN** `NodeRuntime` MUST source and inject that configuration into runtime-driver creation
 
+### Requirement: Kernel-Mediated Execution Model
+When a kernel is available, runtime execution SHALL be mediated through the kernel's mount/spawn lifecycle rather than standalone driver construction. The kernel provides shared VFS, FD table, process table, and command registry to all mounted drivers.
+
+#### Scenario: Node runtime driver is mounted into kernel
+- **WHEN** the Node runtime driver is used with the kernel architecture
+- **THEN** the driver MUST be mounted via `kernel.mount(driver)`, which calls `driver.init(kernel)` and registers the driver's commands in the kernel command registry
+
+#### Scenario: Execution routes through kernel spawn
+- **WHEN** sandboxed code execution is requested in a kernel-mediated environment
+- **THEN** execution MUST route through `kernel.spawn()` or `kernel.exec()`, which allocates PIDs, creates FD tables, resolves commands through the registry, and dispatches to the appropriate mounted driver
+
+#### Scenario: Standalone NodeRuntime construction remains supported
+- **WHEN** a caller constructs `NodeRuntime` without a kernel
+- **THEN** the existing standalone driver-based construction MUST continue to work for backward compatibility with the existing `SystemDriver` + `RuntimeDriverFactory` model
+
 ### Requirement: Active Handle Completion for Async Operations
 The Node runtime SHALL wait for tracked active handles before finalizing execution results so callback-driven asynchronous work can complete.
 

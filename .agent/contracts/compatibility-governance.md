@@ -296,3 +296,37 @@ Repository test wiring MUST keep `packages/secure-exec/tests/test-suite.test.ts`
 #### Scenario: Canonical shared runtime entrypoint remains singular
 - **WHEN** contributors update package scripts or Vitest include patterns for shared runtime coverage
 - **THEN** shared runtime matrix execution MUST remain anchored on `packages/secure-exec/tests/test-suite.test.ts` as the canonical entrypoint
+
+### Requirement: Cross-Runtime Parity Through Shared Kernel State
+When multiple RuntimeDrivers (WasmVM, Node, Python) are mounted in the same kernel, all drivers MUST observe identical VFS, FD table, and process table state, ensuring cross-runtime parity for shared OS-level resources.
+
+#### Scenario: VFS writes from one driver are visible to another
+- **WHEN** a process in the WasmVM driver writes a file via the kernel VFS and a process in the Node driver subsequently reads the same path
+- **THEN** the Node driver process MUST see the file content written by the WasmVM driver, because both share the same kernel VFS instance
+
+#### Scenario: FD table state is per-process but backed by shared FileDescriptions
+- **WHEN** a parent process (e.g., Node driver) opens a file and forks a child process (e.g., WasmVM driver)
+- **THEN** inherited FDs in the child MUST reference the same underlying FileDescriptions with shared cursors, regardless of which driver owns the process
+
+#### Scenario: Process table is shared across all mounted drivers
+- **WHEN** processes from different RuntimeDrivers are spawned through the same kernel
+- **THEN** `kernel.processTable.listProcesses()` MUST include all processes from all drivers, and `waitpid` and `kill` MUST work across driver boundaries
+
+#### Scenario: Pipe data flows between different RuntimeDrivers
+- **WHEN** a kernel pipe connects stdout of a WasmVM process to stdin of a Node process
+- **THEN** data written by the WasmVM process MUST be delivered to the Node process through the kernel pipe manager with the same blocking/EOF semantics as same-driver pipes
+
+#### Scenario: Permission policy applies uniformly to all drivers
+- **WHEN** the kernel's `wrapFileSystem` denies access to a path
+- **THEN** the denial MUST apply to processes from all mounted RuntimeDrivers equally, regardless of which driver spawned the process
+
+### Requirement: Cross-Runtime Parity Test Coverage Obligations
+Changes that affect kernel-mediated cross-runtime behavior MUST include integration test coverage under `packages/secure-exec/tests/kernel/` validating parity across mounted drivers.
+
+#### Scenario: New kernel subsystem feature requires cross-runtime test
+- **WHEN** a change adds or modifies kernel VFS, FD table, process table, pipe, or command registry behavior that affects multi-driver interaction
+- **THEN** the change MUST include or update integration tests under `packages/secure-exec/tests/kernel/` that verify the behavior works consistently across at least two different RuntimeDrivers
+
+#### Scenario: Cross-runtime test failures block merge
+- **WHEN** a cross-runtime integration test under `packages/secure-exec/tests/kernel/` fails
+- **THEN** the failure MUST be resolved before the change is considered complete, and MUST NOT be suppressed with skip markers or known-failure annotations

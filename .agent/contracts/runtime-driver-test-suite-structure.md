@@ -1,7 +1,7 @@
 # runtime-driver-test-suite-structure Specification
 
 ## Purpose
-TBD - created by archiving change restructure-test-suite-layout. Update Purpose after archive.
+Define canonical test layout for runtime-driver integration coverage, shared suite execution rules, and kernel test patterns for unit and cross-runtime testing.
 ## Requirements
 ### Requirement: Runtime Test Suite SHALL Use A Canonical Flat Layout
 Secure-exec runtime-driver integration coverage MUST use the canonical filesystem layout:
@@ -10,6 +10,8 @@ Secure-exec runtime-driver integration coverage MUST use the canonical filesyste
 - `packages/secure-exec/tests/test-suite/{name}.ts`
 - `packages/secure-exec/tests/exec-driver/{name}.test.ts`
 - `packages/secure-exec/tests/runtime-driver/{name}.test.ts`
+- `packages/kernel/test/{name}.test.ts` (kernel unit tests)
+- `packages/secure-exec/tests/kernel/{name}.test.ts` (kernel cross-runtime integration tests)
 
 #### Scenario: Shared matrix entrypoint exists at canonical path
 - **WHEN** contributors add or update shared runtime-driver suite orchestration
@@ -44,4 +46,34 @@ Shared suite registration order in the matrix entrypoint MUST be explicit and st
 #### Scenario: Shared suites are imported explicitly
 - **WHEN** shared suites are registered from `test-suite.test.ts`
 - **THEN** they MUST be imported and invoked in deterministic source order rather than filesystem discovery
+
+### Requirement: Kernel Unit Tests SHALL Use MockRuntimeDriver In Kernel Package
+Kernel unit tests that validate kernel subsystem behavior (VFS, FD table, process table, device layer, pipe manager, command registry, permissions) SHALL reside under `packages/kernel/test/` and use MockRuntimeDriver for driver interactions.
+
+#### Scenario: Kernel unit tests live in kernel package
+- **WHEN** contributors add or update tests for kernel subsystem behavior
+- **THEN** those tests MUST reside under `packages/kernel/test/` as `*.test.ts` files
+
+#### Scenario: Kernel unit tests use MockRuntimeDriver
+- **WHEN** kernel unit tests need to validate spawn/exec orchestration or command registration
+- **THEN** they MUST use a MockRuntimeDriver (from `packages/kernel/test/helpers.ts`) that implements the RuntimeDriver interface with controllable behavior, rather than requiring real runtime drivers
+
+#### Scenario: Kernel unit tests validate subsystem invariants independently
+- **WHEN** kernel unit tests validate FD table, process table, pipe manager, or device layer behavior
+- **THEN** each subsystem MUST be testable in isolation without mounting a full kernel or real RuntimeDriver
+
+### Requirement: Cross-Runtime Integration Tests SHALL Live Under Secure-Exec Kernel Directory
+Cross-runtime integration tests that exercise kernel-mediated multi-driver scenarios SHALL reside under `packages/secure-exec/tests/kernel/` and test behavior that spans multiple mounted RuntimeDrivers.
+
+#### Scenario: Cross-runtime tests use real RuntimeDrivers
+- **WHEN** integration tests validate cross-runtime interactions (e.g., WasmVM piped to Node, Python calling Node commands)
+- **THEN** those tests MUST mount real RuntimeDrivers into a kernel and exercise the full kernel spawn/pipe/process lifecycle
+
+#### Scenario: Cross-runtime tests share helpers with kernel-aware TestContext
+- **WHEN** multiple cross-runtime integration tests need kernel setup/teardown
+- **THEN** shared helpers MUST reside in `packages/secure-exec/tests/kernel/helpers.ts` and provide kernel creation, driver mounting, and disposal utilities
+
+#### Scenario: Cross-runtime tests cover VFS consistency across drivers
+- **WHEN** integration tests validate that file writes from one driver are visible to another
+- **THEN** those tests MUST reside under `packages/secure-exec/tests/kernel/` and verify that VFS state is shared across all mounted drivers
 

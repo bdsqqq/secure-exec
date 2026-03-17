@@ -58,6 +58,29 @@ When a `PermissionCheck` callback returns `{ allow: false }`, the operation SHAL
 - **WHEN** `permissions.fs` returns `{ allow: false }` for path `/secret` and the filesystem adapter has the file
 - **THEN** `fs.readFile("/secret")` SHALL throw an `EACCES` error (unchanged from current behavior)
 
+### Requirement: Kernel-Level Permission Wrapping Interacts With Secure-Exec Permissions
+When a kernel is available, the kernel's `wrapFileSystem` deny-by-default permission layer operates at the VFS level, complementing the existing secure-exec `Permissions` model. Both layers enforce independently and the most restrictive policy wins.
+
+#### Scenario: Kernel wrapFileSystem and secure-exec permissions both deny by default
+- **WHEN** a kernel-mediated environment is configured with both kernel-level `wrapFileSystem` and secure-exec `Permissions` and neither grants access for a given operation
+- **THEN** the operation MUST be denied, with the kernel VFS permission layer rejecting the operation before it reaches the secure-exec permission wrapper
+
+#### Scenario: Kernel allows but secure-exec denies
+- **WHEN** the kernel's `wrapFileSystem` permission check allows a filesystem operation but the secure-exec `Permissions` object denies it
+- **THEN** the operation MUST still be denied by the secure-exec permission layer, because both layers enforce independently
+
+#### Scenario: Secure-exec allows but kernel denies
+- **WHEN** the secure-exec `Permissions` object would allow a filesystem operation but the kernel's `wrapFileSystem` denies it
+- **THEN** the operation MUST be denied at the kernel VFS layer before reaching the secure-exec permission check
+
+#### Scenario: Kernel permissions apply to all mounted drivers uniformly
+- **WHEN** multiple RuntimeDrivers are mounted in the kernel (e.g., Node, WasmVM, Python)
+- **THEN** the kernel's `wrapFileSystem` permission checks MUST apply uniformly to all drivers sharing the kernel VFS, providing a single enforcement point for cross-runtime permission policy
+
+#### Scenario: Kernel filterEnv applies before driver-level env access
+- **WHEN** a process spawned through the kernel accesses environment variables
+- **THEN** the kernel's `filterEnv` MUST filter the environment before the driver receives it in `ProcessContext.env`, and driver-level env access MUST only see pre-filtered keys
+
 ### Requirement: Projected Node-Modules Paths MUST Be Read-Only
 When driver-managed node_modules overlay/projection is active (including always-on `/app/node_modules` overlay), projected sandbox module paths (including `/app/node_modules` and descendants) MUST be treated as read-only runtime state.
 
