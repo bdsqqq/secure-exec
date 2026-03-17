@@ -448,33 +448,83 @@ describe('Node RuntimeDriver', () => {
       expect(code).not.toBe(0);
     });
 
-    it('cannot access host filesystem directly', async () => {
+    it('fs.readFileSync /etc/passwd returns error', async () => {
       const vfs = new SimpleVFS();
       kernel = createKernel({ filesystem: vfs as any });
       await kernel.mount(createNodeRuntime());
 
-      // Attempt to read a host file — should fail since VFS is kernel-backed
-      const outChunks: Uint8Array[] = [];
-      const errChunks: Uint8Array[] = [];
+      const chunks: Uint8Array[] = [];
       const proc = kernel.spawn('node', ['-e', `
         const fs = require('fs');
         try {
-          const data = fs.readFileSync('/etc/passwd', 'utf8');
-          console.log(data);
+          fs.readFileSync('/etc/passwd', 'utf8');
+          console.log('FAIL:no-error');
         } catch (e) {
-          console.error('blocked:', e.message);
+          console.log('code:' + e.code);
         }
       `], {
-        onStdout: (data) => outChunks.push(data),
-        onStderr: (data) => errChunks.push(data),
+        onStdout: (data) => chunks.push(data),
       });
       const code = await proc.wait();
-      const stdout = outChunks.map(c => new TextDecoder().decode(c)).join('');
-      const stderr = errChunks.map(c => new TextDecoder().decode(c)).join('');
-      // Catch block must execute — kernel VFS has no /etc/passwd
-      expect(stderr).toContain('blocked:');
-      // stdout must NOT contain real host /etc/passwd content
-      expect(stdout).not.toContain('root:x:0:0');
+      const output = chunks.map(c => new TextDecoder().decode(c)).join('');
+      expect(code).toBe(0);
+      // Deny-by-default permissions block host path access
+      expect(output).toContain('code:EACCES');
+      expect(output).not.toContain('FAIL:no-error');
+    });
+
+    it('symlink traversal to /etc/passwd returns error', async () => {
+      const vfs = new SimpleVFS();
+      await vfs.createDir('/tmp');
+      kernel = createKernel({ filesystem: vfs as any });
+      await kernel.mount(createNodeRuntime());
+
+      const chunks: Uint8Array[] = [];
+      const proc = kernel.spawn('node', ['-e', `
+        const fs = require('fs');
+        try { fs.symlinkSync('/etc/passwd', '/tmp/escape'); } catch (e) {}
+        try {
+          fs.readFileSync('/tmp/escape', 'utf8');
+          console.log('FAIL:no-error');
+        } catch (e) {
+          console.log('code:' + e.code);
+        }
+      `], {
+        onStdout: (data) => chunks.push(data),
+      });
+      const code = await proc.wait();
+      const output = chunks.map(c => new TextDecoder().decode(c)).join('');
+      expect(code).toBe(0);
+      // Symlink to host path is blocked by permissions
+      expect(output).toContain('code:EACCES');
+      expect(output).not.toContain('FAIL:no-error');
+    });
+
+    it('relative path traversal ../../etc/passwd returns error', async () => {
+      const vfs = new SimpleVFS();
+      await vfs.createDir('/app');
+      kernel = createKernel({ filesystem: vfs as any });
+      await kernel.mount(createNodeRuntime());
+
+      const chunks: Uint8Array[] = [];
+      const proc = kernel.spawn('node', ['-e', `
+        const fs = require('fs');
+        try {
+          fs.readFileSync('../../etc/passwd', 'utf8');
+          console.log('FAIL:no-error');
+        } catch (e) {
+          console.log('code:' + e.code);
+        }
+      `], {
+        onStdout: (data) => chunks.push(data),
+        cwd: '/app',
+      });
+      const code = await proc.wait();
+      const output = chunks.map(c => new TextDecoder().decode(c)).join('');
+      expect(code).toBe(0);
+      // Relative traversal to host path is blocked by permissions
+      expect(output).toContain('code:EACCES');
+      expect(output).not.toContain('FAIL:no-error');
     });
 
     it('spawning multiple child processes each gets unique kernel PID', async () => {

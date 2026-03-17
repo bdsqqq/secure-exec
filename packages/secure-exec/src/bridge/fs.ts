@@ -729,7 +729,7 @@ function createFsError(
     path?: string;
   };
   err.code = code;
-  err.errno = code === "ENOENT" ? -2 : code === "EBADF" ? -9 : -1;
+  err.errno = code === "ENOENT" ? -2 : code === "EACCES" ? -13 : code === "EBADF" ? -9 : -1;
   err.syscall = syscall;
   if (path) err.path = path;
   return err;
@@ -838,13 +838,27 @@ const fs = {
         return Buffer.from(base64Content, "base64");
       }
     } catch (err) {
-      // Convert "entry not found" and similar errors to proper ENOENT
       const errMsg = (err as Error).message || String(err);
-      if (errMsg.includes("entry not found") || errMsg.includes("not found")) {
+      // Convert various "not found" errors to proper ENOENT
+      if (
+        errMsg.includes("entry not found") ||
+        errMsg.includes("not found") ||
+        errMsg.includes("ENOENT") ||
+        errMsg.includes("no such file or directory")
+      ) {
         throw createFsError(
           "ENOENT",
-          `ENOENT: no such file or directory, read '${rawPath}'`,
-          "read",
+          `ENOENT: no such file or directory, open '${rawPath}'`,
+          "open",
+          rawPath
+        );
+      }
+      // Convert permission errors to proper EACCES
+      if (errMsg.includes("EACCES") || errMsg.includes("permission denied")) {
+        throw createFsError(
+          "EACCES",
+          `EACCES: permission denied, open '${rawPath}'`,
+          "open",
           rawPath
         );
       }
