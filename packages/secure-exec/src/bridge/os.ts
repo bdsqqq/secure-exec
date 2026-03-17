@@ -1,4 +1,3 @@
-// @ts-nocheck
 // OS module polyfill for isolated-vm
 // Provides Node.js os module emulation for sandbox compatibility
 
@@ -32,8 +31,8 @@ const config: Required<OSConfig> = {
   hostname: (typeof _osConfig !== "undefined" && _osConfig.hostname) || "sandbox",
 };
 
-// Signal constants
-const signals: nodeOs.SignalConstants = {
+// Signal constants (subset — sandbox only emulates Linux signals)
+const signals = {
   SIGHUP: 1,
   SIGINT: 2,
   SIGQUIT: 3,
@@ -162,8 +161,8 @@ const priority = {
   PRIORITY_HIGHEST: -20,
 };
 
-// OS module implementation
-const os: typeof nodeOs = {
+// OS module implementation (polyfill — partial coverage of Node.js os types)
+const os = {
   // Platform information
   platform(): NodeJS.Platform {
     return config.platform as NodeJS.Platform;
@@ -195,7 +194,7 @@ const os: typeof nodeOs = {
   },
 
   // User information
-  userInfo(_options?: { encoding: BufferEncoding }): nodeOs.UserInfo<string> {
+  userInfo(_options?: nodeOs.UserInfoOptions): nodeOs.UserInfo<string> {
     return {
       username: "root",
       uid: 0,
@@ -261,17 +260,17 @@ const os: typeof nodeOs = {
     return config.arch;
   },
 
-  // Constants
+  // Constants (partial — Linux subset, no Windows WSA* or RTLD_DEEPBIND)
   constants: {
-    signals,
-    errno,
+    signals: signals as nodeOs.SignalConstants,
+    errno: errno as (typeof nodeOs.constants)["errno"],
     priority,
     dlopen: {
       RTLD_LAZY: 1,
       RTLD_NOW: 2,
       RTLD_GLOBAL: 256,
       RTLD_LOCAL: 0,
-    },
+    } as (typeof nodeOs.constants)["dlopen"],
     UV_UDP_REUSEADDR: 4,
   },
 
@@ -288,7 +287,7 @@ const os: typeof nodeOs = {
   availableParallelism(): number {
     return 1;
   },
-};
+} as typeof nodeOs;
 
 // Expose to global for require() to use.
 exposeCustomGlobal("_osModule", os);
