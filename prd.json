@@ -62,7 +62,7 @@
         "Tests pass"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": "P1 — packages/runtime/node/test/driver.test.ts — 'child_process.spawn routes through kernel'"
     },
     {

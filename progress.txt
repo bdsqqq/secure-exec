@@ -54,6 +54,7 @@ PRD: ralph/kernel-hardening (46 stories)
 - npm/npx in V8 isolate need host filesystem fallback — createHostFallbackVfs wraps kernel VFS
 - WasmVM _handleSyscall fdRead case MUST call data.set(result, 0) to write to SAB — without this, worker reads garbage
 - SAB overflow guard: check responseData.length > DATA_BUFFER_BYTES before writing, return errno 76 (EIO)
+- Bridge execSync wraps as `bash -c 'cmd'`; spawnSync passes command/args directly — use spawnSync for precise routing tests
 
 ---
 
@@ -87,4 +88,14 @@ PRD: ralph/kernel-hardening (46 stories)
   - Node driver's deny-by-default fs permissions mean `/etc/passwd` returns EACCES (not ENOENT) — the permission layer blocks before VFS lookup
   - Bridge `readFileSync` was inconsistent with `statSync` — statSync already checked for "ENOENT" in messages, readFileSync did not
   - `tests/runtime-driver/node/index.test.ts` has flaky ECONNREFUSED failures (pre-existing, not related to this change)
+---
+
+## 2026-03-17 - US-004
+- What was implemented: Replaced fake child_process routing test with spy driver that records { command, args, callerPid }
+- Files changed:
+  - packages/runtime/node/test/driver.test.ts — replaced 'child_process.spawn routes through kernel to other drivers' with spy-based test that wraps MockRuntimeDriver.spawn to record calls
+- **Learnings for future iterations:**
+  - execSync wraps commands as `bash -c 'cmd'` — use spawnSync to test direct command routing since it passes command/args through unchanged
+  - Spy pattern: wrap the existing MockRuntimeDriver.spawn with a recording layer rather than creating a separate class — keeps mock behavior and adds observability
+  - ProcessContext.ppid is the caller's PID (parent), ProcessContext.pid is the spawned child's PID
 ---
