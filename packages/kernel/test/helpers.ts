@@ -1,9 +1,17 @@
 /**
  * Test helpers for kernel tests.
- * Provides a minimal in-memory VFS that implements the kernel's VirtualFileSystem.
+ * Provides a minimal in-memory VFS, MockRuntimeDriver, and createTestKernel.
  */
 
 import type { VirtualFileSystem, VirtualStat, VirtualDirEntry } from "../src/vfs.js";
+import type {
+	RuntimeDriver,
+	DriverProcess,
+	ProcessContext,
+	KernelInterface,
+	Kernel,
+} from "../src/types.js";
+import { createKernel } from "../src/kernel.js";
 
 const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
@@ -193,4 +201,113 @@ export class TestFileSystem implements VirtualFileSystem {
 			f.data = nd;
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// MockRuntimeDriver
+// ---------------------------------------------------------------------------
+
+export interface MockCommandConfig {
+	exitCode?: number;
+	stdout?: string | Uint8Array;
+	stderr?: string | Uint8Array;
+	/** If true, emit stdout/stderr synchronously during spawn (before callbacks are attached) */
+	emitDuringSpawn?: boolean;
+}
+
+/**
+ * Mock runtime driver for kernel integration tests.
+ * Configurable commands, exit codes, and stdout/stderr output.
+ */
+export class MockRuntimeDriver implements RuntimeDriver {
+	name = "mock";
+	commands: string[];
+	kernelInterface: KernelInterface | null = null;
+	private commandConfigs: Map<string, MockCommandConfig>;
+
+	constructor(
+		commandList: string[],
+		configs?: Record<string, MockCommandConfig>,
+	) {
+		this.commands = commandList;
+		this.commandConfigs = new Map(Object.entries(configs ?? {}));
+	}
+
+	async init(kernel: KernelInterface): Promise<void> {
+		this.kernelInterface = kernel;
+	}
+
+	spawn(command: string, _args: string[], ctx: ProcessContext): DriverProcess {
+		const config = this.commandConfigs.get(command) ?? {};
+		const exitCode = config.exitCode ?? 0;
+		const stdoutData = typeof config.stdout === "string"
+			? new TextEncoder().encode(config.stdout)
+			: config.stdout;
+		const stderrData = typeof config.stderr === "string"
+			? new TextEncoder().encode(config.stderr)
+			: config.stderr;
+
+		let exitResolve: (code: number) => void;
+		const exitPromise = new Promise<number>((r) => { exitResolve = r; });
+
+		const proc: DriverProcess = {
+			writeStdin(_data) {},
+			closeStdin() {},
+			kill(_signal) { exitResolve!(128 + _signal); },
+			wait() { return exitPromise; },
+			onStdout: null,
+			onStderr: null,
+			onExit: null,
+		};
+
+		if (config.emitDuringSpawn) {
+			// Emit synchronously during spawn via ctx callbacks
+			if (stdoutData) ctx.onStdout?.(stdoutData);
+			if (stderrData) ctx.onStderr?.(stderrData);
+			// Resolve exit on next microtask
+			queueMicrotask(() => {
+				exitResolve!(exitCode);
+				proc.onExit?.(exitCode);
+			});
+		} else {
+			// Emit on next microtask via DriverProcess callbacks
+			queueMicrotask(() => {
+				if (stdoutData) proc.onStdout?.(stdoutData);
+				if (stderrData) proc.onStderr?.(stderrData);
+				exitResolve!(exitCode);
+				proc.onExit?.(exitCode);
+			});
+		}
+
+		return proc;
+	}
+
+	async dispose(): Promise<void> {}
+}
+
+// ---------------------------------------------------------------------------
+// createTestKernel
+// ---------------------------------------------------------------------------
+
+export interface TestKernelResult {
+	kernel: Kernel;
+	vfs: TestFileSystem;
+}
+
+/**
+ * Create a kernel with TestFileSystem, optionally mounting provided drivers.
+ */
+export async function createTestKernel(options?: {
+	drivers?: RuntimeDriver[];
+}): Promise<TestKernelResult> {
+	const vfs = new TestFileSystem();
+	const kernel = createKernel({ filesystem: vfs });
+
+	if (options?.drivers) {
+		for (const driver of options.drivers) {
+			await kernel.mount(driver);
+		}
+	}
+
+	return { kernel, vfs };
 }

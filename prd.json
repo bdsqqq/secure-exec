@@ -276,8 +276,8 @@
         "Tests pass"
       ],
       "priority": 16,
-      "passes": false,
-      "notes": "This story creates the test foundation AND fixes three foundational kernel bugs that block all downstream stories: (1) stdout callback race — exec() loses data emitted during spawn, (2) PID allocation race — concurrent spawns get wrong PIDs, (3) fdRead returns empty bytes — file reads are broken. All three must be fixed here or nothing works."
+      "passes": true,
+      "notes": "Fixed three kernel bugs (stdout callback race, PID allocation race, fdRead empty bytes), added MockRuntimeDriver + createTestKernel helpers, 12 integration tests passing."
     },
     {
       "id": "US-017",

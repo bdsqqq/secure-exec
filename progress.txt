@@ -15,6 +15,10 @@ Started: 2026-03-16
 - Concrete VFS/FDTable/bridge implementations live in test/helpers/ (test infrastructure only)
 - WasmVM package name is `@secure-exec/runtime-wasmvm` (not `@secure-exec/wasmvm`)
 - WasmVM tests use vitest (describe/it/expect); vitest.config.ts in package root, test script is `vitest run`
+- Kernel ProcessTable.allocatePid() atomically allocates PIDs; register() takes a pre-allocated PID
+- Kernel ProcessContext has optional onStdout/onStderr for data emitted during spawn (before DriverProcess callbacks)
+- Kernel fdRead is async (returns Promise<Uint8Array>) — reads from VFS at cursor position
+- Use createTestKernel({ drivers: [...] }) and MockRuntimeDriver for kernel integration tests
 
 ---
 
@@ -165,4 +169,21 @@ Started: 2026-03-16
   - `assert.throws(fn, { name, prop })` has no direct vitest equivalent — use `expect(fn).toThrow(ErrorClass)` + separate property checks
   - vitest auto-detects SharedArrayBuffer and Worker tests — no special config needed
   - Conversion is mechanical: imports + assertion API, no logic changes needed
+---
+
+## 2026-03-16 - US-016
+- Fixed 3 foundational kernel bugs:
+  - BUG 1 (stdout callback race): Added optional onStdout/onStderr to ProcessContext, wired before driver.spawn(). Also buffer on DriverProcess after spawn returns. Replay buffered data when exec() sets final callbacks.
+  - BUG 2 (PID allocation race): Added ProcessTable.allocatePid() for atomic PID allocation. Changed register() to accept pre-allocated PID. spawnInternal() now allocates PID before driver.spawn().
+  - BUG 3 (fdRead empty bytes): Made KernelInterface.fdRead async, implemented actual VFS read at cursor position with cursor advancement.
+- Added MockRuntimeDriver: configurable commands, exit codes, stdout/stderr, emitDuringSpawn flag
+- Added createTestKernel(): creates kernel with TestFileSystem, mounts optional drivers
+- Created kernel-integration.test.ts with 12 tests covering: mount, spawn, exec, unknown command, dispose, driver init, sync stdout/stderr capture, concurrent PID uniqueness, fdRead with cursor, fdRead EBADF, VFS convenience wrappers
+- Files changed: kernel.ts, types.ts, process-table.ts, helpers.ts, kernel-integration.test.ts (new), process-table.test.ts
+- 48 kernel tests pass, 340 WasmVM tests pass, typecheck passes
+- **Learnings for future iterations:**
+  - Drivers can emit stdout/stderr during spawn() before DriverProcess.onStdout is set — use ctx.onStdout for this
+  - KernelInterface.fdRead is now async (Promise<Uint8Array>) due to VFS being async — downstream drivers need to handle this
+  - ProcessTable.register() now requires a pre-allocated PID as first argument (breaking change from old API)
+  - TestFileSystem works well for integration tests — write files via VFS, then exercise kernel FD operations
 ---

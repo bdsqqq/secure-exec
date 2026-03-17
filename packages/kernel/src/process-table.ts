@@ -15,15 +15,20 @@ export class ProcessTable {
 	private nextPid = 1;
 	private waiters: Map<number, Array<(info: { pid: number; status: number }) => void>> = new Map();
 
-	/** Allocate a new PID and register the process. */
+	/** Atomically allocate the next PID. */
+	allocatePid(): number {
+		return this.nextPid++;
+	}
+
+	/** Register a process with a pre-allocated PID. */
 	register(
+		pid: number,
 		driver: string,
 		command: string,
 		args: string[],
 		ctx: ProcessContext,
 		driverProcess: DriverProcess,
 	): ProcessEntry {
-		const pid = this.nextPid++;
 		const entry: ProcessEntry = {
 			pid,
 			ppid: ctx.ppid,

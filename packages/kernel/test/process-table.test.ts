@@ -45,8 +45,10 @@ describe("ProcessTable", () => {
 		const proc1 = createMockDriverProcess();
 		const proc2 = createMockDriverProcess();
 
-		const entry1 = table.register("wasmvm", "grep", ["-r", "foo"], createCtx(), proc1);
-		const entry2 = table.register("node", "node", ["-e", "1+1"], createCtx(), proc2);
+		const pid1 = table.allocatePid();
+		const pid2 = table.allocatePid();
+		const entry1 = table.register(pid1, "wasmvm", "grep", ["-r", "foo"], createCtx(), proc1);
+		const entry2 = table.register(pid2, "node", "node", ["-e", "1+1"], createCtx(), proc2);
 
 		expect(entry1.pid).toBe(1);
 		expect(entry2.pid).toBe(2);
@@ -57,7 +59,7 @@ describe("ProcessTable", () => {
 	it("waitpid resolves when process exits", async () => {
 		const table = new ProcessTable();
 		const proc = createMockDriverProcess(10);
-		table.register("wasmvm", "echo", ["hello"], createCtx(), proc);
+		table.register(table.allocatePid(), "wasmvm", "echo", ["hello"], createCtx(), proc);
 
 		const result = await table.waitpid(1);
 		expect(result.pid).toBe(1);
@@ -67,7 +69,7 @@ describe("ProcessTable", () => {
 	it("waitpid resolves immediately for already-exited process", async () => {
 		const table = new ProcessTable();
 		const proc = createMockDriverProcess();
-		table.register("wasmvm", "true", [], createCtx(), proc);
+		table.register(table.allocatePid(), "wasmvm", "true", [], createCtx(), proc);
 
 		// Manually mark as exited
 		table.markExited(1, 42);
@@ -86,7 +88,7 @@ describe("ProcessTable", () => {
 			origKill.call(proc, signal);
 		};
 
-		table.register("wasmvm", "sleep", ["100"], createCtx(), proc);
+		table.register(table.allocatePid(), "wasmvm", "sleep", ["100"], createCtx(), proc);
 		table.kill(1, 15);
 
 		expect(killedWith).toBe(15);
@@ -99,8 +101,8 @@ describe("ProcessTable", () => {
 
 	it("listProcesses returns read-only view", () => {
 		const table = new ProcessTable();
-		table.register("wasmvm", "ls", [], createCtx(), createMockDriverProcess());
-		table.register("node", "node", [], createCtx(), createMockDriverProcess());
+		table.register(table.allocatePid(), "wasmvm", "ls", [], createCtx(), createMockDriverProcess());
+		table.register(table.allocatePid(), "node", "node", [], createCtx(), createMockDriverProcess());
 
 		const list = table.listProcesses();
 		expect(list.size).toBe(2);

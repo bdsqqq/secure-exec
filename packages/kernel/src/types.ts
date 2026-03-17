@@ -118,6 +118,10 @@ export interface ProcessContext {
 	env: Record<string, string>;
 	cwd: string;
 	fds: { stdin: number; stdout: number; stderr: number };
+	/** Kernel-provided callback for stdout data emitted during spawn. */
+	onStdout?: (data: Uint8Array) => void;
+	/** Kernel-provided callback for stderr data emitted during spawn. */
+	onStderr?: (data: Uint8Array) => void;
 }
 
 export interface DriverProcess {
@@ -151,7 +155,7 @@ export interface KernelInterface {
 
 	// FD operations (per-PID)
 	fdOpen(pid: number, path: string, flags: number, mode?: number): number;
-	fdRead(pid: number, fd: number, length: number): Uint8Array;
+	fdRead(pid: number, fd: number, length: number): Promise<Uint8Array>;
 	fdWrite(pid: number, fd: number, data: Uint8Array): number;
 	fdClose(pid: number, fd: number): void;
 	fdSeek(

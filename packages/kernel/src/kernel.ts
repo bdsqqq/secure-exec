@@ -195,26 +195,37 @@ class KernelImpl implements Kernel {
 			throw new Error(`ENOENT: command not found: ${command}`);
 		}
 
-		// Allocate PID
-		const pid = this.processTable["nextPid"];
+		// Allocate PID atomically
+		const pid = this.processTable.allocatePid();
 
 		// Create FD table for the new process
 		this.fdTableManager.create(pid);
 
-		// Build process context
+		// Buffer stdout/stderr — wired before spawn so nothing is lost
+		const stdoutBuf: Uint8Array[] = [];
+		const stderrBuf: Uint8Array[] = [];
+
+		// Build process context with pre-wired callbacks
 		const ctx: ProcessContext = {
 			pid,
 			ppid: 0,
 			env: { ...this.env, ...options?.env },
 			cwd: options?.cwd ?? this.cwd,
 			fds: { stdin: 0, stdout: 1, stderr: 2 },
+			onStdout: (data) => stdoutBuf.push(data),
+			onStderr: (data) => stderrBuf.push(data),
 		};
 
 		// Spawn via driver
 		const driverProcess = driver.spawn(command, args, ctx);
 
+		// Also buffer data emitted via DriverProcess callbacks after spawn returns
+		driverProcess.onStdout = (data) => stdoutBuf.push(data);
+		driverProcess.onStderr = (data) => stderrBuf.push(data);
+
 		// Register in process table
 		const entry = this.processTable.register(
+			pid,
 			driver.name,
 			command,
 			args,
@@ -230,9 +241,18 @@ class KernelImpl implements Kernel {
 			closeStdin: () => driverProcess.closeStdin(),
 			kill: (signal) => driverProcess.kill(signal ?? 15),
 			get onStdout() { return driverProcess.onStdout; },
-			set onStdout(fn) { driverProcess.onStdout = fn; },
+			set onStdout(fn) {
+				driverProcess.onStdout = fn;
+				// Replay buffered data
+				if (fn) for (const chunk of stdoutBuf) fn(chunk);
+				stdoutBuf.length = 0;
+			},
 			get onStderr() { return driverProcess.onStderr; },
-			set onStderr(fn) { driverProcess.onStderr = fn; },
+			set onStderr(fn) {
+				driverProcess.onStderr = fn;
+				if (fn) for (const chunk of stderrBuf) fn(chunk);
+				stderrBuf.length = 0;
+			},
 		};
 	}
 
@@ -277,21 +297,24 @@ class KernelImpl implements Kernel {
 				const filetype = FILETYPE_REGULAR_FILE;
 				return table.open(path, flags, filetype);
 			},
-			fdRead: (pid, fd, length) => {
+			fdRead: async (pid, fd, length) => {
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) throw new Error(`EBADF: bad file descriptor ${fd}`);
 
-				// Check if this is a pipe
+				// Pipe reads handled separately by drivers
 				if (this.pipeManager.isPipe(entry.description.id)) {
-					// Synchronous read not supported for pipes via this path
-					// Drivers should use async pipe reads
 					return new Uint8Array(0);
 				}
 
-				// For regular files, this would need to be async in practice.
-				// Return empty for now — drivers use vfs.readFile directly.
-				return new Uint8Array(0);
+				// Read from VFS at cursor position
+				const content = await this.vfs.readFile(entry.description.path);
+				const cursor = Number(entry.description.cursor);
+				if (cursor >= content.length) return new Uint8Array(0);
+				const end = Math.min(cursor + length, content.length);
+				const slice = content.slice(cursor, end);
+				entry.description.cursor = BigInt(end);
+				return slice;
 			},
 			fdWrite: (pid, fd, data) => {
 				const table = this.getTable(pid);
