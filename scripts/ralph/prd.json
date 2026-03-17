@@ -197,7 +197,7 @@
         "Tests pass"
       ],
       "priority": 13,
-      "passes": false,
+      "passes": true,
       "notes": "P2 — packages/kernel/src/process-table.ts:78-79. 60s setTimeout may fire after dispose."
     },
     {
@@ -407,10 +407,13 @@
     },
     {
       "id": "US-026",
-      "title": "Create CLI interactive shell entry point (secure-exec-shell)",
-      "description": "As a developer, I need a one-command entry point that wires kernel.openShell() to my terminal so I can interactively use the kernel shell for testing and debugging.",
+      "title": "Create kernel.connectTerminal() and CLI interactive shell",
+      "description": "As a developer, I need a reusable connectTerminal() method and a CLI entry point so I can get an interactive shell inside the kernel from any Node program or from the command line.",
       "acceptanceCriteria": [
-        "Script at scripts/shell.ts (or packages/secure-exec/src/cli/shell.ts) wires kernel.openShell() to process.stdin/stdout",
+        "kernel.connectTerminal(options?) exported — wires openShell() to process.stdin/stdout/resize, returns Promise<number> (exit code)",
+        "connectTerminal sets raw mode, forwards stdin, forwards stdout, handles resize, restores terminal on exit",
+        "connectTerminal accepts same options as openShell (command, args, env, cols, rows) plus onData override",
+        "Script at scripts/shell.ts uses kernel.connectTerminal() as a one-liner CLI entry point",
         "Running the script drops into an interactive shell inside the kernel",
         "process.stdin set to raw mode — arrow keys, tab, backspace pass through correctly",
         "^C sends SIGINT (cancels command, does not exit shell)",
@@ -424,7 +427,7 @@
       ],
       "priority": 26,
       "passes": false,
-      "notes": "P4 — depends on US-025 (kernel.openShell). Thin CLI wrapper ~30 lines."
+      "notes": "P4 — depends on US-025 (kernel.openShell). kernel.connectTerminal() is the reusable API; scripts/shell.ts is the CLI wrapper that calls it."
     },
     {
       "id": "US-027",
