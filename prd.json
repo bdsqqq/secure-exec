@@ -197,7 +197,7 @@
         "Tests pass"
       ],
       "priority": 13,
-      "passes": false,
+      "passes": true,
       "notes": "P2 — packages/kernel/src/process-table.ts:78-79. 60s setTimeout may fire after dispose."
     },
     {

@@ -14,6 +14,7 @@ export class ProcessTable {
 	private entries: Map<number, ProcessEntry> = new Map();
 	private nextPid = 1;
 	private waiters: Map<number, Array<(info: { pid: number; status: number }) => void>> = new Map();
+	private zombieTimers: Map<number, ReturnType<typeof setTimeout>> = new Map();
 
 	/** Called when a process exits, before waiters are notified. */
 	onProcessExit: ((pid: number) => void) | null = null;
@@ -81,8 +82,12 @@ export class ProcessTable {
 			this.waiters.delete(pid);
 		}
 
-		// Schedule zombie cleanup
-		setTimeout(() => this.reap(pid), ZOMBIE_TTL_MS);
+		// Schedule zombie cleanup (tracked for cancellation on dispose)
+		const timer = setTimeout(() => {
+			this.zombieTimers.delete(pid);
+			this.reap(pid);
+		}, ZOMBIE_TTL_MS);
+		this.zombieTimers.set(pid, timer);
 	}
 
 	/**
@@ -148,8 +153,14 @@ export class ProcessTable {
 		}
 	}
 
-	/** Terminate all running processes. */
+	/** Terminate all running processes and clear pending timers. */
 	async terminateAll(): Promise<void> {
+		// Clear all zombie cleanup timers to prevent post-dispose firings
+		for (const timer of this.zombieTimers.values()) {
+			clearTimeout(timer);
+		}
+		this.zombieTimers.clear();
+
 		const running = [...this.entries.values()].filter(
 			(e) => e.status === "running",
 		);

@@ -201,3 +201,16 @@ PRD: ralph/kernel-hardening (46 stories)
   - Existing US-001 tests already verify FD table removal; US-012 adds chain verification (exit causes downstream effects like pipe EOF)
   - fdOpen throwing ESRCH is the observable proxy for "FDTableManager has no entry" since has()/size aren't exposed through KernelInterface
 ---
+
+## 2026-03-17 - US-013
+- What was implemented: Track zombie cleanup timer IDs and clear them on kernel dispose to prevent post-dispose timer firings
+- Files changed:
+  - packages/kernel/src/process-table.ts — added zombieTimers Map, store timer IDs in markExited, clear all in terminateAll
+  - packages/kernel/test/kernel-integration.test.ts — added 2 tests: single zombie dispose and 10-zombie batch dispose
+  - prd.json — marked US-013 as passes: true
+- **Learnings for future iterations:**
+  - ProcessTable.markExited schedules `setTimeout(() => this.reap(pid), 60_000)` — these timers can fire after kernel.dispose() if not tracked
+  - terminateAll() is the natural place to clear zombie timers since it's called by KernelImpl.dispose()
+  - The fix is minimal: zombieTimers Map<number, ReturnType<typeof setTimeout>>, set in markExited, clearTimeout + clear() in terminateAll
+  - Timer callback also deletes from the map to avoid retaining references to already-fired timers
+---
