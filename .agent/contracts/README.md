@@ -24,3 +24,5 @@ Behavioral contracts for secure-exec. These are the source of truth for runtime,
 | [isolate-runtime-source-architecture](isolate-runtime-source-architecture.md) | Isolate runtime source layout and compilation contracts |
 | [runtime-driver-integration-testing](runtime-driver-integration-testing.md) | Runtime-agnostic test suites, TestContext, target enumeration |
 | [runtime-driver-test-suite-structure](runtime-driver-test-suite-structure.md) | Canonical test layout, shared suite execution |
+| [kernel](kernel.md) | VFS semantics, FD table lifecycle, process table management, device layer intercepts, pipe manager blocking/EOF, command registry resolution, permission deny-by-default wrapping |
+| [kernel-runtime-driver](kernel-runtime-driver.md) | RuntimeDriver interface lifecycle, command registration rules, ProcessContext requirements, DriverProcess exit/kill/stdio contract, kernel spawn/exec orchestration |
