@@ -644,3 +644,15 @@ Started: 2026-03-16
   - Combine skip guards with `||` for tests needing multiple optional dependencies
   - Python -c flag with escaped quotes works through WasmVM shell: `python -c "import json; print(json.dumps({\\"ok\\": True}))"`
 ---
+
+## 2026-03-16 - US-039
+- Created `.agent/contracts/kernel.md` with behavioral contracts for: VFS interface semantics, FD table open/close/dup/dup2/fork lifecycle, process table register/waitpid/kill/zombie cleanup, device layer intercepts and EPERM rules, pipe manager blocking read/EOF/drain, command registry resolution and /bin population, permission deny-by-default wrapping
+- Created `.agent/contracts/kernel-runtime-driver.md` with behavioral contracts for: RuntimeDriver interface lifecycle (init/spawn/dispose), command registration rules, ProcessContext requirements, DriverProcess exit/kill/stdio contract, kernel spawn orchestration, kernel exec convenience
+- Updated `.agent/contracts/README.md` with new contract entries in the index table
+- Files changed: `.agent/contracts/kernel.md` (new), `.agent/contracts/kernel-runtime-driver.md` (new), `.agent/contracts/README.md` (updated)
+- **Learnings for future iterations:**
+  - Contract format uses `# name Specification` → `## Purpose` → `## Requirements` → `### Requirement:` → `#### Scenario:` with WHEN/THEN
+  - Existing contracts use imperative SHALL/MUST language for mandatory behavior
+  - Each scenario should be independently testable — avoid compound WHEN/THEN clauses
+  - Contracts are documentation-only (no code changes needed), so typecheck passes trivially via turbo cache
+---

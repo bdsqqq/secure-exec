@@ -716,8 +716,8 @@
         "Typecheck passes"
       ],
       "priority": 39,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Completed in commit b8f5870. Created kernel.md (VFS, FD table, process table, device layer, pipe manager, command registry, permissions) and kernel-runtime-driver.md (RuntimeDriver lifecycle, command registration, ProcessContext, DriverProcess exit/kill/stdio, kernel spawn/exec)."
     },
     {
       "id": "US-040",
