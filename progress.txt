@@ -550,4 +550,22 @@ PRD: ralph/kernel-hardening (46 stories)
   - InMemoryFileSystem needs explicit symlink tracking (Map<string, string>) and a resolveSymlink() helper with max-depth loop detection
   - VirtualStat.isSymbolicLink must be optional (?) since older code doesn't set it
   - runtime-node has two VFS adapters (createKernelVfsAdapter, createHostFallbackVfs) that both need updating for new VFS methods
+- Project-matrix sandbox has no NetworkAdapter — http.createServer().listen() throws; pass useDefaultNetwork to createNodeDriver to enable HTTP server fixtures
+- Express/Fastify fixtures can dispatch mock requests via `app(req, res, cb)` with EventEmitter-based req/res; emit req 'end' synchronously (not nextTick) to avoid sandbox async errors
+---
+
+## 2026-03-17 - US-036
+- What was implemented: Express project-matrix fixture that loads Express, creates an app with 3 routes, dispatches mock requests through the app handler, and verifies JSON responses
+- Files changed:
+  - packages/secure-exec/tests/projects/express-pass/package.json — new fixture with express@4.21.2
+  - packages/secure-exec/tests/projects/express-pass/fixture.json — pass expectation
+  - packages/secure-exec/tests/projects/express-pass/src/index.js — Express app with programmatic dispatch
+  - prd.json — marked US-036 as passes: true
+- **Learnings for future iterations:**
+  - Express can be tested programmatically without HTTP server by passing mock req/res objects through `app(req, res, callback)` — Express's `setPrototypeOf` adds its methods (json, send, etc.) to the mock
+  - Mock req/res must have own properties for `end`, `setHeader`, `getHeader`, `removeHeader`, `writeHead`, `write` since Express's prototype chain expects them
+  - Mock res needs `socket` and `connection` objects with `writable: true`, `on()`, `end()`, `destroy()` to prevent crashes from `on-finished` and `finalhandler` packages
+  - Do NOT emit req 'end' event via `process.nextTick` — causes async error in sandbox's EventEmitter; emit synchronously after `app()` call instead
+  - Sandbox project-matrix has NO NetworkAdapter, so `http.createServer().listen()` throws; `useDefaultNetwork: true` on createNodeDriver would enable it
+  - Kernel e2e project-matrix tests skip locally when WASM binary is not built (skipUnlessWasmBuilt)
 ---

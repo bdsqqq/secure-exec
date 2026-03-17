@@ -611,7 +611,7 @@
         "Tests pass"
       ],
       "priority": 36,
-      "passes": false,
+      "passes": true,
       "notes": "P6 — packages/secure-exec/tests/projects/. Must be sandbox-blind."
     },
     {
