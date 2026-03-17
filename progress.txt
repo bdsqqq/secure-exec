@@ -509,3 +509,16 @@ PRD: ralph/kernel-hardening (46 stories)
   - cpSync for directories requires explicit `{ recursive: true }` to match Node.js semantics — without it, throws ERR_FS_EISDIR
   - mkdtempSync uses Math.random().toString(36).slice(2, 8) for suffix — good enough for VFS uniqueness, no crypto needed
 ---
+
+## 2026-03-17 - US-034
+- What was implemented: Added glob, statfs, readv, fdatasync, fsync APIs to the bridge fs module
+- Files changed:
+  - packages/secure-exec/src/bridge/fs.ts — added fsyncSync/fdatasyncSync (no-op, validate FD), readvSync (scatter-read using readSync), statfsSync (synthetic TMPFS stats), globSync (VFS pattern matching with glob-to-regex), plus async callback and promise forms for all
+  - packages/secure-exec/tests/runtime-driver/node/index.test.ts — added 20 tests covering sync, callback, and promise forms for all 5 APIs
+  - prd.json — marked US-034 passes: true
+- **Learnings for future iterations:**
+  - All five APIs implemented purely on isolate side — no new host bridge globals needed (glob walks VFS via readdirSync/statSync, statfs returns synthetic values, readv uses readSync, fsync/fdatasync are no-ops)
+  - StatsFs type in Node.js @types expects number fields (not bigint) — use `as unknown as nodeFs.StatsFs` cast for synthetic return
+  - Glob implementation uses late-bound references (`_globReadDir`, `_globStat`) assigned after `fs` object definition to avoid circular reference issues
+  - readvSync follows writev pattern: iterate buffers, call readSync per buffer, advance position, stop on partial read (EOF)
+---

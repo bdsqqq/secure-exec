@@ -1544,4 +1544,377 @@ describe("NodeRuntime", () => {
 		`);
 		expect(result.exports).toBe("ENOENT");
 	});
+
+	// fs.fsyncSync / fs.fdatasyncSync — no-op for in-memory VFS
+	it("fsyncSync succeeds on open file descriptor", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data");
+		await vfs.writeFile("/data/file.txt", "content");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			const fd = fs.openSync('/data/file.txt', 'r');
+			fs.fsyncSync(fd);
+			fs.closeSync(fd);
+			module.exports = 'ok';
+		`);
+		expect(result.exports).toBe("ok");
+	});
+
+	it("fdatasyncSync succeeds on open file descriptor", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data");
+		await vfs.writeFile("/data/file.txt", "content");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			const fd = fs.openSync('/data/file.txt', 'w');
+			fs.writeSync(fd, 'updated');
+			fs.fdatasyncSync(fd);
+			fs.closeSync(fd);
+			module.exports = fs.readFileSync('/data/file.txt', 'utf8');
+		`);
+		expect(result.exports).toBe("updated");
+	});
+
+	it("fsyncSync throws EBADF for invalid fd", async () => {
+		proc = createTestNodeRuntime({
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			try {
+				fs.fsyncSync(999);
+				module.exports = 'no error';
+			} catch (e) {
+				module.exports = e.code;
+			}
+		`);
+		expect(result.exports).toBe("EBADF");
+	});
+
+	it("fdatasyncSync throws EBADF for invalid fd", async () => {
+		proc = createTestNodeRuntime({
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			try {
+				fs.fdatasyncSync(999);
+				module.exports = 'no error';
+			} catch (e) {
+				module.exports = e.code;
+			}
+		`);
+		expect(result.exports).toBe("EBADF");
+	});
+
+	it("fsync callback form succeeds on valid fd", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data");
+		await vfs.writeFile("/data/file.txt", "hello");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			const fd = fs.openSync('/data/file.txt', 'r');
+			let cbResult;
+			fs.fsync(fd, (err) => {
+				cbResult = err ? err.code : 'ok';
+				fs.closeSync(fd);
+			});
+			module.exports = cbResult;
+		`);
+		expect(result.exports).toBe("ok");
+	});
+
+	// fs.readvSync / fs.readv — scatter-read into multiple buffers
+	it("readvSync reads into multiple buffers", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data");
+		await vfs.writeFile("/data/file.txt", "hello world!");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			const fd = fs.openSync('/data/file.txt', 'r');
+			const buf1 = Buffer.alloc(5);
+			const buf2 = Buffer.alloc(7);
+			const bytesRead = fs.readvSync(fd, [buf1, buf2]);
+			fs.closeSync(fd);
+			module.exports = {
+				bytesRead,
+				buf1: buf1.toString('utf8'),
+				buf2: buf2.toString('utf8'),
+			};
+		`);
+		expect(result.exports).toEqual({
+			bytesRead: 12,
+			buf1: "hello",
+			buf2: " world!",
+		});
+	});
+
+	it("readvSync reads sequentially (second buffer continues from first)", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data");
+		await vfs.writeFile("/data/file.txt", "abcdef");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			const fd = fs.openSync('/data/file.txt', 'r');
+			const buf1 = Buffer.alloc(3);
+			const buf2 = Buffer.alloc(3);
+			const bytesRead = fs.readvSync(fd, [buf1, buf2]);
+			fs.closeSync(fd);
+			module.exports = {
+				bytesRead,
+				buf1: buf1.toString('utf8'),
+				buf2: buf2.toString('utf8'),
+			};
+		`);
+		expect(result.exports).toEqual({
+			bytesRead: 6,
+			buf1: "abc",
+			buf2: "def",
+		});
+	});
+
+	it("readvSync throws EBADF for invalid fd", async () => {
+		proc = createTestNodeRuntime({
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			try {
+				fs.readvSync(999, [Buffer.alloc(10)]);
+				module.exports = 'no error';
+			} catch (e) {
+				module.exports = e.code;
+			}
+		`);
+		expect(result.exports).toBe("EBADF");
+	});
+
+	it("readv callback form reads into buffers", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data");
+		await vfs.writeFile("/data/file.txt", "foobar");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			const fd = fs.openSync('/data/file.txt', 'r');
+			const buf1 = Buffer.alloc(3);
+			const buf2 = Buffer.alloc(3);
+			let out;
+			fs.readv(fd, [buf1, buf2], null, (err, bytesRead, buffers) => {
+				fs.closeSync(fd);
+				out = { bytesRead, b1: buf1.toString('utf8'), b2: buf2.toString('utf8') };
+			});
+			module.exports = out;
+		`);
+		expect(result.exports).toEqual({
+			bytesRead: 6,
+			b1: "foo",
+			b2: "bar",
+		});
+	});
+
+	// fs.statfsSync / fs.statfs — synthetic filesystem stats
+	it("statfsSync returns filesystem stats", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			const stats = fs.statfsSync('/data');
+			module.exports = {
+				hasType: typeof stats.type === 'number',
+				hasBsize: typeof stats.bsize === 'number',
+				hasBlocks: stats.blocks > 0,
+				hasBfree: stats.bfree > 0,
+				hasFiles: stats.files > 0,
+			};
+		`);
+		expect(result.exports).toEqual({
+			hasType: true,
+			hasBsize: true,
+			hasBlocks: true,
+			hasBfree: true,
+			hasFiles: true,
+		});
+	});
+
+	it("statfsSync throws ENOENT for missing path", async () => {
+		proc = createTestNodeRuntime({
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			try {
+				fs.statfsSync('/nonexistent');
+				module.exports = 'no error';
+			} catch (e) {
+				module.exports = e.code;
+			}
+		`);
+		expect(result.exports).toBe("ENOENT");
+	});
+
+	it("statfs callback form returns stats", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			let out;
+			fs.statfs('/data', (err, stats) => {
+				out = err ? err.code : { bsize: stats.bsize, hasBlocks: stats.blocks > 0 };
+			});
+			module.exports = out;
+		`);
+		expect(result.exports).toEqual({ bsize: 4096, hasBlocks: true });
+	});
+
+	it("fs.promises.statfs returns stats", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			(async () => {
+				const stats = await fs.promises.statfs('/data');
+				module.exports = {
+					type: typeof stats.type,
+					bsize: stats.bsize,
+				};
+			})();
+		`);
+		expect(result.exports).toEqual({ type: "number", bsize: 4096 });
+	});
+
+	// fs.globSync / fs.glob — pattern matching over VFS
+	it("globSync matches files by extension pattern", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data/src", { recursive: true });
+		await vfs.writeFile("/data/src/a.js", "a");
+		await vfs.writeFile("/data/src/b.ts", "b");
+		await vfs.writeFile("/data/src/c.js", "c");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			module.exports = fs.globSync('/data/src/*.js');
+		`);
+		expect(result.exports).toEqual(["/data/src/a.js", "/data/src/c.js"]);
+	});
+
+	it("globSync matches files recursively with **", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data/src/sub", { recursive: true });
+		await vfs.writeFile("/data/src/a.js", "a");
+		await vfs.writeFile("/data/src/sub/b.js", "b");
+		await vfs.writeFile("/data/src/sub/c.txt", "c");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			module.exports = fs.globSync('/data/src/**/*.js');
+		`);
+		expect(result.exports).toEqual(["/data/src/a.js", "/data/src/sub/b.js"]);
+	});
+
+	it("globSync returns empty array for no matches", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			module.exports = fs.globSync('/data/*.nope');
+		`);
+		expect(result.exports).toEqual([]);
+	});
+
+	it("glob callback form returns matching files", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data");
+		await vfs.writeFile("/data/x.js", "x");
+		await vfs.writeFile("/data/y.js", "y");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			let out;
+			fs.glob('/data/*.js', (err, matches) => {
+				out = err ? err.code : matches;
+			});
+			module.exports = out;
+		`);
+		expect(result.exports).toEqual(["/data/x.js", "/data/y.js"]);
+	});
+
+	it("fs.promises.glob returns matching files", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data");
+		await vfs.writeFile("/data/a.ts", "a");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			(async () => {
+				module.exports = await fs.promises.glob('/data/*.ts');
+			})();
+		`);
+		expect(result.exports).toEqual(["/data/a.ts"]);
+	});
 });

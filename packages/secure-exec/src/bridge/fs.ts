@@ -782,6 +782,120 @@ function createFsError(
   return err;
 }
 
+// Glob pattern matching helper — converts glob to regex and walks VFS recursively
+function _globToRegex(pattern: string): RegExp {
+  // Determine base directory vs glob portion
+  let regexStr = "";
+  let i = 0;
+  while (i < pattern.length) {
+    const ch = pattern[i];
+    if (ch === "*" && pattern[i + 1] === "*") {
+      // ** matches any depth of directories
+      if (pattern[i + 2] === "/") {
+        regexStr += "(?:.+/)?";
+        i += 3;
+      } else {
+        regexStr += ".*";
+        i += 2;
+      }
+    } else if (ch === "*") {
+      regexStr += "[^/]*";
+      i++;
+    } else if (ch === "?") {
+      regexStr += "[^/]";
+      i++;
+    } else if (ch === "{") {
+      const close = pattern.indexOf("}", i);
+      if (close !== -1) {
+        const alternatives = pattern.slice(i + 1, close).split(",");
+        regexStr += "(?:" + alternatives.map(a => a.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\*/g, "[^/]*")).join("|") + ")";
+        i = close + 1;
+      } else {
+        regexStr += "\\{";
+        i++;
+      }
+    } else if (ch === "[") {
+      const close = pattern.indexOf("]", i);
+      if (close !== -1) {
+        regexStr += pattern.slice(i, close + 1);
+        i = close + 1;
+      } else {
+        regexStr += "\\[";
+        i++;
+      }
+    } else if (".+^${}()|[]\\".includes(ch)) {
+      regexStr += "\\" + ch;
+      i++;
+    } else {
+      regexStr += ch;
+      i++;
+    }
+  }
+  return new RegExp("^" + regexStr + "$");
+}
+
+function _globGetBase(pattern: string): string {
+  // Find the longest directory prefix that has no glob characters
+  const parts = pattern.split("/");
+  const baseParts: string[] = [];
+  for (const part of parts) {
+    if (/[*?{}\[\]]/.test(part)) break;
+    baseParts.push(part);
+  }
+  return baseParts.join("/") || "/";
+}
+
+// Recursively walk VFS directory and collect matching paths
+// We use a reference to `fs` via late-binding in the fs object method
+function _globCollect(pattern: string, results: string[]): void {
+  const regex = _globToRegex(pattern);
+  const base = _globGetBase(pattern);
+
+  const walk = (dir: string): void => {
+    let entries: string[];
+    try {
+      entries = _globReadDir(dir);
+    } catch {
+      return; // Directory doesn't exist or not readable
+    }
+    for (const entry of entries) {
+      const fullPath = dir === "/" ? "/" + entry : dir + "/" + entry;
+      // Check if this path matches the pattern
+      if (regex.test(fullPath)) {
+        results.push(fullPath);
+      }
+      // Recurse into directories if pattern has ** or more segments
+      try {
+        const stat = _globStat(fullPath);
+        if (stat.isDirectory()) {
+          walk(fullPath);
+        }
+      } catch {
+        // Not a directory or stat failed — skip
+      }
+    }
+  };
+
+  // Start walking from the base directory
+  try {
+    // Check if base itself matches (edge case)
+    if (regex.test(base)) {
+      const stat = _globStat(base);
+      if (!stat.isDirectory()) {
+        results.push(base);
+        return;
+      }
+    }
+    walk(base);
+  } catch {
+    // Base doesn't exist — no matches
+  }
+}
+
+// Late-bound references — these get assigned after fs is defined
+let _globReadDir: (dir: string) => string[];
+let _globStat: (path: string) => Stats;
+
 // Type definitions for the fs module - use Node.js types
 type PathLike = nodeFs.PathLike;
 type PathOrFileDescriptor = nodeFs.PathOrFileDescriptor;
@@ -1328,6 +1442,79 @@ const fs = {
     }
   },
 
+  // fsync / fdatasync — no-op for in-memory VFS (nothing to flush to disk)
+  fsyncSync(fd: number): void {
+    if (!fdTable.has(fd)) {
+      throw createFsError("EBADF", "EBADF: bad file descriptor, fsync", "fsync");
+    }
+  },
+
+  fdatasyncSync(fd: number): void {
+    if (!fdTable.has(fd)) {
+      throw createFsError("EBADF", "EBADF: bad file descriptor, fdatasync", "fdatasync");
+    }
+  },
+
+  // readv — scatter-read into multiple buffers
+  readvSync(fd: number, buffers: ArrayBufferView[], position?: number | null): number {
+    const entry = fdTable.get(fd);
+    if (!entry) {
+      throw createFsError("EBADF", "EBADF: bad file descriptor, readv", "readv");
+    }
+    if (!canRead(entry.flags)) {
+      throw createFsError("EBADF", "EBADF: bad file descriptor, readv", "readv");
+    }
+
+    let totalBytesRead = 0;
+    for (const buffer of buffers) {
+      const target = buffer instanceof Uint8Array
+        ? buffer
+        : new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+      const bytesRead = fs.readSync(fd, target, 0, target.byteLength, position);
+      totalBytesRead += bytesRead;
+      if (position !== null && position !== undefined) {
+        position += bytesRead;
+      }
+      // EOF — stop filling further buffers
+      if (bytesRead < target.byteLength) break;
+    }
+    return totalBytesRead;
+  },
+
+  // statfs — return synthetic filesystem stats for the in-memory VFS
+  statfsSync(path: PathLike, _options?: nodeFs.StatFsOptions): nodeFs.StatsFs {
+    const pathStr = toPathString(path);
+    // Verify path exists
+    if (!fs.existsSync(pathStr)) {
+      throw createFsError(
+        "ENOENT",
+        `ENOENT: no such file or directory, statfs '${pathStr}'`,
+        "statfs",
+        pathStr
+      );
+    }
+    // Return synthetic stats — in-memory VFS has no real block device
+    return {
+      type: 0x01021997, // TMPFS_MAGIC
+      bsize: 4096,
+      blocks: 262144,    // 1GB virtual capacity
+      bfree: 262144,
+      bavail: 262144,
+      files: 1000000,
+      ffree: 999999,
+    } as unknown as nodeFs.StatsFs;
+  },
+
+  // glob — pattern matching over VFS files
+  globSync(pattern: string | string[], _options?: nodeFs.GlobOptionsWithFileTypes): string[] {
+    const patterns = Array.isArray(pattern) ? pattern : [pattern];
+    const results: string[] = [];
+    for (const pat of patterns) {
+      _globCollect(pat, results);
+    }
+    return [...new Set(results)].sort();
+  },
+
   // Async methods - wrap sync methods in callbacks/promises
   //
   // IMPORTANT: Low-level fd operations (open, close, read, write) and operations commonly
@@ -1846,6 +2033,94 @@ const fs = {
     }
   },
 
+  // fsync / fdatasync async callback forms
+  fsync(fd: number, callback?: NodeCallback<void>): Promise<void> | void {
+    if (callback) {
+      try {
+        fs.fsyncSync(fd);
+        callback(null);
+      } catch (e) {
+        callback(e as Error);
+      }
+    } else {
+      return Promise.resolve(fs.fsyncSync(fd));
+    }
+  },
+
+  fdatasync(fd: number, callback?: NodeCallback<void>): Promise<void> | void {
+    if (callback) {
+      try {
+        fs.fdatasyncSync(fd);
+        callback(null);
+      } catch (e) {
+        callback(e as Error);
+      }
+    } else {
+      return Promise.resolve(fs.fdatasyncSync(fd));
+    }
+  },
+
+  // readv async callback form
+  readv(
+    fd: number,
+    buffers: ArrayBufferView[],
+    position?: number | null | ((err: Error | null, bytesRead?: number, buffers?: ArrayBufferView[]) => void),
+    callback?: (err: Error | null, bytesRead?: number, buffers?: ArrayBufferView[]) => void
+  ): void {
+    if (typeof position === "function") {
+      callback = position;
+      position = null;
+    }
+    if (callback) {
+      try {
+        const bytesRead = fs.readvSync(fd, buffers, position as number | null);
+        callback(null, bytesRead, buffers);
+      } catch (e) {
+        callback(e as Error);
+      }
+    }
+  },
+
+  // statfs async callback form
+  statfs(
+    path: PathLike,
+    options?: nodeFs.StatFsOptions | NodeCallback<nodeFs.StatsFs>,
+    callback?: NodeCallback<nodeFs.StatsFs>
+  ): Promise<nodeFs.StatsFs> | void {
+    if (typeof options === "function") {
+      callback = options;
+      options = undefined;
+    }
+    if (callback) {
+      try {
+        callback(null, fs.statfsSync(path, options as nodeFs.StatFsOptions));
+      } catch (e) {
+        callback(e as Error);
+      }
+    } else {
+      return Promise.resolve(fs.statfsSync(path, options as nodeFs.StatFsOptions));
+    }
+  },
+
+  // glob async callback form
+  glob(
+    pattern: string | string[],
+    options?: nodeFs.GlobOptionsWithFileTypes | ((err: Error | null, matches?: string[]) => void),
+    callback?: (err: Error | null, matches?: string[]) => void
+  ): void {
+    if (typeof options === "function") {
+      callback = options;
+      options = undefined;
+    }
+    if (callback) {
+      try {
+        callback(null, fs.globSync(pattern, options as nodeFs.GlobOptionsWithFileTypes));
+      } catch (e) {
+        callback(e as Error);
+      }
+    }
+  },
+
   // fs.promises API
   // Note: Using async functions to properly catch sync errors and return rejected promises
   promises: {
@@ -1890,6 +2165,12 @@ const fs = {
     },
     async opendir(path: string, options?: nodeFs.OpenDirOptions) {
       return fs.opendirSync(path, options);
+    },
+    async statfs(path: string, options?: nodeFs.StatFsOptions) {
+      return fs.statfsSync(path, options);
+    },
+    async glob(pattern: string | string[], _options?: nodeFs.GlobOptionsWithFileTypes) {
+      return fs.globSync(pattern, _options);
     },
     async access(path: string) {
       if (!fs.existsSync(path)) {
@@ -2060,6 +2341,10 @@ const fs = {
     throw new Error("fs.utimes is not supported in sandbox");
   },
 };
+
+// Wire late-bound glob helpers to the fs object
+_globReadDir = (dir: string) => fs.readdirSync(dir) as string[];
+_globStat = (path: string) => fs.statSync(path);
 
 // Export the fs module
 export default fs;
