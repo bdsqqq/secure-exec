@@ -255,7 +255,7 @@
         "Typecheck passes"
       ],
       "priority": 17,
-      "passes": false,
+      "passes": true,
       "notes": "P3 — full type reference for kernel package"
     },
     {
@@ -269,7 +269,7 @@
         "Typecheck passes"
       ],
       "priority": 18,
-      "passes": false,
+      "passes": true,
       "notes": "P3"
     },
     {
@@ -283,7 +283,7 @@
         "Typecheck passes"
       ],
       "priority": 19,
-      "passes": false,
+      "passes": true,
       "notes": "P3"
     },
     {
@@ -296,7 +296,7 @@
         "Typecheck passes"
       ],
       "priority": 20,
-      "passes": false,
+      "passes": true,
       "notes": "P3 — update existing docs/docs.json"
     },
     {

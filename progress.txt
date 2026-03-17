@@ -264,3 +264,14 @@ PRD: ralph/kernel-hardening (46 stories)
   - Follows Mintlify MDX style with Steps, Tabs, Info components and 50-70% code ratio
   - docs.json already has the Kernel group with all 4 pages registered
 ---
+
+## 2026-03-17 - US-017, US-018, US-019, US-020
+- What was implemented: All four docs stories were already scaffolded in prior commit (10bb4f9). Verified acceptance criteria met. Moved Kernel group in docs.json to between Features and Reference per US-020 AC.
+- Files changed:
+  - docs/docs.json — moved Kernel group from between System Drivers and Features to between Features and Reference
+  - prd.json — marked US-017, US-018, US-019, US-020 as passes: true
+- **Learnings for future iterations:**
+  - All kernel docs (quickstart, api-reference, cross-runtime, custom-runtime) were scaffolded in the initial docs commit
+  - docs.json navigation ordering matters — acceptance criteria specified "between Features and Reference"
+  - Mintlify MDX uses Steps, Tabs, Info, CardGroup components for rich layout
+---

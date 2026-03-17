@@ -43,15 +43,6 @@
         ]
       },
       {
-        "group": "Kernel",
-        "pages": [
-          "kernel/quickstart",
-          "kernel/api-reference",
-          "kernel/cross-runtime",
-          "kernel/custom-runtime"
-        ]
-      },
-      {
         "group": "Features",
         "pages": [
           "features/permissions",
@@ -62,6 +53,15 @@
           "features/typescript",
           "features/child-processes",
           "features/output-capture"
+        ]
+      },
+      {
+        "group": "Kernel",
+        "pages": [
+          "kernel/quickstart",
+          "kernel/api-reference",
+          "kernel/cross-runtime",
+          "kernel/custom-runtime"
         ]
       },
       {
