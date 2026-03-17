@@ -19,6 +19,7 @@ import type {
 import {
   NodeExecutionDriver,
   createNodeDriver,
+  allowAllChildProcess,
 } from 'secure-exec';
 import type {
   CommandExecutor,
@@ -299,6 +300,7 @@ class NodeRuntimeDriver implements RuntimeDriver {
       const systemDriver = createNodeDriver({
         filesystem,
         commandExecutor,
+        permissions: { ...allowAllChildProcess },
         processConfig: {
           cwd: ctx.cwd,
           env: ctx.env,

@@ -269,6 +269,42 @@ describe('WasmVM RuntimeDriver', () => {
     });
   });
 
+  describe.skipIf(!hasWasmBinary)('real execution', () => {
+    let kernel: Kernel;
+
+    afterEach(async () => {
+      await kernel?.dispose();
+    });
+
+    it('exec echo hello returns stdout hello\\n', async () => {
+      const vfs = new SimpleVFS();
+      kernel = createKernel({ filesystem: vfs as any });
+      await kernel.mount(createWasmVmRuntime({ wasmBinaryPath: WASM_BINARY_PATH }));
+
+      const result = await kernel.exec('echo hello');
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe('hello\n');
+    });
+
+    it('exec cat /dev/null exits 0', async () => {
+      const vfs = new SimpleVFS();
+      kernel = createKernel({ filesystem: vfs as any });
+      await kernel.mount(createWasmVmRuntime({ wasmBinaryPath: WASM_BINARY_PATH }));
+
+      const result = await kernel.exec('cat /dev/null');
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('exec false exits non-zero', async () => {
+      const vfs = new SimpleVFS();
+      kernel = createKernel({ filesystem: vfs as any });
+      await kernel.mount(createWasmVmRuntime({ wasmBinaryPath: WASM_BINARY_PATH }));
+
+      const result = await kernel.exec('false');
+      expect(result.exitCode).not.toBe(0);
+    });
+  });
+
   describe.skipIf(!hasWasmBinary)('proc_spawn routing', () => {
     it('proc_spawn routes through kernel.spawn()', async () => {
       // This test requires the WASM binary — verifies the critical

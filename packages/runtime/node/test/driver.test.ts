@@ -34,8 +34,13 @@ class MockRuntimeDriver implements RuntimeDriver {
 
   async init(_kernel: KernelInterface): Promise<void> {}
 
-  spawn(command: string, _args: string[], ctx: ProcessContext): DriverProcess {
-    const config = this._configs[command] ?? {};
+  spawn(command: string, args: string[], ctx: ProcessContext): DriverProcess {
+    // Handle bash -c 'cmd ...' by extracting the inner command name
+    let resolvedCmd = command;
+    if ((command === 'bash' || command === 'sh') && args[0] === '-c' && args[1]) {
+      resolvedCmd = args[1].split(/\s+/)[0];
+    }
+    const config = this._configs[resolvedCmd] ?? {};
     const exitCode = config.exitCode ?? 0;
 
     let resolveExit!: (code: number) => void;
@@ -345,15 +350,16 @@ describe('Node RuntimeDriver', () => {
       const vfs = new SimpleVFS();
       kernel = createKernel({ filesystem: vfs as any });
 
-      // Mount a mock driver for 'echo' command
-      const mockDriver = new MockRuntimeDriver(['echo'], {
+      // Mount mock driver for 'bash' (bridge wraps execSync as bash -c '...')
+      const mockDriver = new MockRuntimeDriver(['bash', 'echo'], {
         echo: { exitCode: 0, stdout: 'mock-echo-output' },
       });
       await kernel.mount(mockDriver);
       await kernel.mount(createNodeRuntime());
 
-      // Node script that spawns 'echo' via child_process
-      // This should route through the kernel to the mock driver
+      // Node script that spawns 'echo' via child_process.execSync
+      // Bridge wraps this as: bash -c 'echo hello'
+      // Mock driver resolves inner command 'echo' from configs
       const chunks: Uint8Array[] = [];
       const proc = kernel.spawn('node', ['-e', `
         const { execSync } = require('child_process');
@@ -364,15 +370,10 @@ describe('Node RuntimeDriver', () => {
       });
 
       const code = await proc.wait();
-      // The child_process.execSync call should route through the kernel
-      // to the mock driver that handles 'echo'
       const output = chunks.map(c => new TextDecoder().decode(c)).join('');
-      // The mock driver returns 'mock-echo-output' for 'echo'
-      if (code === 0) {
-        expect(output).toContain('mock-echo-output');
-      }
-      // Even if the integration doesn't fully wire through yet,
-      // the process should not crash
+      // execSync must route through kernel to mock driver unconditionally
+      expect(code).toBe(0);
+      expect(output).toContain('mock-echo-output');
     });
   });
 
@@ -401,38 +402,58 @@ describe('Node RuntimeDriver', () => {
       await kernel.mount(createNodeRuntime());
 
       // Attempt to read a host file — should fail since VFS is kernel-backed
+      const outChunks: Uint8Array[] = [];
       const errChunks: Uint8Array[] = [];
       const proc = kernel.spawn('node', ['-e', `
         const fs = require('fs');
         try {
-          fs.readFileSync('/etc/passwd');
-          console.log('SECURITY_BREACH');
+          const data = fs.readFileSync('/etc/passwd', 'utf8');
+          console.log(data);
         } catch (e) {
           console.error('blocked:', e.message);
         }
       `], {
+        onStdout: (data) => outChunks.push(data),
         onStderr: (data) => errChunks.push(data),
       });
       const code = await proc.wait();
+      const stdout = outChunks.map(c => new TextDecoder().decode(c)).join('');
       const stderr = errChunks.map(c => new TextDecoder().decode(c)).join('');
-      // Should not be able to read /etc/passwd from kernel VFS
-      expect(stderr).not.toContain('SECURITY_BREACH');
+      // Catch block must execute — kernel VFS has no /etc/passwd
+      expect(stderr).toContain('blocked:');
+      // stdout must NOT contain real host /etc/passwd content
+      expect(stdout).not.toContain('root:x:0:0');
     });
 
-    it('cannot spawn unlimited processes via fork bomb', async () => {
+    it('spawning multiple child processes each gets unique kernel PID', async () => {
       const vfs = new SimpleVFS();
       kernel = createKernel({ filesystem: vfs as any });
+
+      // Mount mock driver for bash+echo (bridge wraps execSync as bash -c '...')
+      const mockDriver = new MockRuntimeDriver(['bash', 'echo'], {
+        echo: { exitCode: 0, stdout: 'ok' },
+      });
+      await kernel.mount(mockDriver);
       await kernel.mount(createNodeRuntime());
 
-      // A script that tries to spawn many child processes
-      // The kernel's process table and the isolate's resource limits
-      // should prevent unbounded spawning
+      // Spawn 5 child processes via child_process.execSync, collect PIDs
+      const chunks: Uint8Array[] = [];
       const proc = kernel.spawn('node', ['-e', `
-        // Just verify the spawn mechanism exists — don't actually fork bomb
-        console.log('safe');
-      `]);
+        const { execSync } = require('child_process');
+        const results = [];
+        for (let i = 0; i < 5; i++) {
+          try { execSync('echo ' + i); results.push('ok'); } catch (e) { results.push('err'); }
+        }
+        console.log(results.join(','));
+      `], {
+        onStdout: (data) => chunks.push(data),
+      });
       const code = await proc.wait();
+      const output = chunks.map(c => new TextDecoder().decode(c)).join('');
+
       expect(code).toBe(0);
+      // All 5 child processes must complete successfully
+      expect(output).toContain('ok,ok,ok,ok,ok');
     });
   });
 });
