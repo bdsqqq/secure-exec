@@ -343,15 +343,17 @@ export function createDefaultNetworkAdapter(): NetworkAdapter {
 		async httpRequest(url, options) {
 			return new Promise((resolve, reject) => {
 				const urlObj = new URL(url);
+				const isHttps = urlObj.protocol === "https:";
+				const transport = isHttps ? https : http;
 				const reqOptions: https.RequestOptions = {
 					hostname: urlObj.hostname,
-					port: urlObj.port || 443,
+					port: urlObj.port || (isHttps ? 443 : 80),
 					path: urlObj.pathname + urlObj.search,
 					method: options?.method || "GET",
 					headers: options?.headers || {},
 				};
 
-				const req = https.request(reqOptions, (res) => {
+				const req = transport.request(reqOptions, (res) => {
 					const chunks: Buffer[] = [];
 					res.on("data", (chunk: Buffer) => chunks.push(chunk));
 					res.on("end", async () => {
@@ -387,26 +389,48 @@ export function createDefaultNetworkAdapter(): NetworkAdapter {
 
 						delete headers["content-encoding"];
 
+						// Collect trailer headers
+						const trailers: Record<string, string> = {};
+						if (res.trailers) {
+							Object.entries(res.trailers).forEach(([k, v]) => {
+								if (typeof v === "string") trailers[k] = v;
+							});
+						}
+						const hasTrailers = Object.keys(trailers).length > 0;
+
+						const base = {
+							status: res.statusCode || 200,
+							statusText: res.statusMessage || "OK",
+							headers,
+							url,
+							...(hasTrailers ? { trailers } : {}),
+						};
+
 						if (isBinary) {
 							headers["x-body-encoding"] = "base64";
-							resolve({
-								status: res.statusCode || 200,
-								statusText: res.statusMessage || "OK",
-								headers,
-								body: buffer.toString("base64"),
-								url,
-							});
+							resolve({ ...base, body: buffer.toString("base64") });
 						} else {
-							resolve({
-								status: res.statusCode || 200,
-								statusText: res.statusMessage || "OK",
-								headers,
-								body: buffer.toString("utf-8"),
-								url,
-							});
+							resolve({ ...base, body: buffer.toString("utf-8") });
 						}
 					});
 					res.on("error", reject);
+				});
+
+				// Handle HTTP upgrade (101 Switching Protocols)
+				req.on("upgrade", (res, socket, head) => {
+					const headers: Record<string, string> = {};
+					Object.entries(res.headers).forEach(([k, v]) => {
+						if (typeof v === "string") headers[k] = v;
+						else if (Array.isArray(v)) headers[k] = v.join(", ");
+					});
+					socket.destroy();
+					resolve({
+						status: res.statusCode || 101,
+						statusText: res.statusMessage || "Switching Protocols",
+						headers,
+						body: head.toString(),
+						url,
+					});
 				});
 
 				req.on("error", reject);

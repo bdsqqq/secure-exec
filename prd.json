@@ -727,7 +727,7 @@
         "Tests pass"
       ],
       "priority": 43,
-      "passes": false,
+      "passes": true,
       "notes": "P7 — packages/secure-exec/src/bridge/network.ts"
     },
     {

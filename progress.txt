@@ -85,6 +85,8 @@ PRD: ralph/kernel-hardening (46 stories)
 - Sandbox Server class needs `setTimeout`, `keepAliveTimeout`, `requestTimeout` properties for framework compatibility — added as no-ops
 - Moving a module from Unsupported (Tier 5) to Deferred (Tier 4) requires changes in: module-resolver.ts, require-setup.ts, node-stdlib.md contract, and adding BUILTIN_NAMED_EXPORTS entry
 - `declare module` for untyped npm packages must live in a `.d.ts` file (not `.ts`) — TypeScript treats it as augmentation in `.ts` files and fails with TS2665
+- Host httpRequest adapter must use `http` or `https` transport based on URL protocol — always using `https` breaks localhost HTTP requests from sandbox
+- To test sandbox http.request() client behavior, create an external nodeHttp server in the test code and have the sandbox request to it
 
 ---
 
@@ -664,4 +666,20 @@ PRD: ralph/kernel-hardening (46 stories)
   - To avoid ambiguity in the tagged JSON format, all non-primitive values (including plain objects and arrays) must be tagged — prevents confusion between a tagged type `{t:"map",...}` and a plain object that happens to have a `t` key
   - Legacy JSON format fallback in deserialize ensures backwards compatibility if older serialized buffers exist
   - v8.serialize tests must roundtrip inside the isolate (serialize + deserialize in same run) since the Buffer format is sandbox-specific, not compatible with real V8 wire format
+---
+
+## 2026-03-17 - US-043
+- What was implemented: HTTP Agent pooling (maxSockets), upgrade event (101), trailer headers, socket event on ClientRequest, protocol-aware httpRequest host adapter
+- Files changed:
+  - packages/secure-exec/src/bridge/network.ts — replaced no-op Agent with full pooling implementation (per-host maxSockets queue with acquire/release), added FakeSocket class for socket events, updated ClientRequest to use agent pooling + emit 'socket' event + fire 'upgrade' on 101 + populate trailers, updated IncomingMessage to populate trailers from response
+  - packages/secure-exec/src/node/driver.ts — fixed httpRequest to use http/https based on URL protocol (was always https), added 'upgrade' event handler for 101 responses, added trailer forwarding from res.trailers
+  - packages/secure-exec/src/types.ts — added optional `trailers` field to NetworkAdapter.httpRequest return type
+  - packages/secure-exec/tests/runtime-driver/node/index.test.ts — added Agent maxSockets=1 serialization test (external HTTP server with concurrency tracking), added upgrade event test (external HTTP server with 'upgrade' handler)
+  - prd.json — marked US-043 as passes: true
+- **Learnings for future iterations:**
+  - Host httpRequest adapter was always using `https.request` regardless of URL protocol — sandbox http.request to localhost HTTP servers requires `http.request` on the host side
+  - Agent pooling is purely bridge-side: ClientRequest acquires/releases slots from the Agent, no host-side changes needed for the pooling logic
+  - For testing sandbox's http.request() behavior, create an external HTTP server in the test code (outside sandbox) — the sandbox's request goes through bridge → host adapter → real request to external server
+  - Node.js HTTP parser fires 'upgrade' event (not response callback) for 101 status — host adapter must handle this explicitly
+  - FakeSocket class satisfies `request.on('socket', cb)` API — libraries like got/axios use this to detect socket assignment
 ---

@@ -331,6 +331,10 @@ export const dns = {
 // Event listener type
 type EventListener = (...args: unknown[]) => void;
 
+// Module-level globalAgent used by ClientRequest when no agent option is provided.
+// Initialized lazily after Agent class is defined; set by createHttpModule().
+let _moduleGlobalAgent: { _acquireSlot(key: string): Promise<void>; _releaseSlot(key: string): void; _getHostKey(options: { hostname?: string; host?: string; port?: string | number }): string } | null = null;
+
 /**
  * Polyfill of Node.js `http.IncomingMessage` (client-side response). Buffers
  * the response body eagerly and emits `data`/`end` events on listener
@@ -364,7 +368,7 @@ export class IncomingMessage {
   destroyed: boolean;
   private _encoding?: string;
 
-  constructor(response?: { headers?: Record<string, string>; url?: string; status?: number; statusText?: string; body?: string }) {
+  constructor(response?: { headers?: Record<string, string>; url?: string; status?: number; statusText?: string; body?: string; trailers?: Record<string, string> }) {
     this.headers = response?.headers || {};
     this.rawHeaders = [];
     if (this.headers && typeof this.headers === "object") {
@@ -372,8 +376,17 @@ export class IncomingMessage {
         this.rawHeaders.push(k, v);
       });
     }
-    this.trailers = {};
-    this.rawTrailers = [];
+    // Populate trailers if provided
+    if (response?.trailers && typeof response.trailers === "object") {
+      this.trailers = response.trailers;
+      this.rawTrailers = [];
+      Object.entries(response.trailers).forEach(([k, v]) => {
+        this.rawTrailers.push(k, v);
+      });
+    } else {
+      this.trailers = {};
+      this.rawTrailers = [];
+    }
     this.httpVersion = "1.1";
     this.httpVersionMajor = 1;
     this.httpVersionMinor = 1;
@@ -639,7 +652,8 @@ export class IncomingMessage {
 /**
  * Polyfill of Node.js `http.ClientRequest`. Executes the request asynchronously
  * via the `_networkHttpRequestRaw` bridge and emits a `response` event with
- * an IncomingMessage.
+ * an IncomingMessage. Supports Agent-based connection pooling, socket events,
+ * HTTP upgrade (101), and trailer headers.
  */
 export class ClientRequest {
   private _options: nodeHttp.RequestOptions;
@@ -647,7 +661,9 @@ export class ClientRequest {
   private _listeners: Record<string, EventListener[]> = {};
   private _body = "";
   private _ended = false;
-  socket: null = null;
+  private _agent: { _acquireSlot(key: string): Promise<void>; _releaseSlot(key: string): void; _getHostKey(options: { hostname?: string; host?: string; port?: string | number }): string } | null;
+  private _hostKey: string;
+  socket: FakeSocket;
   finished = false;
   aborted = false;
 
@@ -655,11 +671,34 @@ export class ClientRequest {
     this._options = options;
     this._callback = callback;
 
-    // Execute request asynchronously using Promise microtask
+    // Resolve agent: false = no agent, undefined = globalAgent, or explicit Agent
+    const agentOpt = options.agent;
+    if (agentOpt === false) {
+      this._agent = null;
+    } else if (agentOpt instanceof Agent) {
+      this._agent = agentOpt;
+    } else {
+      this._agent = _moduleGlobalAgent;
+    }
+    this._hostKey = this._agent ? this._agent._getHostKey(options as { hostname?: string; host?: string; port?: string | number }) : "";
+
+    // Create socket-like object and emit 'socket' event
+    this.socket = new FakeSocket({
+      host: (options.hostname || options.host || "localhost") as string,
+      port: Number(options.port) || 80,
+    });
+    Promise.resolve().then(() => this._emit("socket", this.socket));
+
+    // Execute request asynchronously
     Promise.resolve().then(() => this._execute());
   }
 
   private async _execute(): Promise<void> {
+    // Acquire agent slot before executing
+    if (this._agent) {
+      await this._agent._acquireSlot(this._hostKey);
+    }
+
     try {
       if (typeof _networkHttpRequestRaw === 'undefined') {
         console.error('http/https request requires NetworkAdapter to be configured');
@@ -682,10 +721,20 @@ export class ClientRequest {
         status?: number;
         statusText?: string;
         body?: string;
+        trailers?: Record<string, string>;
       };
 
-      const res = new IncomingMessage(response);
       this.finished = true;
+
+      // 101 Switching Protocols → fire 'upgrade' event
+      if (response.status === 101) {
+        const res = new IncomingMessage(response);
+        const head = typeof Buffer !== "undefined" ? Buffer.alloc(0) : new Uint8Array(0);
+        this._emit("upgrade", res, this.socket, head);
+        return;
+      }
+
+      const res = new IncomingMessage(response);
 
       if (this._callback) {
         this._callback(res);
@@ -693,6 +742,11 @@ export class ClientRequest {
       this._emit("response", res);
     } catch (err) {
       this._emit("error", err);
+    } finally {
+      // Release agent slot
+      if (this._agent) {
+        this._agent._releaseSlot(this._hostKey);
+      }
     }
   }
 
@@ -765,13 +819,84 @@ export class ClientRequest {
   }
 }
 
-// Agent class - no-op stub (connection pooling not applicable with fetch-based implementation)
+// Minimal socket-like object emitted by ClientRequest 'socket' event
+class FakeSocket {
+  remoteAddress: string;
+  remotePort: number;
+  localAddress = "127.0.0.1";
+  localPort = 0;
+  connecting = false;
+  destroyed = false;
+  writable = true;
+  readable = true;
+  private _listeners: Record<string, EventListener[]> = {};
+
+  constructor(options?: { host?: string; port?: number }) {
+    this.remoteAddress = options?.host || "127.0.0.1";
+    this.remotePort = options?.port || 80;
+  }
+
+  setTimeout(_ms: number, _cb?: () => void): this { return this; }
+  setNoDelay(_noDelay?: boolean): this { return this; }
+  setKeepAlive(_enable?: boolean, _delay?: number): this { return this; }
+
+  on(event: string, listener: EventListener): this {
+    if (!this._listeners[event]) this._listeners[event] = [];
+    this._listeners[event].push(listener);
+    return this;
+  }
+
+  once(event: string, listener: EventListener): this {
+    const wrapper = (...args: unknown[]): void => {
+      this.off(event, wrapper);
+      listener(...args);
+    };
+    return this.on(event, wrapper);
+  }
+
+  off(event: string, listener: EventListener): this {
+    if (this._listeners[event]) {
+      const idx = this._listeners[event].indexOf(listener);
+      if (idx !== -1) this._listeners[event].splice(idx, 1);
+    }
+    return this;
+  }
+
+  removeListener(event: string, listener: EventListener): this {
+    return this.off(event, listener);
+  }
+
+  emit(event: string, ...args: unknown[]): boolean {
+    const handlers = this._listeners[event];
+    if (handlers) handlers.slice().forEach((fn) => fn(...args));
+    return handlers !== undefined && handlers.length > 0;
+  }
+
+  write(_data: unknown): boolean { return true; }
+  end(): this { return this; }
+
+  destroy(): this {
+    this.destroyed = true;
+    this.writable = false;
+    this.readable = false;
+    return this;
+  }
+}
+
+// HTTP Agent with connection pooling via maxSockets
 class Agent {
   maxSockets: number;
   maxFreeSockets: number;
   keepAlive: boolean;
   keepAliveMsecs: number;
   timeout: number;
+  requests: Record<string, unknown[]>;
+  sockets: Record<string, unknown[]>;
+  freeSockets: Record<string, unknown[]>;
+
+  // Per-host active count and pending queue
+  private _activeCounts = new Map<string, number>();
+  private _queues = new Map<string, Array<() => void>>();
 
   constructor(options?: {
     keepAlive?: boolean;
@@ -780,16 +905,60 @@ class Agent {
     maxFreeSockets?: number;
     timeout?: number;
   }) {
-    // Accept options but ignore them - our fetch-based implementation doesn't use connection pooling
     this.keepAlive = options?.keepAlive ?? false;
     this.keepAliveMsecs = options?.keepAliveMsecs ?? 1000;
     this.maxSockets = options?.maxSockets ?? Infinity;
     this.maxFreeSockets = options?.maxFreeSockets ?? 256;
     this.timeout = options?.timeout ?? -1;
+    this.requests = {};
+    this.sockets = {};
+    this.freeSockets = {};
+  }
+
+  _getHostKey(options: { hostname?: string; host?: string; port?: string | number }): string {
+    const host = options.hostname || options.host || "localhost";
+    const port = options.port || 80;
+    return `${host}:${port}`;
+  }
+
+  // Wait for an available slot; resolves immediately if under maxSockets
+  _acquireSlot(hostKey: string): Promise<void> {
+    const active = this._activeCounts.get(hostKey) || 0;
+    if (active < this.maxSockets) {
+      this._activeCounts.set(hostKey, active + 1);
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      let queue = this._queues.get(hostKey);
+      if (!queue) {
+        queue = [];
+        this._queues.set(hostKey, queue);
+      }
+      queue.push(resolve);
+    });
+  }
+
+  // Release a slot; dequeues next pending request if any
+  _releaseSlot(hostKey: string): void {
+    const queue = this._queues.get(hostKey);
+    if (queue && queue.length > 0) {
+      const next = queue.shift()!;
+      if (queue.length === 0) this._queues.delete(hostKey);
+      next();
+    } else {
+      const active = this._activeCounts.get(hostKey) || 1;
+      const next = active - 1;
+      if (next <= 0) this._activeCounts.delete(hostKey);
+      else this._activeCounts.set(hostKey, next);
+    }
   }
 
   destroy(): void {
-    // no-op
+    this._activeCounts.clear();
+    for (const [, queue] of this._queues) {
+      queue.length = 0;
+    }
+    this._queues.clear();
   }
 }
 
@@ -1275,6 +1444,10 @@ ServerResponseCallable.prototype = Object.create(ServerResponseBridge.prototype,
 
 // Create HTTP module
 function createHttpModule(_protocol: string): Record<string, unknown> {
+  const moduleAgent = new Agent({ keepAlive: false });
+  // Set module-level globalAgent so ClientRequest defaults to it
+  _moduleGlobalAgent = moduleAgent;
+
   return {
     request(options: string | URL | nodeHttp.RequestOptions, callback?: (res: IncomingMessage) => void): ClientRequest {
       let opts: nodeHttp.RequestOptions;
@@ -1341,7 +1514,7 @@ function createHttpModule(_protocol: string): Record<string, unknown> {
     },
 
     Agent,
-    globalAgent: new Agent({ keepAlive: false }),
+    globalAgent: moduleAgent,
     Server: Server as unknown as typeof nodeHttp.Server,
     ServerResponse: ServerResponseCallable as unknown as typeof nodeHttp.ServerResponse,
     IncomingMessage: IncomingMessage as unknown as typeof nodeHttp.IncomingMessage,

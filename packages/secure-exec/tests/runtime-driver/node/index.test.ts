@@ -1,3 +1,4 @@
+import * as nodeHttp from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	allowAllEnv,
@@ -1432,6 +1433,164 @@ describe("NodeRuntime", () => {
 			),
 		]);
 		expect(result.code).not.toBe(-999);
+	});
+
+	// http.Agent pooling — maxSockets limits concurrency
+	it("http.Agent with maxSockets=1 serializes concurrent requests", async () => {
+		// External test server that tracks concurrent requests
+		let concurrent = 0;
+		let maxConcurrent = 0;
+		const port = 33230;
+		const testServer = nodeHttp.createServer((_req, res) => {
+			concurrent++;
+			maxConcurrent = Math.max(maxConcurrent, concurrent);
+			setTimeout(() => {
+				concurrent--;
+				res.writeHead(200, { "content-type": "text/plain" });
+				res.end(String(maxConcurrent));
+			}, 100);
+		});
+
+		await new Promise<void>((resolve) =>
+			testServer.listen(port, "127.0.0.1", resolve),
+		);
+
+		try {
+			const driver = createNodeDriver({
+				filesystem: new NodeFileSystem(),
+				useDefaultNetwork: true,
+				permissions: allowFsNetworkEnv,
+			});
+			const capture = createConsoleCapture();
+			proc = createTestNodeRuntime({
+				driver,
+				processConfig: { cwd: "/" },
+				onStdio: capture.onStdio,
+			});
+
+			const result = await proc.exec(
+				`
+				(async () => {
+					const http = require('http');
+					const agent = new http.Agent({ maxSockets: 1, keepAlive: true });
+
+					const makeRequest = () => new Promise((resolve, reject) => {
+						const req = http.request({
+							hostname: '127.0.0.1',
+							port: ${port},
+							path: '/',
+							agent,
+						}, (res) => {
+							let body = '';
+							res.on('data', (d) => body += d);
+							res.on('end', () => resolve(body));
+						});
+						req.on('error', reject);
+						req.end();
+					});
+
+					const results = await Promise.all([makeRequest(), makeRequest()]);
+					console.log('RESULTS:' + JSON.stringify(results));
+					agent.destroy();
+				})();
+			`,
+			);
+
+			expect(result.code).toBe(0);
+			const stdout = capture.stdout();
+			const match = stdout.match(/RESULTS:(.+)/);
+			expect(match).toBeTruthy();
+			const results = JSON.parse(match![1]) as string[];
+			// With maxSockets=1, server should never see >1 concurrent request
+			expect(Math.max(...results.map(Number))).toBe(1);
+			expect(maxConcurrent).toBe(1);
+		} finally {
+			await new Promise<void>((resolve) =>
+				testServer.close(() => resolve()),
+			);
+		}
+	});
+
+	// HTTP upgrade — 101 response fires upgrade event
+	it("upgrade request fires upgrade event with response and socket", async () => {
+		const port = 33231;
+		const testServer = nodeHttp.createServer();
+		testServer.on("upgrade", (_req, socket) => {
+			socket.write(
+				"HTTP/1.1 101 Switching Protocols\r\n" +
+					"Upgrade: websocket\r\n" +
+					"Connection: Upgrade\r\n" +
+					"\r\n",
+			);
+			socket.end();
+		});
+
+		await new Promise<void>((resolve) =>
+			testServer.listen(port, "127.0.0.1", resolve),
+		);
+
+		try {
+			const driver = createNodeDriver({
+				filesystem: new NodeFileSystem(),
+				useDefaultNetwork: true,
+				permissions: allowFsNetworkEnv,
+			});
+			const capture = createConsoleCapture();
+			proc = createTestNodeRuntime({
+				driver,
+				processConfig: { cwd: "/" },
+				onStdio: capture.onStdio,
+			});
+
+			const result = await proc.exec(
+				`
+				(async () => {
+					const http = require('http');
+
+					const upgradeResult = await new Promise((resolve, reject) => {
+						const req = http.request({
+							hostname: '127.0.0.1',
+							port: ${port},
+							path: '/',
+							headers: { 'Connection': 'Upgrade', 'Upgrade': 'websocket' },
+							agent: false,
+						});
+
+						let socketFired = false;
+						req.on('socket', () => {
+							socketFired = true;
+						});
+
+						req.on('upgrade', (res, socket) => {
+							resolve({
+								statusCode: res.statusCode,
+								hasSocket: socket !== null && socket !== undefined,
+								socketFired,
+							});
+						});
+
+						req.on('error', reject);
+						req.end();
+					});
+
+					console.log('UPGRADE:' + JSON.stringify(upgradeResult));
+				})();
+			`,
+			);
+
+			expect(result.code).toBe(0);
+			const stdout = capture.stdout();
+			const match = stdout.match(/UPGRADE:(.+)/);
+			expect(match).toBeTruthy();
+			const upgradeResult = JSON.parse(match![1]);
+			expect(upgradeResult.statusCode).toBe(101);
+			expect(upgradeResult.hasSocket).toBe(true);
+			expect(upgradeResult.socketFired).toBe(true);
+		} finally {
+			await new Promise<void>((resolve) =>
+				testServer.close(() => resolve()),
+			);
+		}
 	});
 
 	// fs.cpSync / fs.cp — recursive directory copy

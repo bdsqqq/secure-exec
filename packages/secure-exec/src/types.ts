@@ -214,6 +214,7 @@ export interface NetworkAdapter {
 		headers: Record<string, string>;
 		body: string;
 		url: string;
+		trailers?: Record<string, string>;
 	}>;
 }
 
