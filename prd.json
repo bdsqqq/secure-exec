@@ -169,7 +169,7 @@
         "Tests pass"
       ],
       "priority": 11,
-      "passes": false,
+      "passes": true,
       "notes": "P2 — packages/kernel/src/pipe-manager.ts"
     },
     {

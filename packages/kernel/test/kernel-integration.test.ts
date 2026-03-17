@@ -661,6 +661,94 @@ describe("kernel + MockRuntimeDriver integration", () => {
 	});
 
 	// -----------------------------------------------------------------------
+	// Pipe refcount edge cases — multi-writer EOF (US-011)
+	// -----------------------------------------------------------------------
+
+	describe("pipe refcount edge cases (multi-writer EOF)", () => {
+		it("dup write end, close one copy → pipe still writable, no EOF", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			const { kernel: k } = await createTestKernel({ drivers: [driver] });
+			kernel = k;
+			const ki = driver.kernelInterface!;
+
+			const proc = kernel.spawn("proc", []);
+			const { readFd, writeFd } = ki.pipe(proc.pid);
+
+			// Dup write end — two references to same write description
+			const dupWriteFd = ki.fdDup(proc.pid, writeFd);
+
+			// Close original write FD — refCount decrements but > 0
+			ki.fdClose(proc.pid, writeFd);
+
+			// Write through dup'd FD — should still work
+			ki.fdWrite(proc.pid, dupWriteFd, new TextEncoder().encode("still open"));
+			const data = await ki.fdRead(proc.pid, readFd, 100);
+			expect(new TextDecoder().decode(data)).toBe("still open");
+
+			proc.kill(9);
+			await proc.wait();
+		});
+
+		it("close all write end copies → reader gets EOF", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			const { kernel: k } = await createTestKernel({ drivers: [driver] });
+			kernel = k;
+			const ki = driver.kernelInterface!;
+
+			const proc = kernel.spawn("proc", []);
+			const { readFd, writeFd } = ki.pipe(proc.pid);
+
+			// Dup write end — two references
+			const dupWriteFd = ki.fdDup(proc.pid, writeFd);
+
+			// Close first copy — not EOF yet
+			ki.fdClose(proc.pid, writeFd);
+
+			// Close second copy — refCount drops to 0, EOF triggered
+			ki.fdClose(proc.pid, dupWriteFd);
+
+			// Reader should get EOF (empty Uint8Array)
+			const eof = await ki.fdRead(proc.pid, readFd, 100);
+			expect(eof.length).toBe(0);
+
+			proc.kill(9);
+			await proc.wait();
+		});
+
+		it("write through both dup'd references → reader receives all data", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			const { kernel: k } = await createTestKernel({ drivers: [driver] });
+			kernel = k;
+			const ki = driver.kernelInterface!;
+
+			const proc = kernel.spawn("proc", []);
+			const { readFd, writeFd } = ki.pipe(proc.pid);
+
+			// Dup write end
+			const dupWriteFd = ki.fdDup(proc.pid, writeFd);
+
+			// Write through original FD
+			ki.fdWrite(proc.pid, writeFd, new TextEncoder().encode("from-original"));
+
+			// Write through dup'd FD
+			ki.fdWrite(proc.pid, dupWriteFd, new TextEncoder().encode("|from-dup"));
+
+			// Reader should receive both writes concatenated
+			const data = await ki.fdRead(proc.pid, readFd, 100);
+			expect(new TextDecoder().decode(data)).toBe("from-original|from-dup");
+
+			proc.kill(9);
+			await proc.wait();
+		});
+	});
+
+	// -----------------------------------------------------------------------
 	// Stdio FD override wiring (US-009)
 	// -----------------------------------------------------------------------
 

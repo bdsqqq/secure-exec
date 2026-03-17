@@ -177,3 +177,15 @@ PRD: ralph/kernel-hardening (46 stories)
   - Exit codes can be varied per command via configs (i % 256) to verify each process's exit is captured individually, not just "all exited 0"
   - ProcessTable.allocatePid() handles 100+ concurrent spawns without PID collision — atomic allocation works correctly
 ---
+
+## 2026-03-17 - US-011
+- What was implemented: Added 3 pipe refcount edge case tests verifying multi-writer EOF semantics via fdDup
+- Files changed:
+  - packages/kernel/test/kernel-integration.test.ts — added "pipe refcount edge cases (multi-writer EOF)" describe block with 3 tests
+  - prd.json — marked US-011 as passes: true
+- **Learnings for future iterations:**
+  - ki.fdDup(pid, fd) creates a new FD sharing the same FileDescription — refCount increments, both FDs can write to the same pipe
+  - Pipe EOF (empty Uint8Array from fdRead) only triggers when ALL write-end references are closed (refCount drops to 0)
+  - Single-process pipe tests (create pipe + dup in same process) are simpler than multi-process tests and sufficient for testing refcount mechanics
+  - Pipe buffer concatenates writes from any reference to the same write description — order preserved within each call
+---
