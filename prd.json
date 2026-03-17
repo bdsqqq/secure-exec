@@ -542,8 +542,8 @@
         "Tests pass"
       ],
       "priority": 30,
-      "passes": false,
-      "notes": "Two test layers: MockRuntimeDriver tests verify kernel signal routing logic, integration tests verify real runtime drivers honor kill signals."
+      "passes": true,
+      "notes": "Signal routing via process table, ManagedProcess.kill() routes through processTable.kill() for status checks"
     },
     {
       "id": "US-031",

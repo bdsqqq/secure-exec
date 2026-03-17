@@ -423,6 +423,148 @@ describe("kernel + MockRuntimeDriver integration", () => {
 	});
 
 	// -----------------------------------------------------------------------
+	// Signal forwarding
+	// -----------------------------------------------------------------------
+
+	describe("signal forwarding", () => {
+		it("kill(SIGTERM) routes to DriverProcess.kill and process exits", async () => {
+			const killSignals: number[] = [];
+			const driver = new MockRuntimeDriver(["daemon"], {
+				daemon: { neverExit: true, killSignals },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const proc = kernel.spawn("daemon", []);
+			expect(kernel.processes.get(proc.pid)?.status).toBe("running");
+
+			proc.kill(15); // SIGTERM
+			const code = await proc.wait();
+
+			expect(killSignals).toContain(15);
+			expect(code).toBe(128 + 15); // Unix convention
+		});
+
+		it("kill(SIGKILL) immediately terminates the process", async () => {
+			const killSignals: number[] = [];
+			const driver = new MockRuntimeDriver(["daemon"], {
+				daemon: { neverExit: true, killSignals },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const proc = kernel.spawn("daemon", []);
+			proc.kill(9); // SIGKILL
+			const code = await proc.wait();
+
+			expect(killSignals).toContain(9);
+			expect(code).toBe(128 + 9);
+		});
+
+		it("kill defaults to SIGTERM when no signal specified", async () => {
+			const killSignals: number[] = [];
+			const driver = new MockRuntimeDriver(["daemon"], {
+				daemon: { neverExit: true, killSignals },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const proc = kernel.spawn("daemon", []);
+			proc.kill(); // No signal arg — default SIGTERM
+			const code = await proc.wait();
+
+			expect(killSignals).toEqual([15]);
+			expect(code).toBe(128 + 15);
+		});
+
+		it("kill on non-existent PID throws ESRCH", async () => {
+			const driver = new MockRuntimeDriver(["x"]);
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			// KernelInterface.kill for a PID that was never spawned
+			const ki = driver.kernelInterface!;
+			expect(() => ki.kill(9999, 15)).toThrow("ESRCH");
+		});
+
+		it("kill on already-exited process is a no-op", async () => {
+			const killSignals: number[] = [];
+			const driver = new MockRuntimeDriver(["fast-cmd"], {
+				"fast-cmd": { exitCode: 0, killSignals },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const proc = kernel.spawn("fast-cmd", []);
+			await proc.wait(); // Wait for it to exit
+
+			// kill after exit should not throw and should not deliver signal
+			proc.kill(15);
+			expect(killSignals).toEqual([]);
+		});
+
+		it("cross-driver signal: driver A process killed via KernelInterface from driver B", async () => {
+			const killSignals: number[] = [];
+			const driverA = new MockRuntimeDriver(["daemon-a"], {
+				"daemon-a": { neverExit: true, killSignals },
+			});
+			const driverB = new MockRuntimeDriver(["worker-b"]);
+			({ kernel } = await createTestKernel({ drivers: [driverA, driverB] }));
+
+			// Spawn a process on driver A
+			const procA = kernel.spawn("daemon-a", []);
+
+			// Driver B uses KernelInterface to kill driver A's process
+			const kiB = driverB.kernelInterface!;
+			kiB.kill(procA.pid, 15);
+
+			const code = await procA.wait();
+			expect(killSignals).toContain(15);
+			expect(code).toBe(128 + 15);
+		});
+
+		it("multiple signals can be sent to the same process", async () => {
+			const killSignals: number[] = [];
+			// Process ignores first SIGTERM (neverExit stays, kill captures but doesn't resolve)
+			let killCount = 0;
+			let exitResolve: ((code: number) => void) | null = null;
+
+			const driver = new MockRuntimeDriver(["stubborn"]);
+			// Override spawn to create a custom process that ignores first signal
+			const origSpawn = driver.spawn.bind(driver);
+			driver.spawn = (command, args, ctx) => {
+				if (command !== "stubborn") return origSpawn(command, args, ctx);
+				const exitPromise = new Promise<number>((r) => { exitResolve = r; });
+				return {
+					writeStdin() {},
+					closeStdin() {},
+					kill(signal) {
+						killSignals.push(signal);
+						killCount++;
+						// Only exit on SIGKILL or second signal
+						if (signal === 9 || killCount >= 2) {
+							exitResolve!(128 + signal);
+						}
+					},
+					wait() { return exitPromise; },
+					onStdout: null,
+					onStderr: null,
+					onExit: null,
+				};
+			};
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const proc = kernel.spawn("stubborn", []);
+
+			// First SIGTERM — process ignores it
+			proc.kill(15);
+			expect(killSignals).toEqual([15]);
+
+			// SIGKILL — forces exit
+			proc.kill(9);
+			const code = await proc.wait();
+
+			expect(killSignals).toEqual([15, 9]);
+			expect(code).toBe(128 + 9);
+		});
+	});
+
+	// -----------------------------------------------------------------------
 	// Filesystem convenience wrappers
 	// -----------------------------------------------------------------------
 

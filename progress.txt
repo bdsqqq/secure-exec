@@ -483,3 +483,29 @@ Started: 2026-03-16
   - fork() shares FileDescription objects by reference — cursor position is automatically shared between parent and child FD entries
   - applyStdioOverride pattern: close inherited FD, then openWith to install override — cleaner than creating custom tables from scratch
 ---
+
+## 2026-03-16 - US-030
+- Implemented signal forwarding across runtimes with unit and integration tests
+- Fixed ManagedProcess.kill() to route through processTable.kill() instead of calling driverProcess.kill() directly — ensures exited-process status check is respected
+- Kernel unit tests (7 new in kernel-integration.test.ts):
+  - SIGTERM routes to DriverProcess.kill and process exits with 128+signal
+  - SIGKILL immediately terminates the process
+  - kill() defaults to SIGTERM when no signal specified
+  - kill on non-existent PID throws ESRCH (via KernelInterface)
+  - kill on already-exited process is a no-op (no signal delivered)
+  - Cross-driver signal: driver B kills driver A's process via KernelInterface
+  - Multiple signals: process ignores first SIGTERM, exits on SIGKILL
+- Integration tests (5 new in signal-forwarding.test.ts):
+  - SIGTERM terminates long-running WasmVM sleep process
+  - SIGKILL terminates WasmVM process
+  - Node process killed via SIGTERM
+  - Cross-runtime: WasmVM killed while Node still running
+  - kill after exit is a no-op
+- Files changed: packages/kernel/src/kernel.ts (1-line fix), packages/kernel/test/kernel-integration.test.ts, packages/secure-exec/tests/kernel/signal-forwarding.test.ts (new)
+- 66 kernel tests pass, 358 WasmVM tests pass, 22 Node driver tests pass, 157 secure-exec tests pass (5 signal tests skipped — WASM not built), typecheck passes
+- **Learnings for future iterations:**
+  - ManagedProcess.kill() must route through processTable.kill() — calling driverProcess.kill() directly bypasses the exited-process status check
+  - ProcessTable.kill() silently returns for exited processes (no error) — correct Unix semantics
+  - KernelInterface.kill(pid, signal) throws ESRCH for unknown PIDs — tests verify cross-driver routing via this path
+  - MockRuntimeDriver with neverExit + killSignals array is sufficient to test all signal routing scenarios
+---

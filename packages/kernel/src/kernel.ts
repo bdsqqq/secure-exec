@@ -295,7 +295,7 @@ class KernelImpl implements Kernel {
 				internal.writeStdin(bytes);
 			},
 			closeStdin: () => internal.closeStdin(),
-			kill: (signal) => internal.kill(signal ?? 15),
+			kill: (signal) => this.processTable.kill(internal.pid, signal ?? 15),
 			wait: () => internal.driverProcess.wait(),
 			get exitCode() { return exitCode; },
 		};
