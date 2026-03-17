@@ -53,6 +53,7 @@ export { ProcessTable } from "./process-table.js";
 export { createDeviceLayer } from "./device-layer.js";
 export { PipeManager } from "./pipe-manager.js";
 export { PtyManager } from "./pty.js";
+export type { LineDisciplineConfig } from "./pty.js";
 export { CommandRegistry } from "./command-registry.js";
 export { UserManager } from "./user.js";
 export type { UserConfig } from "./user.js";

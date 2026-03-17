@@ -8,8 +8,24 @@
  */
 
 import type { FileDescription } from "./types.js";
-import { FILETYPE_CHARACTER_DEVICE, O_RDWR, KernelError } from "./types.js";
+import {
+	FILETYPE_CHARACTER_DEVICE,
+	O_RDWR,
+	KernelError,
+	SIGINT,
+	SIGQUIT,
+	SIGTSTP,
+} from "./types.js";
 import type { ProcessFDTable } from "./fd-table.js";
+
+export interface LineDisciplineConfig {
+	/** Canonical mode: buffer input until newline, handle backspace. */
+	canonical: boolean;
+	/** Echo input bytes back through output (master reads them). */
+	echo: boolean;
+	/** Enable signal generation from control chars (^C, ^Z, ^\). */
+	isig: boolean;
+}
 
 export interface PtyEnd {
 	description: FileDescription;
@@ -30,6 +46,12 @@ interface PtyState {
 	inputWaiters: Array<(data: Uint8Array | null) => void>;
 	/** Resolves waiting for output data (master reads) */
 	outputWaiters: Array<(data: Uint8Array | null) => void>;
+	/** Line discipline configuration */
+	discipline: LineDisciplineConfig;
+	/** Canonical mode line editing buffer */
+	lineBuffer: number[];
+	/** Foreground process group for signal delivery */
+	foregroundPgid: number;
 }
 
 let nextPtyId = 0;
@@ -39,6 +61,12 @@ export class PtyManager {
 	private ptys: Map<number, PtyState> = new Map();
 	/** Map description ID → pty ID and which end */
 	private descToPty: Map<number, { ptyId: number; end: "master" | "slave" }> = new Map();
+	/** Callback for signal delivery (pgid, signal) */
+	private onSignal: ((pgid: number, signal: number) => void) | null;
+
+	constructor(onSignal?: (pgid: number, signal: number) => void) {
+		this.onSignal = onSignal ?? null;
+	}
 
 	/**
 	 * Allocate a PTY pair. Returns two FileDescriptions:
@@ -74,6 +102,9 @@ export class PtyManager {
 			closed: { master: false, slave: false },
 			inputWaiters: [],
 			outputWaiters: [],
+			discipline: { canonical: false, echo: false, isig: false },
+			lineBuffer: [],
+			foregroundPgid: 0,
 		};
 
 		this.ptys.set(id, state);
@@ -100,16 +131,10 @@ export class PtyManager {
 		if (!state) throw new KernelError("EBADF", "PTY not found");
 
 		if (ref.end === "master") {
-			// Master write → input buffer (slave reads)
+			// Master write → input direction, processed through line discipline
 			if (state.closed.master) throw new KernelError("EIO", "master closed");
 			if (state.closed.slave) throw new KernelError("EIO", "slave closed");
-
-			if (state.inputWaiters.length > 0) {
-				const waiter = state.inputWaiters.shift()!;
-				waiter(data);
-			} else {
-				state.inputBuffer.push(new Uint8Array(data));
-			}
+			return this.processInput(state, data);
 		} else {
 			// Slave write → output buffer (master reads)
 			if (state.closed.slave) throw new KernelError("EIO", "slave closed");
@@ -222,6 +247,139 @@ export class PtyManager {
 		const masterFd = fdTable.openWith(master.description, master.filetype);
 		const slaveFd = fdTable.openWith(slave.description, slave.filetype);
 		return { masterFd, slaveFd, path };
+	}
+
+	/** Set line discipline options for the PTY containing this description. */
+	setDiscipline(
+		descriptionId: number,
+		config: Partial<LineDisciplineConfig>,
+	): void {
+		const ptyId = this.getPtyId(descriptionId);
+		const state = this.ptys.get(ptyId);
+		if (!state) throw new KernelError("EBADF", "PTY not found");
+
+		if (config.canonical !== undefined) state.discipline.canonical = config.canonical;
+		if (config.echo !== undefined) state.discipline.echo = config.echo;
+		if (config.isig !== undefined) state.discipline.isig = config.isig;
+	}
+
+	/** Set the foreground process group for signal delivery on this PTY. */
+	setForegroundPgid(descriptionId: number, pgid: number): void {
+		const ptyId = this.getPtyId(descriptionId);
+		const state = this.ptys.get(ptyId);
+		if (!state) throw new KernelError("EBADF", "PTY not found");
+		state.foregroundPgid = pgid;
+	}
+
+	/** Get the PTY ID from a description ID. */
+	private getPtyId(descriptionId: number): number {
+		const ref = this.descToPty.get(descriptionId);
+		if (!ref) throw new KernelError("EBADF", "not a PTY end");
+		return ref.ptyId;
+	}
+
+	// -------------------------------------------------------------------
+	// Line discipline input processing
+	// -------------------------------------------------------------------
+
+	/**
+	 * Process input data through line discipline.
+	 * Master writes go through here before reaching the slave's input buffer.
+	 */
+	private processInput(state: PtyState, data: Uint8Array): number {
+		const { discipline } = state;
+
+		// Fast path: no discipline processing (raw pass-through)
+		if (!discipline.canonical && !discipline.echo && !discipline.isig) {
+			this.deliverInput(state, data);
+			return data.length;
+		}
+
+		// Process byte by byte through discipline
+		for (const byte of data) {
+			// Signal character handling (requires isig)
+			if (discipline.isig) {
+				const signal = this.signalForByte(byte);
+				if (signal !== null) {
+					if (discipline.canonical) state.lineBuffer.length = 0;
+					if (state.foregroundPgid > 0) this.onSignal?.(state.foregroundPgid, signal);
+					continue;
+				}
+			}
+
+			if (discipline.canonical) {
+				// ^D: EOF or flush
+				if (byte === 0x04) {
+					if (state.lineBuffer.length === 0) {
+						this.deliverInput(state, new Uint8Array(0));
+					} else {
+						this.deliverInput(state, new Uint8Array(state.lineBuffer));
+						state.lineBuffer.length = 0;
+					}
+					continue;
+				}
+
+				// Backspace / DEL: erase last char
+				if (byte === 0x7f || byte === 0x08) {
+					if (state.lineBuffer.length > 0) {
+						state.lineBuffer.pop();
+						if (discipline.echo) {
+							this.echoOutput(state, new Uint8Array([0x08, 0x20, 0x08]));
+						}
+					}
+					continue;
+				}
+
+				// Newline: flush line
+				if (byte === 0x0a) {
+					state.lineBuffer.push(0x0a);
+					if (discipline.echo) this.echoOutput(state, new Uint8Array([0x0a]));
+					this.deliverInput(state, new Uint8Array(state.lineBuffer));
+					state.lineBuffer.length = 0;
+					continue;
+				}
+
+				// Regular char: buffer
+				state.lineBuffer.push(byte);
+				if (discipline.echo) this.echoOutput(state, new Uint8Array([byte]));
+			} else {
+				// Raw mode: deliver immediately
+				if (discipline.echo) this.echoOutput(state, new Uint8Array([byte]));
+				this.deliverInput(state, new Uint8Array([byte]));
+			}
+		}
+
+		return data.length;
+	}
+
+	/** Deliver input data to slave (input buffer / waiters). */
+	private deliverInput(state: PtyState, data: Uint8Array): void {
+		if (state.inputWaiters.length > 0) {
+			const waiter = state.inputWaiters.shift()!;
+			waiter(data);
+		} else {
+			state.inputBuffer.push(new Uint8Array(data));
+		}
+	}
+
+	/** Echo data to output (master reads it back for display). */
+	private echoOutput(state: PtyState, data: Uint8Array): void {
+		if (state.outputWaiters.length > 0) {
+			const waiter = state.outputWaiters.shift()!;
+			waiter(data);
+		} else {
+			state.outputBuffer.push(new Uint8Array(data));
+		}
+	}
+
+	/** Map control byte to signal number, or null if not a signal char. */
+	private signalForByte(byte: number): number | null {
+		switch (byte) {
+			case 0x03: return SIGINT;   // ^C
+			case 0x1a: return SIGTSTP;  // ^Z
+			case 0x1c: return SIGQUIT;  // ^\
+			default: return null;
+		}
 	}
 
 	private drainBuffer(buffer: Uint8Array[], length: number): Uint8Array {

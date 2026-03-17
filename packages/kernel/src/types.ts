@@ -207,6 +207,14 @@ export interface KernelInterface {
 	openpty(pid: number): { masterFd: number; slaveFd: number; path: string };
 	/** Check if an FD refers to a terminal (PTY slave). */
 	isatty(pid: number, fd: number): boolean;
+	/** Set line discipline configuration on the PTY associated with the given FD. */
+	ptySetDiscipline(
+		pid: number,
+		fd: number,
+		config: { canonical?: boolean; echo?: boolean; isig?: boolean },
+	): void;
+	/** Set the foreground process group for signal delivery on the PTY. */
+	ptySetForegroundPgid(pid: number, fd: number, pgid: number): void;
 
 	// Environment
 	getenv(pid: number): Record<string, string>;

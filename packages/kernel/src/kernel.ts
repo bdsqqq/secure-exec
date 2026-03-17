@@ -47,7 +47,9 @@ class KernelImpl implements Kernel {
 	private fdTableManager = new FDTableManager();
 	private processTable = new ProcessTable();
 	private pipeManager = new PipeManager();
-	private ptyManager = new PtyManager();
+	private ptyManager = new PtyManager((pgid, signal) => {
+		try { this.processTable.kill(-pgid, signal); } catch { /* no-op if pgid gone */ }
+	});
 	private commandRegistry = new CommandRegistry();
 	private userManager: UserManager;
 	private drivers: RuntimeDriver[] = [];
@@ -488,6 +490,18 @@ class KernelImpl implements Kernel {
 				const entry = table.get(fd);
 				if (!entry) return false;
 				return this.ptyManager.isSlave(entry.description.id);
+			},
+			ptySetDiscipline: (pid, fd, config) => {
+				const table = this.getTable(pid);
+				const entry = table.get(fd);
+				if (!entry) throw new KernelError("EBADF", `bad file descriptor ${fd}`);
+				this.ptyManager.setDiscipline(entry.description.id, config);
+			},
+			ptySetForegroundPgid: (pid, fd, pgid) => {
+				const table = this.getTable(pid);
+				const entry = table.get(fd);
+				if (!entry) throw new KernelError("EBADF", `bad file descriptor ${fd}`);
+				this.ptyManager.setForegroundPgid(entry.description.id, pgid);
 			},
 
 			// Environment

@@ -1773,4 +1773,250 @@ describe("kernel + MockRuntimeDriver integration", () => {
 			proc.kill();
 		});
 	});
+
+	// -------------------------------------------------------------------
+	// PTY line discipline
+	// -------------------------------------------------------------------
+
+	describe("PTY line discipline", () => {
+		it("raw mode — single byte write to master immediately readable from slave", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("proc", []);
+			const { masterFd, slaveFd } = ki.openpty(proc.pid);
+
+			// Explicitly set raw mode (default, but be explicit)
+			ki.ptySetDiscipline(proc.pid, masterFd, { canonical: false, echo: false, isig: false });
+
+			// Write a single byte
+			ki.fdWrite(proc.pid, masterFd, new Uint8Array([0x41])); // 'A'
+
+			const data = await ki.fdRead(proc.pid, slaveFd, 1024);
+			expect(new TextDecoder().decode(data)).toBe("A");
+
+			proc.kill();
+		});
+
+		it("canonical mode — backspace erases last char, newline flushes line", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("proc", []);
+			const { masterFd, slaveFd } = ki.openpty(proc.pid);
+
+			// Enable canonical mode
+			ki.ptySetDiscipline(proc.pid, masterFd, { canonical: true });
+
+			// Write 'ab<DEL>c\n' → slave should read 'ac\n'
+			const input = new Uint8Array([0x61, 0x62, 0x7f, 0x63, 0x0a]); // a b DEL c LF
+			ki.fdWrite(proc.pid, masterFd, input);
+
+			const data = await ki.fdRead(proc.pid, slaveFd, 1024);
+			expect(new TextDecoder().decode(data)).toBe("ac\n");
+
+			proc.kill();
+		});
+
+		it("canonical mode — input buffered until newline", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("proc", []);
+			const { masterFd, slaveFd } = ki.openpty(proc.pid);
+
+			ki.ptySetDiscipline(proc.pid, masterFd, { canonical: true });
+
+			// Write chars without newline — nothing should be readable yet
+			ki.fdWrite(proc.pid, masterFd, new TextEncoder().encode("hello"));
+
+			// Start a read that should block (no newline yet)
+			let readResolved = false;
+			const readPromise = ki.fdRead(proc.pid, slaveFd, 1024).then((d) => {
+				readResolved = true;
+				return d;
+			});
+
+			// Yield to microtasks
+			await new Promise((r) => setTimeout(r, 10));
+			expect(readResolved).toBe(false);
+
+			// Now send the newline — should flush the line
+			ki.fdWrite(proc.pid, masterFd, new Uint8Array([0x0a]));
+
+			const data = await readPromise;
+			expect(new TextDecoder().decode(data)).toBe("hello\n");
+
+			proc.kill();
+		});
+
+		it("echo mode — input bytes echoed back through master", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("proc", []);
+			const { masterFd, slaveFd } = ki.openpty(proc.pid);
+
+			// Enable echo in canonical mode
+			ki.ptySetDiscipline(proc.pid, masterFd, { canonical: true, echo: true });
+
+			ki.fdWrite(proc.pid, masterFd, new TextEncoder().encode("hi\n"));
+
+			// Slave reads the flushed line
+			const slaveData = await ki.fdRead(proc.pid, slaveFd, 1024);
+			expect(new TextDecoder().decode(slaveData)).toBe("hi\n");
+
+			// Master reads back echoed chars ('h', 'i', '\n')
+			const echoData = await ki.fdRead(proc.pid, masterFd, 1024);
+			expect(new TextDecoder().decode(echoData)).toBe("hi\n");
+
+			proc.kill();
+		});
+
+		it("^C in canonical mode delivers SIGINT to foreground process group", async () => {
+			const killSignals: number[] = [];
+			const driver = new MockRuntimeDriver(["parent", "child"], {
+				parent: { neverExit: true },
+				child: { neverExit: true, killSignals },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const ki = driver.kernelInterface!;
+			const parent = kernel.spawn("parent", []);
+			const child = kernel.spawn("child", []);
+
+			// Put child in its own process group
+			ki.setpgid(child.pid, child.pid);
+
+			// Open PTY and configure
+			const { masterFd } = ki.openpty(parent.pid);
+			ki.ptySetDiscipline(parent.pid, masterFd, { isig: true });
+			ki.ptySetForegroundPgid(parent.pid, masterFd, child.pid); // child's pgid = child.pid
+
+			// Write ^C (0x03) to master
+			ki.fdWrite(parent.pid, masterFd, new Uint8Array([0x03]));
+
+			// Child should have received SIGINT (signal 2)
+			expect(killSignals).toContain(2);
+
+			parent.kill();
+		});
+
+		it("^Z delivers SIGTSTP to foreground process group", async () => {
+			const killSignals: number[] = [];
+			const driver = new MockRuntimeDriver(["parent", "child"], {
+				parent: { neverExit: true },
+				child: { neverExit: true, killSignals },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const ki = driver.kernelInterface!;
+			const parent = kernel.spawn("parent", []);
+			const child = kernel.spawn("child", []);
+
+			ki.setpgid(child.pid, child.pid);
+
+			const { masterFd } = ki.openpty(parent.pid);
+			ki.ptySetDiscipline(parent.pid, masterFd, { isig: true });
+			ki.ptySetForegroundPgid(parent.pid, masterFd, child.pid);
+
+			// Write ^Z (0x1A) to master
+			ki.fdWrite(parent.pid, masterFd, new Uint8Array([0x1a]));
+
+			// Child should have received SIGTSTP (signal 20)
+			expect(killSignals).toContain(20);
+
+			parent.kill();
+		});
+
+		it("^\\ delivers SIGQUIT to foreground process group", async () => {
+			const killSignals: number[] = [];
+			const driver = new MockRuntimeDriver(["parent", "child"], {
+				parent: { neverExit: true },
+				child: { neverExit: true, killSignals },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const ki = driver.kernelInterface!;
+			const parent = kernel.spawn("parent", []);
+			const child = kernel.spawn("child", []);
+
+			ki.setpgid(child.pid, child.pid);
+
+			const { masterFd } = ki.openpty(parent.pid);
+			ki.ptySetDiscipline(parent.pid, masterFd, { isig: true });
+			ki.ptySetForegroundPgid(parent.pid, masterFd, child.pid);
+
+			// Write ^\ (0x1C) to master
+			ki.fdWrite(parent.pid, masterFd, new Uint8Array([0x1c]));
+
+			// Child should have received SIGQUIT (signal 3)
+			expect(killSignals).toContain(3);
+
+			parent.kill();
+		});
+
+		it("^D at start of line delivers EOF in canonical mode", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("proc", []);
+			const { masterFd, slaveFd } = ki.openpty(proc.pid);
+
+			ki.ptySetDiscipline(proc.pid, masterFd, { canonical: true });
+
+			// Write ^D on empty line → EOF
+			ki.fdWrite(proc.pid, masterFd, new Uint8Array([0x04]));
+
+			const data = await ki.fdRead(proc.pid, slaveFd, 1024);
+			expect(data.length).toBe(0); // EOF = 0 bytes
+
+			proc.kill();
+		});
+
+		it("^C in canonical mode clears line buffer", async () => {
+			const killSignals: number[] = [];
+			const driver = new MockRuntimeDriver(["parent", "child"], {
+				parent: { neverExit: true },
+				child: { neverExit: true, killSignals },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const ki = driver.kernelInterface!;
+			const parent = kernel.spawn("parent", []);
+			const child = kernel.spawn("child", []);
+			ki.setpgid(child.pid, child.pid);
+
+			const { masterFd, slaveFd } = ki.openpty(parent.pid);
+			ki.ptySetDiscipline(parent.pid, masterFd, { canonical: true, isig: true });
+			ki.ptySetForegroundPgid(parent.pid, masterFd, child.pid);
+
+			// Type some chars, then ^C, then new input + newline
+			ki.fdWrite(parent.pid, masterFd, new TextEncoder().encode("partial"));
+			ki.fdWrite(parent.pid, masterFd, new Uint8Array([0x03])); // ^C clears "partial"
+			ki.fdWrite(parent.pid, masterFd, new TextEncoder().encode("fresh\n"));
+
+			// Slave should only see "fresh\n", not "partial"
+			const data = await ki.fdRead(parent.pid, slaveFd, 1024);
+			expect(new TextDecoder().decode(data)).toBe("fresh\n");
+			expect(killSignals).toContain(2); // SIGINT delivered
+
+			parent.kill();
+		});
+	});
 });

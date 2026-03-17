@@ -62,6 +62,8 @@ PRD: ralph/kernel-hardening (46 stories)
 - PtyManager description IDs start at 200,000 (pipes at 100,000, regular FDs at 1) — avoid collisions between managers
 - PTY is bidirectional: master write→slave read (input), slave write→master read (output); isatty() is true only for slave FDs
 - Adding a new FD-managed resource (like PTY) requires updating: fdRead, fdWrite, fdClose, fdSeek, isStdioPiped, cleanupProcessFDs in kernel.ts
+- PTY line discipline: default is raw mode (no processing); enable canonical/echo/isig via ptySetDiscipline; signal delivery uses PtyManager onSignal callback → processTable.kill(-pgid, signal)
+- PTY setDiscipline/setForegroundPgid take description ID internally but KernelInterface methods take (pid, fd) and resolve through FD table
 
 ---
 
@@ -314,4 +316,21 @@ PRD: ralph/kernel-hardening (46 stories)
   - Hangup semantics: closing one end causes reads on the other to return null (mapped to empty Uint8Array by kernel fdRead)
   - isStdioPiped() check was extended to include PTY FDs so kernel skips callback buffering for PTY-backed stdio
   - cleanupProcessFDs needed updating to handle PTY descriptions alongside pipe descriptions
+---
+
+## 2026-03-17 - US-023
+- What was implemented: PTY line discipline with canonical mode, raw mode, echo, and signal generation (^C→SIGINT, ^Z→SIGTSTP, ^\→SIGQUIT, ^D→EOF)
+- Files changed:
+  - packages/kernel/src/pty.ts — added LineDisciplineConfig interface, discipline/lineBuffer/foregroundPgid to PtyState, onSignal callback in PtyManager constructor, processInput/deliverInput/echoOutput/signalForByte methods, setDiscipline/setForegroundPgid public methods
+  - packages/kernel/src/types.ts — added ptySetDiscipline/ptySetForegroundPgid to KernelInterface
+  - packages/kernel/src/kernel.ts — PtyManager now initialized with signal callback (kill -pgid), wired ptySetDiscipline/ptySetForegroundPgid in createKernelInterface
+  - packages/kernel/src/index.ts — exported LineDisciplineConfig type
+  - packages/kernel/test/kernel-integration.test.ts — added 9 PTY line discipline tests: raw mode, canonical backspace, canonical line buffering, echo mode, ^C/^Z/^\/^D, ^C clears line buffer
+  - prd.json — marked US-023 as passes: true
+- **Learnings for future iterations:**
+  - Default PTY mode is raw (no processing) to preserve backward compat with US-022 tests — canonical/echo/isig are opt-in via ptySetDiscipline
+  - Signal chars (^C/^Z/^\) are handled by isig flag; ^D (EOF) is handled by canonical mode — these are independent as in POSIX
+  - PtyManager.onSignal callback wraps processTable.kill(-pgid, signal) with try/catch since pgid may be gone
+  - Master writes go through processInput; slave writes bypass discipline entirely (they're program output)
+  - Fast path: when all discipline flags are off, data is passed directly to inputBuffer without byte-by-byte scanning
 ---
