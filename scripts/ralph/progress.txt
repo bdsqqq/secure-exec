@@ -1566,3 +1566,21 @@ PRD: ralph/kernel-hardening (46 stories)
   - BUFFER_CONSTANTS/BUFFER_MAX_LENGTH are still used elsewhere in process.ts (global Buffer setup) — don't remove them
   - Multiple sandbox escape tests reference process.binding() as a sentinel for "real bindings" — when changing binding behavior, grep all test files for `process.binding` calls
 ---
+
+## 2026-03-18 - US-119-B
+- What was implemented: Blocked module cache poisoning within a single execution by wrapping the internal `_moduleCache` object in a read-only Proxy
+- Changes:
+  - `require-setup.ts`: Captured internal cache reference, replaced all internal `_moduleCache[` writes with `__internalModuleCache[`, created read-only Proxy (rejects set/delete/defineProperty), assigned to `require.cache` and `_moduleCache` global, updated `Module._cache` references
+  - `global-exposure.ts`: Changed `_moduleCache` classification from `mutable-runtime-state` to `hardened` so `applyCustomGlobalExposurePolicy` locks the property as non-writable/non-configurable after bridge setup
+  - `bridge-hardening.test.ts`: Added 5 tests covering require.cache set/delete rejection, normal require caching, `_moduleCache` global protection, and `Module._cache` protection
+- Files changed:
+  - packages/secure-exec-core/isolate-runtime/src/inject/require-setup.ts
+  - packages/secure-exec-core/src/shared/global-exposure.ts
+  - packages/secure-exec-core/src/generated/isolate-runtime.ts (auto-generated)
+  - packages/secure-exec/tests/runtime-driver/node/bridge-hardening.test.ts
+- **Learnings for future iterations:**
+  - `applyCustomGlobalExposurePolicy` runs AFTER `setupRequire` — any property made `configurable: false` in require-setup.ts will cause the policy to fail when it tries to re-apply. Use `configurable: true` and let the policy finalize it.
+  - The bridge setup order is: globalExposureHelpers → bridge-initial-globals → bridge bundle (module.ts) → bridge attach → timing mitigation → require-setup. Module.ts evaluates BEFORE require-setup, so Module._cache captures the raw cache object and must be explicitly updated.
+  - Internal require system writes need a captured local reference (`__internalModuleCache`) since the globalThis property gets replaced with a Proxy that rejects writes.
+  - `proc.run()` returns `{ code, exports }` not just exports — test assertions must use `result.exports`.
+---
