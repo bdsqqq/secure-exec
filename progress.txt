@@ -1797,3 +1797,12 @@ PRD: ralph/kernel-hardening (46 stories)
   - Uses npm flat hoisting strategy which symlinks all @chain-test/ packages into top-level node_modules
   - The fixture exercises require() chains, module.exports traversal, and function delegation across transitive deps
 ---
+
+## 2026-03-18 - US-094
+- What was implemented: Optional dependency fixture already existed and passed project-matrix parity test
+- Files changed: prd.json (marked passes: true)
+- **Learnings for future iterations:**
+  - Fixture uses a nonexistent scoped package (@anthropic-internal/nonexistent-optional-pkg) as optionalDependency
+  - Both host and sandbox correctly report optionalAvailable: false via try/catch on require()
+  - npm install with missing optional deps succeeds (npm treats optional dep install failures as warnings)
+---

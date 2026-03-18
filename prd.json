@@ -2172,7 +2172,7 @@
         "Typecheck passes",
         "Tests pass"
       ],
-      "passes": false,
+      "passes": true,
       "notes": "Optional deps are common in the ecosystem (e.g., fsevents on macOS). Sandbox must handle missing optional deps identically to host.",
       "id": "US-094",
       "priority": 129
