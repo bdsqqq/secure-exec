@@ -129,7 +129,7 @@ export function createDeviceLayer(vfs: VirtualFileSystem): VirtualFileSystem {
 		},
 
 		async writeFile(path, content) {
-			if (path === "/dev/null") return; // discard
+			if (path === "/dev/null" || path === "/dev/zero" || path === "/dev/urandom") return; // discard
 			return vfs.writeFile(path, content);
 		},
 
@@ -188,6 +188,7 @@ export function createDeviceLayer(vfs: VirtualFileSystem): VirtualFileSystem {
 		},
 
 		async realpath(path) {
+			if (isDevicePath(path) || isDeviceDir(path)) return path;
 			return vfs.realpath(path);
 		},
 

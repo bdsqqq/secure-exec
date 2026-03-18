@@ -13,14 +13,28 @@ export class CommandRegistry {
 	/** command name → RuntimeDriver */
 	private commands: Map<string, RuntimeDriver> = new Map();
 
+	/** Warning log for command overrides. */
+	private warnings: string[] = [];
+
 	/**
 	 * Register all commands from a driver.
-	 * Last-mounted driver wins on conflicts (allows override).
+	 * Last-mounted driver wins on conflicts (allows override with warning).
 	 */
 	register(driver: RuntimeDriver): void {
 		for (const cmd of driver.commands) {
+			const existing = this.commands.get(cmd);
+			if (existing) {
+				const msg = `command "${cmd}" overridden: ${existing.name} → ${driver.name}`;
+				this.warnings.push(msg);
+				console.warn(`[CommandRegistry] ${msg}`);
+			}
 			this.commands.set(cmd, driver);
 		}
+	}
+
+	/** Get recorded warnings (for testing). */
+	getWarnings(): readonly string[] {
+		return this.warnings;
 	}
 
 	/** Resolve a command name to a driver. Returns null if unknown. */

@@ -3355,6 +3355,21 @@ describe("kernel + MockRuntimeDriver integration", () => {
 			await proc.wait();
 		});
 
+		it("open('/dev/fd/N') rejects malformed paths — non-integer and negative", async () => {
+			const driver = new MockRuntimeDriver(["cmd"], { cmd: { neverExit: true } });
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("cmd", []);
+
+			expect(() => ki.fdOpen(proc.pid, "/dev/fd/abc", 0)).toThrow("EBADF");
+			expect(() => ki.fdOpen(proc.pid, "/dev/fd/-1", 0)).toThrow("EBADF");
+			expect(() => ki.fdOpen(proc.pid, "/dev/fd/", 0)).toThrow("EBADF");
+			expect(() => ki.fdOpen(proc.pid, "/dev/fd/1.5", 0)).toThrow("EBADF");
+
+			proc.kill();
+			await proc.wait();
+		});
+
 		it("stat('/dev/fd') returns directory stat via VFS", async () => {
 			const driver = new MockRuntimeDriver(["cmd"], { cmd: { neverExit: true } });
 			({ kernel } = await createTestKernel({ drivers: [driver] }));

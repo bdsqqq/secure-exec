@@ -52,6 +52,21 @@ describe("CommandRegistry", () => {
 		expect(list.size).toBe(4);
 	});
 
+	it("logs warning when overriding existing command", () => {
+		const registry = new CommandRegistry();
+		const driver1 = createMockDriver("wasmvm", ["sh", "grep"]);
+		const driver2 = createMockDriver("node", ["sh"]);
+
+		registry.register(driver1);
+		registry.register(driver2);
+
+		const warnings = registry.getWarnings();
+		expect(warnings.length).toBe(1);
+		expect(warnings[0]).toContain("sh");
+		expect(warnings[0]).toContain("wasmvm");
+		expect(warnings[0]).toContain("node");
+	});
+
 	it("populateBin creates /bin entries", async () => {
 		const { TestFileSystem } = await import("./helpers.js");
 		const vfs = new TestFileSystem();

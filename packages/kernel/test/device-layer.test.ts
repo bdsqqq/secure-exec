@@ -162,6 +162,24 @@ describe("DeviceLayer", () => {
 		expect(data.length).toBe(0);
 	});
 
+	it("/dev/urandom write is silently discarded", async () => {
+		const vfs = createTestVfs();
+		await vfs.writeFile("/dev/urandom", "garbage");
+		// Read should still return random bytes, not garbage
+		const data = await vfs.readFile("/dev/urandom");
+		expect(data.length).toBe(4096);
+	});
+
+	it("realpath on device paths returns the device path", async () => {
+		const vfs = createTestVfs();
+		expect(await vfs.realpath("/dev/null")).toBe("/dev/null");
+		expect(await vfs.realpath("/dev/zero")).toBe("/dev/zero");
+		expect(await vfs.realpath("/dev/urandom")).toBe("/dev/urandom");
+		expect(await vfs.realpath("/dev/stdin")).toBe("/dev/stdin");
+		expect(await vfs.realpath("/dev")).toBe("/dev");
+		expect(await vfs.realpath("/dev/fd")).toBe("/dev/fd");
+	});
+
 	it("non-device paths pass through to backing VFS", async () => {
 		const vfs = createTestVfs();
 		await vfs.writeFile("/tmp/test.txt", "hello");

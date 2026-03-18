@@ -499,8 +499,9 @@ class KernelImpl implements Kernel {
 				assertOwns(pid);
 				// /dev/fd/N → dup(N): equivalent to open() on the underlying FD
 				if (path.startsWith("/dev/fd/")) {
-					const n = parseInt(path.slice(8), 10);
-					if (isNaN(n)) throw new KernelError("EBADF", `bad file descriptor: ${path}`);
+					const raw = path.slice(8);
+					const n = parseInt(raw, 10);
+					if (isNaN(n) || n < 0 || String(n) !== raw) throw new KernelError("EBADF", `bad file descriptor: ${path}`);
 					const table = this.getTable(pid);
 					const entry = table.get(n);
 					if (!entry) throw new KernelError("EBADF", `bad file descriptor ${n}`);
