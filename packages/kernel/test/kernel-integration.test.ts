@@ -2238,9 +2238,9 @@ describe("kernel + MockRuntimeDriver integration", () => {
 			const slaveData = await ki.fdRead(proc.pid, slaveFd, 1024);
 			expect(new TextDecoder().decode(slaveData)).toBe("hi\n");
 
-			// Master reads back echoed chars ('h', 'i', '\n')
+			// Master reads back echoed chars ('h', 'i', '\r\n')
 			const echoData = await ki.fdRead(proc.pid, masterFd, 1024);
-			expect(new TextDecoder().decode(echoData)).toBe("hi\n");
+			expect(new TextDecoder().decode(echoData)).toBe("hi\r\n");
 
 			proc.kill();
 		});

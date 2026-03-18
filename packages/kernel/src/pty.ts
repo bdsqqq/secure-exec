@@ -368,10 +368,10 @@ export class PtyManager {
 					continue;
 				}
 
-				// Newline: flush line
+				// Newline: flush line (echo CR+LF for correct cursor positioning)
 				if (byte === 0x0a) {
 					state.lineBuffer.push(0x0a);
-					if (termios.echo) this.echoOutput(state, new Uint8Array([0x0a]));
+					if (termios.echo) this.echoOutput(state, new Uint8Array([0x0d, 0x0a]));
 					this.deliverInput(state, new Uint8Array(state.lineBuffer));
 					state.lineBuffer.length = 0;
 					continue;
