@@ -1655,3 +1655,9 @@ PRD: ralph/kernel-hardening (46 stories)
   - When terminate() disposes the isolate, afterEach's proc.dispose() double-disposes — use try/catch in afterEach
   - Custom adapter httpServerListen can dispatch requests via setTimeout(0) on onRequest callback to trigger server handlers
 ---
+
+## 2026-03-18 - US-113
+- Already implemented in prior iteration — try-catch around onSignal in pty.ts:394-398 and two tests in resource-exhaustion.test.ts:453-500
+- Verified: all 22 resource-exhaustion tests pass, typecheck passes
+- Marked passes: true in prd.json
+---
