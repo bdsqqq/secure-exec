@@ -2047,3 +2047,33 @@ PRD: ralph/kernel-hardening (46 stories)
   - Permission validation tests run in Node.js since they test pure string validation, not Worker APIs
   - Pattern: export testable logic from browser package via ./internal/* exports in package.json
 ---
+
+## 2026-03-18 - US-157
+- Verified already implemented: require.cache Proxy in require-setup.ts blocks set/delete/defineProperty
+- _moduleCache global replaced with read-only proxy via Object.defineProperty
+- Module._cache also points to read-only proxy
+- All 5 existing tests in bridge-hardening.test.ts pass (cache assignment, deletion, normal caching, _moduleCache protection, Module._cache protection)
+- Typecheck passes (18/18), tests pass (26/26)
+- No code changes needed — implementation was completed as part of earlier US-119-B work
+- Files changed: scripts/ralph/prd.json (marked passes: true)
+- **Learnings for future iterations:**
+  - require-setup.ts applies cache protections AFTER bridge-initial-globals.ts seeds the mutable cache — order matters
+  - bridge-initial-globals.ts:205 creates mutable _moduleCache; require-setup.ts:831 wraps it in Proxy and replaces the global at line 862
+  - Some stories may already be implemented by prior work — verify tests pass before writing new code
+---
+
+## 2026-03-18 - US-158
+- Added loopback SSRF exemption for sandbox-owned HTTP server ports
+- Modified `assertNotPrivateHost()` to accept optional `allowedLoopbackPorts` set
+- Added `isLoopbackHost()` helper to detect 127.x.x.x, ::1, and localhost
+- `createDefaultNetworkAdapter()` tracks `ownedServerPorts` — populated on httpServerListen, cleaned on httpServerClose
+- fetch() and httpRequest() pass ownedServerPorts to SSRF check
+- Files changed:
+  - packages/secure-exec-node/src/driver.ts (SSRF exemption logic + adapter port tracking)
+  - packages/secure-exec/tests/runtime-driver/node/ssrf-protection.test.ts (9 new tests)
+- **Learnings for future iterations:**
+  - Bridge server dispatch (`dispatchServerRequest`) awaits `Promise.resolve(listenerResult)` then auto-calls `res.end()` if response not finished — setTimeout-based delays in handlers don't work as expected for concurrency testing
+  - Bridge server host adapter doesn't support HTTP upgrade protocol at the server level (only request dispatching) — upgrade tests need a real host-side HTTP server
+  - The adapter's `httpServerListen` creates real Node.js HTTP servers on loopback — ports are ephemeral (port: 0) and auto-assigned
+  - `normalizeLoopbackHostname()` already coerces 0.0.0.0 → 127.0.0.1 for server binds
+---

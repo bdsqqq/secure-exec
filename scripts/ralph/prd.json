@@ -2711,7 +2711,7 @@
         "Tests pass"
       ],
       "priority": 158,
-      "passes": false,
+      "passes": true,
       "notes": "Test failures: 5 NodeRuntime HTTP/SSRF tests fail because SSRF protection blocks all loopback fetch including to the sandbox's own bridged HTTP servers. Relates to US-148 (SSRF protection) but is about carving out a safe exemption, not weakening protection."
     },
     {
