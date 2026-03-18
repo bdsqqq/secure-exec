@@ -1637,3 +1637,15 @@ PRD: ralph/kernel-hardening (46 stories)
   - Signal 0 in kill() is a POSIX existence check — must NOT call driverProcess.kill, just verify the process exists
   - Termios fields flow: types.ts interface → pty.ts getTermios/setTermios → kernel.ts tcgetattr/tcsetattr (Partial<Termios>)
 ---
+
+## 2026-03-18 - US-104 (P109)
+- Moved all setup code in connectTerminal() inside the try block so finally always runs
+- Declared onStdinData/onResize before try, assigned inside — finally guards cleanup with null checks
+- Added test: "cleans up stdin listener when openShell throws" (no driver → spawnInternal fails)
+- Added test: "restores terminal state when shell.wait() rejects" (verifies listener cleanup on normal exit too)
+- Files changed: packages/kernel/src/kernel.ts, packages/kernel/test/kernel-integration.test.ts
+- **Learnings for future iterations:**
+  - process.stdin.setRawMode does not exist in test environments (not a TTY) — spy on it will throw
+  - Test listener cleanup via listenerCount("data") before/after instead of spying setRawMode
+  - connectTerminal tests emit on process.stdin directly to simulate TTY input
+---
