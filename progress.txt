@@ -1773,3 +1773,18 @@ PRD: ralph/kernel-hardening (46 stories)
   - `npm install --package-lock-only` generates package-lock.json without installing node_modules — useful for fixture prep
   - Layout fixtures should mirror the same dependency (left-pad 0.0.3) and entry code for comparison across package managers
 ---
+
+## 2026-03-18 - US-092
+- Created conditional exports fixture at packages/secure-exec/tests/projects/conditional-exports-pass/
+- Files changed:
+  - fixture.json (packageManager: "npm")
+  - package.json (file: dependency to local @cond-test/lib)
+  - package-lock.json (lockfileVersion 3)
+  - packages/cond-exports-lib/package.json (exports field with ".", "./feature" subpaths, "require" and "default" conditions)
+  - packages/cond-exports-lib/lib/{main-cjs,main-default,feature-cjs,feature-default}.js
+  - src/index.js (requires main and subpath exports, outputs JSON)
+- **Learnings for future iterations:**
+  - Node.js CJS require resolves the "require" condition in package.json exports field — test output confirms "main-cjs" and "feature-cjs" selected
+  - Local vendored packages (file: deps) work well for testing exports field without external dependencies
+  - The exports field completely replaces "main" — if exports is present, "main" is ignored for require/import
+---

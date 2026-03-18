@@ -2139,7 +2139,7 @@
         "Typecheck passes",
         "Tests pass"
       ],
-      "passes": false,
+      "passes": true,
       "notes": "The exports field is a major source of module resolution bugs. Tests subpath exports and condition matching.",
       "id": "US-092",
       "priority": 127
