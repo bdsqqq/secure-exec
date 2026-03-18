@@ -850,34 +850,12 @@ const process: Record<string, unknown> & {
     _emit("warning", { message: msg, name: "Warning" });
   },
 
-  binding(name: string): Record<string, unknown> {
-    // Return stub implementations for common bindings
-    const stubs: Record<string, Record<string, unknown>> = {
-      fs: {},
-      buffer: {
-        Buffer: (globalThis as Record<string, unknown>).Buffer,
-        constants: BUFFER_CONSTANTS,
-        kMaxLength: BUFFER_MAX_LENGTH,
-        kStringMaxLength: BUFFER_MAX_STRING_LENGTH,
-      },
-      process_wrap: {},
-      natives: {},
-      config: {},
-      uv: { UV_UDP_REUSEADDR: 4 },
-      constants: {
-        MAX_LENGTH: BUFFER_MAX_LENGTH,
-        MAX_STRING_LENGTH: BUFFER_MAX_STRING_LENGTH,
-        buffer: BUFFER_CONSTANTS,
-      },
-      crypto: {},
-      string_decoder: {},
-      os: {},
-    };
-    return stubs[name] || {};
+  binding(_name: string): never {
+    throw new Error("process.binding is not supported in sandbox");
   },
 
-  _linkedBinding(name: string): Record<string, unknown> {
-    return (process as unknown as { binding: (name: string) => Record<string, unknown> }).binding(name);
+  _linkedBinding(_name: string): never {
+    throw new Error("process._linkedBinding is not supported in sandbox");
   },
 
   dlopen(): void {

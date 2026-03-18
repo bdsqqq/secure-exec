@@ -30,39 +30,51 @@ describe("sandbox escape security", () => {
 		proc = undefined;
 	});
 
-	it("process.binding() returns inert stubs, not real native bindings", async () => {
+	it("process.binding() throws instead of returning stubs", async () => {
 		const capture = createConsoleCapture();
 		proc = createTestNodeRuntime({ onStdio: capture.onStdio });
 
 		const result = await proc.exec(`
 			const results = {};
 
-			// process.binding('fs') should not have real native methods
-			const fsBind = process.binding('fs');
-			results.fsHasOpen = typeof fsBind.open === 'function';
-			results.fsHasStat = typeof fsBind.stat === 'function';
-			results.fsHasRead = typeof fsBind.read === 'function';
-			results.fsIsEmpty = Object.keys(fsBind).length === 0;
+			// process.binding('fs') should throw
+			try {
+				process.binding('fs');
+				results.fsThrew = false;
+			} catch (e) {
+				results.fsThrew = true;
+				results.fsMsg = e.message;
+			}
 
-			// process.binding('spawn_sync') should return empty object
-			const spawnBind = process.binding('spawn_sync');
-			results.spawnSyncIsEmpty = Object.keys(spawnBind).length === 0;
+			// process.binding('buffer') should throw
+			try {
+				process.binding('buffer');
+				results.bufferThrew = false;
+			} catch (e) {
+				results.bufferThrew = true;
+				results.bufferMsg = e.message;
+			}
 
-			// process.binding('pipe_wrap') should return empty object
-			const pipeBind = process.binding('pipe_wrap');
-			results.pipeIsEmpty = Object.keys(pipeBind).length === 0;
+			// process._linkedBinding() should also throw
+			try {
+				process._linkedBinding('fs');
+				results.linkedThrew = false;
+			} catch (e) {
+				results.linkedThrew = true;
+				results.linkedMsg = e.message;
+			}
 
 			console.log(JSON.stringify(results));
 		`);
 
 		expect(result.code).toBe(0);
 		const results = JSON.parse(capture.stdout().trim());
-		expect(results.fsHasOpen).toBe(false);
-		expect(results.fsHasStat).toBe(false);
-		expect(results.fsHasRead).toBe(false);
-		expect(results.fsIsEmpty).toBe(true);
-		expect(results.spawnSyncIsEmpty).toBe(true);
-		expect(results.pipeIsEmpty).toBe(true);
+		expect(results.fsThrew).toBe(true);
+		expect(results.fsMsg).toContain("not supported in sandbox");
+		expect(results.bufferThrew).toBe(true);
+		expect(results.bufferMsg).toContain("not supported in sandbox");
+		expect(results.linkedThrew).toBe(true);
+		expect(results.linkedMsg).toContain("not supported in sandbox");
 	});
 
 	it("process.dlopen() is blocked inside sandbox", async () => {
@@ -101,8 +113,13 @@ describe("sandbox escape security", () => {
 			const results = {};
 
 			// If escape worked, we'd get the host's real require/process
-			results.hasHostBinding = typeof escaped.process?.binding === 'function'
-				&& typeof escaped.process.binding('fs')?.open === 'function';
+			// process.binding should throw in the sandbox — if it returns, that's an escape
+			try {
+				const fsBind = escaped.process?.binding?.('fs');
+				results.hasHostBinding = typeof fsBind?.open === 'function';
+			} catch {
+				results.hasHostBinding = false;
+			}
 			results.hasDlopen = false;
 			try {
 				escaped.process?.dlopen?.({}, '/tmp/fake.node');
@@ -313,9 +330,11 @@ describe("sandbox escape security", () => {
 			try {
 				const g = Function('return this')();
 				if (g !== globalThis) escapes.push('Function-constructor-different-global');
-				if (typeof g.process?.binding === 'function' &&
-				    typeof g.process.binding('fs')?.open === 'function')
-					escapes.push('Function-constructor-real-bindings');
+				try {
+					const fsBind = g.process?.binding?.('fs');
+					if (typeof fsBind?.open === 'function')
+						escapes.push('Function-constructor-real-bindings');
+				} catch { /* binding throws in sandbox — correct */ }
 			} catch { /* blocked is fine */ }
 
 			// 2. eval-based escape
@@ -336,10 +355,11 @@ describe("sandbox escape security", () => {
 				const vm = require('vm');
 				if (typeof vm?.runInThisContext === 'function') {
 					const g = vm.runInThisContext('this');
-					// The real escape is if it has real native bindings
-					if (typeof g?.process?.binding === 'function' &&
-					    typeof g.process.binding('fs')?.open === 'function')
-						escapes.push('vm-runInThisContext-real-bindings');
+					try {
+						const fsBind = g?.process?.binding?.('fs');
+						if (typeof fsBind?.open === 'function')
+							escapes.push('vm-runInThisContext-real-bindings');
+					} catch { /* binding throws in sandbox — correct */ }
 				}
 			} catch { /* blocked is fine */ }
 
