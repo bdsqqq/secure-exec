@@ -2399,7 +2399,7 @@
         "Tests pass"
       ],
       "priority": 140,
-      "passes": false,
+      "passes": true,
       "notes": "CLI E2E Phase 5. Claude Code is the most complex in-VM tool \u2014 Node.js with native binary, Ink TUI, known spawn stall issue (anthropics/claude-code#771). Consider @anthropic-ai/claude-agent-sdk as fallback entry point. API tokens (ANTHROPIC_API_KEY, OPENAI_API_KEY) available at ~/misc/env.txt \u2014 source it before running tests that need real or mock-pointed API keys."
     },
     {

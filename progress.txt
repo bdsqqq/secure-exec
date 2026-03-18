@@ -1819,3 +1819,16 @@ PRD: ralph/kernel-hardening (46 stories)
 - Batch update: all 7 stories were already committed and passing tests but not marked in prd.json
 - Files changed: prd.json (marked passes: true for all 7)
 ---
+
+## 2026-03-18 - US-102
+- What was implemented: Claude Code headless CLI tool tests with mock LLM server
+- Files changed:
+  - packages/secure-exec/tests/cli-tools/claude-headless.test.ts — new test file with 8 tests
+- **Learnings for future iterations:**
+  - Claude binary is at ~/.claude/local/claude (not on PATH by default) — skip helper must check this location
+  - Claude Code's --output-format stream-json requires --verbose flag (exits 1 without it)
+  - Claude Code uses ANTHROPIC_BASE_URL natively (no fetch interceptor needed unlike Pi)
+  - Claude tool names are PascalCase (Read, Write, Bash) unlike Pi's lowercase (read, write, bash)
+  - --dangerously-skip-permissions and --no-session-persistence are essential for CI-friendly headless runs
+  - Claude -p mode with --output-format json returns { type: "result", result: "...", ... } format
+---
