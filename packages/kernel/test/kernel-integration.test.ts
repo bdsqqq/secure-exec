@@ -2317,6 +2317,53 @@ describe("kernel + MockRuntimeDriver integration", () => {
 
 			proc.kill();
 		});
+
+		it("close slave resolves pending slave read with EOF (no hang)", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("proc", []);
+			const { masterFd, slaveFd } = ki.openpty(proc.pid);
+
+			// Set raw mode for direct pass-through
+			ki.ptySetDiscipline(proc.pid, masterFd, { canonical: false, echo: false, isig: false });
+
+			// Start a slave read (blocks — no data in input buffer)
+			const readPromise = ki.fdRead(proc.pid, slaveFd, 1024);
+
+			// Close the slave end — should resolve the pending read (EOF)
+			ki.fdClose(proc.pid, slaveFd);
+
+			const result = await readPromise;
+			expect(result.length).toBe(0);
+
+			proc.kill();
+		});
+
+		it("close master resolves pending master read with EOF (no hang)", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("proc", []);
+			const { masterFd, slaveFd } = ki.openpty(proc.pid);
+
+			// Start a master read (blocks — no data in output buffer)
+			const readPromise = ki.fdRead(proc.pid, masterFd, 1024);
+
+			// Close the master end — should resolve the pending read (EOF)
+			ki.fdClose(proc.pid, masterFd);
+
+			const result = await readPromise;
+			expect(result.length).toBe(0);
+
+			proc.kill();
+		});
 	});
 
 	// -------------------------------------------------------------------

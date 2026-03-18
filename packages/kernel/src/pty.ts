@@ -220,6 +220,11 @@ export class PtyManager {
 				waiter(null);
 			}
 			state.inputWaiters.length = 0;
+			// Resolve any pending master reads (same-end close → EOF)
+			for (const waiter of state.outputWaiters) {
+				waiter(null);
+			}
+			state.outputWaiters.length = 0;
 		} else {
 			state.closed.slave = true;
 			// Notify blocked master readers with null (EIO / hangup)
@@ -227,6 +232,11 @@ export class PtyManager {
 				waiter(null);
 			}
 			state.outputWaiters.length = 0;
+			// Resolve any pending slave reads (same-end close → EOF)
+			for (const waiter of state.inputWaiters) {
+				waiter(null);
+			}
+			state.inputWaiters.length = 0;
 		}
 
 		this.descToPty.delete(descriptionId);
