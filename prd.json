@@ -1778,7 +1778,7 @@
         "Tests pass"
       ],
       "priority": 105,
-      "passes": false,
+      "passes": true,
       "notes": "LOW \u2014 command-registry.ts:22, device-layer.ts:89-95,173-175, kernel.ts:458-465."
     },
     {
