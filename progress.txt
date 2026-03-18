@@ -1788,3 +1788,12 @@ PRD: ralph/kernel-hardening (46 stories)
   - Local vendored packages (file: deps) work well for testing exports field without external dependencies
   - The exports field completely replaces "main" — if exports is present, "main" is ignored for require/import
 ---
+
+## 2026-03-18 - US-093
+- What was implemented: Transitive dependency chain fixture already existed and passed project-matrix parity test
+- Files changed: prd.json (marked passes: true)
+- **Learnings for future iterations:**
+  - The fixture was already committed (f622c12) with a 3-level chain (level-a → level-b → level-c) using file: deps and npm package manager
+  - Uses npm flat hoisting strategy which symlinks all @chain-test/ packages into top-level node_modules
+  - The fixture exercises require() chains, module.exports traversal, and function delegation across transitive deps
+---
