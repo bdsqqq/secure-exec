@@ -1780,3 +1780,16 @@ PRD: ralph/kernel-hardening (46 stories)
   - Using a clearly-namespaced nonexistent package avoids accidental collisions with real packages
   - Both host Node and sandbox produce identical MODULE_NOT_FOUND errors for missing optional deps
 ---
+
+## 2026-03-18 - US-141
+- What was implemented: Verified exit handling chain works correctly; added two WasmVM shell-terminal tests for `exit` command and Ctrl+D (^D) exit paths
+- Investigation: Traced full exit path — brush-shell proc_exit → WasiProcExit → kernel-worker catches → closePipedFds → exit message → driver resolveExit → processTable.markExited → cleanupProcessFDs → PTY slave closed → pump breaks → wait() resolves. The chain was already functional.
+- Files changed:
+  - packages/runtime/wasmvm/test/shell-terminal.test.ts — added 'exit command terminates shell' and 'Ctrl+D on empty line exits' tests
+  - scripts/ralph/prd.json — marked US-141 as passes: true
+- **Learnings for future iterations:**
+  - The WasmVM exit chain works: proc_exit throws WasiProcExit, caught by worker, exit message sent, driver resolves, processTable.markExited triggers cleanupProcessFDs, PTY slave closure wakes master pump
+  - closePipedFds only closes FD 1 (stdout) and FD 2 (stderr) — FD 0 (stdin) is never explicitly closed by the worker; it's cleaned up later by cleanupProcessFDs
+  - PTY slave refCount tracking across fork + applyStdioOverride can be complex (5 refs at peak for 3 stdio FDs + inherited fork copy + controller copy) but the cleanup chain correctly decrements all
+  - poll_oneoff always reports FD_READ as ready immediately — brush-shell handles this correctly
+---

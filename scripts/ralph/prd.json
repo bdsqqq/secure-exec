@@ -2221,7 +2221,7 @@
         "Tests pass"
       ],
       "priority": 132,
-      "passes": false,
+      "passes": true,
       "notes": "brush-shell's exit builtin should call WASI proc_exit. The WasiPolyfill should throw WasiProcExit, caught by the kernel worker which sends an exit message. The parent's wait() should then resolve. Something in this chain is broken \u2014 possibly the exit message isn't sent, or the PTY master read pump blocks cleanup."
     },
     {
