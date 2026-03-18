@@ -1529,3 +1529,18 @@ PRD: ralph/kernel-hardening (46 stories)
   - The DescriptionAllocator type is exported from fd-table.ts for test use
   - Separate kernel instances now have independent ID counters — IDs from different instances may overlap, which is correct since they are scoped to their kernel
 ---
+
+## 2026-03-18 - US-130
+- Implemented path normalization in permission wrapper (`normalizeFsPath`) to resolve `.`, `..`, double slashes before permission checks
+- Fixed `realpathSync` in bridge fs to resolve symlinks by walking path components via `lstatSync` + `readlinkSync` with ELOOP protection (max 40 symlinks)
+- Files changed:
+  - `packages/secure-exec-core/src/shared/permissions.ts` — added `normalizeFsPath()`, refactored `wrapFileSystem` to use `checkFs` helper that normalizes before checking
+  - `packages/secure-exec-core/src/bridge/fs.ts` — rewrote `realpathSync` to use queue-based symlink resolution instead of simple path normalization
+  - `packages/secure-exec/tests/permissions.test.ts` — added 3 tests: `..` traversal denial, double-slash/dot normalization, multi-op normalization
+  - `packages/secure-exec/tests/runtime-driver/node/index.test.ts` — added 3 tests: symlink resolution, `.`/`..` normalization, chained symlink resolution
+- **Learnings for future iterations:**
+  - Permission wrapper receives raw user paths — normalization must happen at the wrapper level, not the VFS level, to prevent traversal bypasses
+  - realpathSync needs queue-based component walking (prepend symlink target segments to pending queue) to handle chained symlinks correctly
+  - Bridge fs has both `lstatSync` (no follow) and `readlinkSync` available for symlink resolution
+  - The `realpath` async and `realpathSync.native` both delegate to `realpathSync`, so fixing one fixes all variants
+---

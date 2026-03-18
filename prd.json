@@ -1697,7 +1697,7 @@
         "Tests pass"
       ],
       "priority": 100,
-      "passes": false,
+      "passes": true,
       "notes": "MEDIUM \u2014 permissions.ts:37-74 and fs.ts:2320-2334. Permission wrapper passes raw paths; realpathSync just normalizes slashes without resolving symlinks."
     },
     {
