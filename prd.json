@@ -2034,7 +2034,7 @@
         "Typecheck passes",
         "Tests pass"
       ],
-      "passes": false,
+      "passes": true,
       "notes": "Prerequisite for yarn layout fixtures. Currently only pnpm/npm/bun are handled in fixture prep.",
       "id": "US-086",
       "priority": 121
@@ -2425,7 +2425,7 @@
       "notes": "CLI E2E Phase 6 \u2014 final phase. Depends on US-080 (TerminalHarness), US-095 (isTTY). Claude Code uses Ink (React-based TUI) with cursor movement, screen clearing, and color codes. Known spawn stall risk. API tokens (ANTHROPIC_API_KEY, OPENAI_API_KEY) available at ~/misc/env.txt \u2014 source it before running tests that need real or mock-pointed API keys."
     },
     {
-      "id": "US-104",
+      "id": "US-142",
       "title": "Sandbox Python runtime \u2014 block import js host escape",
       "description": "As a developer, I need the Python/Pyodide runtime to prevent sandbox code from reaching the host via import js, which currently gives full Node.js API access through the worker_threads Worker.",
       "acceptanceCriteria": [
@@ -2443,7 +2443,7 @@
       "notes": "Audit C1 \u2014 CRITICAL. Pyodide runs in worker_threads with eval: true, giving full Node.js access. The regex check for micropip/loadPackage is trivially bypassable via getattr, exec, or string concatenation. This is the most severe finding \u2014 Python runtime has zero isolation."
     },
     {
-      "id": "US-105",
+      "id": "US-143",
       "title": "Add assertPayloadByteLength to text file reads",
       "description": "As a developer, I need the text file read bridge path (readFileRef) to enforce payload size limits matching the binary read path, preventing host OOM from arbitrarily large text files.",
       "acceptanceCriteria": [
@@ -2458,7 +2458,7 @@
       "notes": "Audit C3 \u2014 CRITICAL. execution-driver.ts:1030-1032. Binary read path (readFileBinaryRef) correctly calls assertPayloadByteLength, text read path does not. With ModuleAccessFileSystem projecting host node_modules, sandbox code can read arbitrarily large text files into host memory."
     },
     {
-      "id": "US-106",
+      "id": "US-144",
       "title": "Restrict Browser Worker global APIs \u2014 block fetch, WebSocket, importScripts, indexedDB",
       "description": "As a developer, I need the browser Worker sandbox to delete or wrap dangerous Web APIs before eval so sandbox code cannot bypass permission checks or hijack the control channel.",
       "acceptanceCriteria": [
@@ -2478,7 +2478,7 @@
       "notes": "Audit C4 \u2014 CRITICAL (partial gap). US-118 hardened fetch/Headers/Request/Response/Blob as non-writable, but does not delete native fetch or block XMLHttpRequest, WebSocket, importScripts, indexedDB, caches, BroadcastChannel. self.onmessage is writable so sandbox code can hijack the control channel."
     },
     {
-      "id": "US-107",
+      "id": "US-145",
       "title": "Add concurrent host timer cap",
       "description": "As a developer, I need a configurable maximum on concurrent host-side timers (setTimeout/setInterval) created by sandbox code to prevent event loop exhaustion.",
       "acceptanceCriteria": [
@@ -2496,7 +2496,7 @@
       "notes": "Audit H3 (partial gap). US-117 handles cleanup on disposal but does not cap concurrent active timers. Sandbox code can create millions of pending host timers exhausting event loop and memory. Also covers audit M4 (isolate-side timer maps)."
     },
     {
-      "id": "US-108",
+      "id": "US-146",
       "title": "Cap active handle map size",
       "description": "As a developer, I need the ActiveHandles map to have a size limit preventing unbounded growth from spawning thousands of child processes or registering thousands of handles.",
       "acceptanceCriteria": [
@@ -2513,7 +2513,7 @@
       "notes": "Audit H4 (partial gap). US-126 caps FD table and event listeners but not the active-handles.ts map. Spawning thousands of child processes or timers grows the map without bound."
     },
     {
-      "id": "US-109",
+      "id": "US-147",
       "title": "Filter dangerous env vars from child process spawn",
       "description": "As a developer, I need child_process.spawn to filter dangerous environment variables (LD_PRELOAD, NODE_OPTIONS, LD_LIBRARY_PATH) from the env passed by sandbox code.",
       "acceptanceCriteria": [
@@ -2529,7 +2529,7 @@
       "notes": "Audit H5 \u2014 HIGH. execution-driver.ts:1162-1164. filterEnv is applied to process.env at init time but NOT to the env option passed from sandbox code to child_process.spawn. Combined with M8 (process.env mutations), sandbox code can inject LD_PRELOAD into spawned processes."
     },
     {
-      "id": "US-110",
+      "id": "US-148",
       "title": "Add SSRF protection \u2014 block private IPs and validate redirects",
       "description": "As a developer, I need the network adapter to block requests to private/internal IP ranges and either disable redirect following or re-validate redirected URLs.",
       "acceptanceCriteria": [
@@ -2547,7 +2547,7 @@
       "notes": "Audit H6 \u2014 HIGH. permissions.ts:228-234, node/driver.ts:241-278. Permission checks validate the original URL but fetch follows redirects by default. A URL that 302-redirects to http://169.254.169.254/ passes the check."
     },
     {
-      "id": "US-111",
+      "id": "US-149",
       "title": "Fix timing mitigation \u2014 make Date.now non-configurable and patch Date constructor",
       "description": "As a developer, I need the timing mitigation to use writable:false + configurable:false for Date.now and also patch the Date constructor so sandbox code cannot trivially restore high-resolution timing.",
       "acceptanceCriteria": [
@@ -2565,7 +2565,7 @@
       "notes": "Audit M2 \u2014 MEDIUM. apply-timing-mitigation-freeze.ts:13-17. Date.now is set with writable: true, configurable: true. Sandbox code can restore it trivially."
     },
     {
-      "id": "US-112",
+      "id": "US-150",
       "title": "Add permission check to httpServerClose",
       "description": "As a developer, I need httpServerClose to validate that the requesting sandbox owns the server being closed, preventing cross-sandbox server termination.",
       "acceptanceCriteria": [
@@ -2580,7 +2580,7 @@
       "notes": "Audit M6 \u2014 MEDIUM. permissions.ts:223-226. httpServerClose is forwarded without permission check. Could allow closing other sandboxes' servers if server IDs are guessable."
     },
     {
-      "id": "US-113",
+      "id": "US-151",
       "title": "Harden Browser permission callback deserialization",
       "description": "As a developer, I need permission callbacks in the browser worker to be deserialized safely, not via new Function() which is a code injection vector.",
       "acceptanceCriteria": [
@@ -2596,7 +2596,7 @@
       "notes": "Audit M7 \u2014 MEDIUM. browser/worker.ts:79-88. Permission callbacks are serialized as strings and revived with new Function('return (' + source + ')')(). If permission string is ever influenced by untrusted input, this is code injection."
     },
     {
-      "id": "US-114",
+      "id": "US-152",
       "title": "Prevent process.env mutations from reaching child processes",
       "description": "As a developer, I need process.env in the sandbox to be isolated so that mutations (e.g. setting LD_PRELOAD) do not propagate to child processes spawned with default env.",
       "acceptanceCriteria": [
@@ -2609,10 +2609,10 @@
       ],
       "priority": 152,
       "passes": false,
-      "notes": "Audit M8 \u2014 MEDIUM. process.ts:519-520, child-process.ts:447-448. process.env mutations are unrestricted and combined with H5, process.env.LD_PRELOAD then execSync('cmd') passes the injected variable. Related to US-109."
+      "notes": "Audit M8 \u2014 MEDIUM. process.ts:519-520, child-process.ts:447-448. process.env mutations are unrestricted and combined with H5, process.env.LD_PRELOAD then execSync('cmd') passes the injected variable. Related to US-147."
     },
     {
-      "id": "US-115",
+      "id": "US-153",
       "title": "Harden SharedArrayBuffer deletion fallback",
       "description": "As a developer, I need the SharedArrayBuffer timing mitigation to use a robust removal approach that cannot be circumvented by sandbox code restoring it from a saved reference.",
       "acceptanceCriteria": [
@@ -2627,7 +2627,7 @@
       "notes": "Audit L2 \u2014 LOW. apply-timing-mitigation-freeze.ts:42-44. Current deletion is a simple delete which may not work if SAB was already captured by sandbox code."
     },
     {
-      "id": "US-116-B",
+      "id": "US-154",
       "title": "Make process.binding() throw instead of returning stubs",
       "description": "As a developer, I need process.binding() to throw an error instead of returning stubs, as stubs can give sandbox code a false sense of access to internal Node.js bindings.",
       "acceptanceCriteria": [
@@ -2643,7 +2643,7 @@
       "notes": "Audit L3 \u2014 LOW. process.ts:760-784. Current stubs return mock objects. While not directly exploitable, they obscure the sandbox boundary."
     },
     {
-      "id": "US-117-B",
+      "id": "US-155",
       "title": "Cap ClientRequest._body and ServerResponse._chunks buffering",
       "description": "As a developer, I need the bridge network request body and response chunks buffers to have size limits preventing host memory exhaustion.",
       "acceptanceCriteria": [
@@ -2661,7 +2661,7 @@
       "notes": "Audit L4 + L7 \u2014 LOW. network.ts:649 (ClientRequest._body unbounded string concat) and network.ts:923 (ServerResponseBridge._chunks unbounded array). Both grow without limit from sandbox code."
     },
     {
-      "id": "US-118-B",
+      "id": "US-156",
       "title": "Add rate limiting to Browser and Python worker stdio messages",
       "description": "As a developer, I need the browser and Python worker stdio message channels to have rate limits preventing message flooding that could exhaust host memory or event loop.",
       "acceptanceCriteria": [
@@ -2677,7 +2677,7 @@
       "notes": "Audit L5 \u2014 LOW. browser/worker.ts:56, python/driver.ts:198-208. Neither worker rate-limits stdout/stderr messages, allowing sandbox code to flood the host message channel."
     },
     {
-      "id": "US-119-B",
+      "id": "US-157",
       "title": "Block module cache poisoning within single execution",
       "description": "As a developer, I need require.cache and internal module caches to be non-writable from sandbox code so a module cannot poison the cache for other modules in the same execution.",
       "acceptanceCriteria": [
@@ -2692,6 +2692,121 @@
       "priority": 157,
       "passes": false,
       "notes": "Audit M3 \u2014 MEDIUM (partial gap from US-132). US-132 isolates caches across warm executions but does not prevent poisoning within a single execution. bridge-initial-globals.ts:22 exposes mutable _moduleCache and require.cache."
+    },
+    {
+      "id": "US-158",
+      "title": "Allow loopback fetch for sandbox-spawned HTTP servers (SSRF exemption)",
+      "description": "As a developer, I need sandbox code that starts an HTTP server via the bridge to be able to fetch from its own localhost/loopback address without being blocked by SSRF protection.",
+      "acceptanceCriteria": [
+        "SSRF protection tracks bridged HTTP servers and their bound ports",
+        "Fetch to 127.0.0.1 or localhost on a port owned by the same sandbox is allowed",
+        "Fetch to 127.0.0.1 on a port NOT owned by the sandbox is still blocked",
+        "Fetch to other private IPs (10.x, 192.168.x, 169.254.x) remains blocked",
+        "Test: sandbox creates http.createServer, binds port 0, fetches own endpoint \u2014 succeeds",
+        "Test: sandbox fetches localhost on arbitrary port not owned by sandbox \u2014 blocked",
+        "Test: coerces 0.0.0.0 listen to loopback for strict sandboxing",
+        "Test: http.Agent with maxSockets=1 serializes concurrent requests through bridged server",
+        "Test: upgrade request fires upgrade event with response and socket on bridged server",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 158,
+      "passes": false,
+      "notes": "Test failures: 5 NodeRuntime HTTP/SSRF tests fail because SSRF protection blocks all loopback fetch including to the sandbox's own bridged HTTP servers. Relates to US-148 (SSRF protection) but is about carving out a safe exemption, not weakening protection."
+    },
+    {
+      "id": "US-159",
+      "title": "Fix Express and Fastify exit code 1 in secure-exec project matrix",
+      "description": "As a developer, I need the Express and Fastify project-matrix fixtures to pass in the no-kernel secure-exec matrix (not just the kernel matrix).",
+      "acceptanceCriteria": [
+        "Investigate why express-pass and fastify-pass fixtures exit with code 1 in secure-exec",
+        "Fix the root cause (may be missing bridge API, incorrect server lifecycle, or network issue)",
+        "runs fixture express-pass in host node and secure-exec \u2014 parity passes",
+        "runs fixture fastify-pass in host node and secure-exec \u2014 parity passes",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 159,
+      "passes": false,
+      "notes": "Pre-existing test failures. express-pass and fastify-pass fixtures exit code 1 in secure-exec but exit 0 in host node. Separate from the SSRF loopback issue (US-158). Fixtures are in packages/secure-exec/tests/projects/. Relates to US-035, US-036, US-049."
+    },
+    {
+      "id": "US-160",
+      "title": "Implement kernel shell I/O redirection operators (< > >>)",
+      "description": "As a developer, I need the kernel shell (brush-shell) to support I/O redirection so exec() can handle commands with < > >> operators that read from and write to VFS files.",
+      "acceptanceCriteria": [
+        "exec('cat < /tmp/in.txt') reads from VFS file and produces stdout",
+        "exec('echo hello >> /tmp/out.txt') appends to existing VFS file",
+        "exec('echo first > /tmp/out.txt') creates/truncates VFS file",
+        "Piped output preserves data across redirection (e.g., cmd | cmd > file)",
+        "exec('node -e ... < /tmp/in.txt') reads redirected file via kernel VFS",
+        "FD inheritance wires redirected FDs correctly to child process stdin/stdout/stderr",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 160,
+      "passes": false,
+      "notes": "Test failures: 4 FD inheritance tests fail with timeouts or missing features. Shell I/O redirection requires brush-shell to parse < > >> operators, open VFS files via kernel fdOpen, and wire the FDs to the spawned child process via stdinFd/stdoutFd overrides."
+    },
+    {
+      "id": "US-161",
+      "title": "Add Next.js project-matrix fixture",
+      "description": "As a developer, I need a Next.js fixture to catch compatibility regressions for the most common React meta-framework, covering SSR, API routes, and the build pipeline.",
+      "acceptanceCriteria": [
+        "packages/secure-exec/tests/projects/nextjs-pass/ created with package.json and source files",
+        "Next.js app with at least one page and one API route",
+        "Fixture runs next build, prints deterministic stdout, exits 0",
+        "Fixture passes in host Node (node entrypoint \u2192 exit 0, expected stdout)",
+        "Fixture passes through secure-exec project-matrix (project-matrix.test.ts)",
+        "Fixture passes through kernel project-matrix (e2e-project-matrix.test.ts)",
+        "Stdout parity between host and sandbox",
+        "No sandbox-aware branches in fixture code",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 161,
+      "passes": false,
+      "notes": "Same pattern as Express (US-036) and Fastify (US-037) fixtures. Next.js exercises SSR, webpack/turbopack compilation, fs access for pages, and dynamic imports \u2014 all stress points for the sandbox."
+    },
+    {
+      "id": "US-162",
+      "title": "Add Vite project-matrix fixture",
+      "description": "As a developer, I need a Vite fixture to catch compatibility regressions for the most common frontend build tool, covering ESM resolution, plugin loading, and the build pipeline.",
+      "acceptanceCriteria": [
+        "packages/secure-exec/tests/projects/vite-pass/ created with package.json and source files",
+        "Vite project with a minimal app and at least one plugin (e.g. @vitejs/plugin-react)",
+        "Fixture runs vite build, prints deterministic stdout, exits 0",
+        "Fixture passes in host Node (node entrypoint \u2192 exit 0, expected stdout)",
+        "Fixture passes through secure-exec project-matrix (project-matrix.test.ts)",
+        "Fixture passes through kernel project-matrix (e2e-project-matrix.test.ts)",
+        "Stdout parity between host and sandbox",
+        "No sandbox-aware branches in fixture code",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 162,
+      "passes": false,
+      "notes": "Vite exercises ESM-first module resolution, esbuild/rollup compilation, worker threads for plugins, and native addon optional deps \u2014 all stress points for the sandbox."
+    },
+    {
+      "id": "US-163",
+      "title": "Add Astro project-matrix fixture",
+      "description": "As a developer, I need an Astro fixture to catch compatibility regressions for Astro's island architecture, covering static build, component hydration, and the Vite-based build pipeline.",
+      "acceptanceCriteria": [
+        "packages/secure-exec/tests/projects/astro-pass/ created with package.json and source files",
+        "Astro project with at least one page and one interactive island component",
+        "Fixture runs astro build, prints deterministic stdout, exits 0",
+        "Fixture passes in host Node (node entrypoint \u2192 exit 0, expected stdout)",
+        "Fixture passes through secure-exec project-matrix (project-matrix.test.ts)",
+        "Fixture passes through kernel project-matrix (e2e-project-matrix.test.ts)",
+        "Stdout parity between host and sandbox",
+        "No sandbox-aware branches in fixture code",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 163,
+      "passes": false,
+      "notes": "Astro exercises Vite internals, .astro file compilation, partial hydration, and multi-framework component rendering \u2014 all stress points for the sandbox. Depends on Vite compatibility (US-162)."
     }
   ]
 }

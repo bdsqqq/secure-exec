@@ -1742,3 +1742,22 @@ PRD: ralph/kernel-hardening (46 stories)
   - pyodide `require.resolve()` succeeds but `await import('pyodide')` fails — use dynamic import check for accurate gating
   - Cross-runtime pipe tests (echo | node) still fail — separate issue from output routing (pipe EOF/close semantics)
 ---
+
+## 2026-03-18 - US-086
+- Implemented yarn support in project-matrix fixture preparation
+- Files changed:
+  - packages/secure-exec/tests/project-matrix.test.ts
+  - packages/secure-exec/tests/kernel/e2e-project-matrix.test.ts
+- Changes:
+  - Added "yarn" to PackageManager type union
+  - Added "yarn" to validPackageManagers validation set and error message
+  - Added yarn install command dispatch: classic (`yarn install`) vs berry (`yarn install --immutable`) based on `.yarnrc.yml` presence
+  - Added `getYarnVersion()` memoized helper for cache key generation
+  - Added `getYarnInstallCmd()` helper that detects berry via `.yarnrc.yml`
+  - Added `yarn.lock` to lockfile resolution in cache key
+  - Mirrored all changes in e2e-project-matrix.test.ts
+- **Learnings for future iterations:**
+  - express-pass and fastify-pass fixtures are known failures (US-159) — don't block on them
+  - Both project-matrix.test.ts and e2e-project-matrix.test.ts share the same fixture prep logic but are maintained separately — changes must be applied to both files
+  - Berry (yarn v2+) is detected by `.yarnrc.yml` file presence in the project dir; `--immutable` flag requires a pre-existing yarn.lock
+---
