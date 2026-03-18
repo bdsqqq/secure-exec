@@ -20,14 +20,14 @@ import type {
 function checkPermission<T>(
 	check: ((request: T) => { allow: boolean; reason?: string }) | undefined,
 	request: T,
-	onDenied: (request: T) => Error,
+	onDenied: (request: T, reason?: string) => Error,
 ): void {
 	if (!check) {
 		throw onDenied(request);
 	}
 	const decision = check(request);
 	if (!decision?.allow) {
-		throw onDenied(request);
+		throw onDenied(request, decision?.reason);
 	}
 }
 
@@ -107,7 +107,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "read", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.readFile(path);
 		},
@@ -115,7 +115,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "read", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.readTextFile(path);
 		},
@@ -123,7 +123,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "readdir", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.readDir(path);
 		},
@@ -131,7 +131,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "readdir", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.readDirWithTypes(path);
 		},
@@ -139,7 +139,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "write", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.writeFile(path, content);
 		},
@@ -147,7 +147,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "createDir", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.createDir(path);
 		},
@@ -155,7 +155,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "mkdir", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.mkdir(path);
 		},
@@ -163,7 +163,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "exists", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.exists(path);
 		},
@@ -171,7 +171,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "stat", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.stat(path);
 		},
@@ -179,7 +179,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "rm", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.removeFile(path);
 		},
@@ -187,7 +187,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "rm", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.removeDir(path);
 		},
@@ -195,12 +195,12 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "rename", path: oldPath },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			checkPermission(
 				permissions?.fs,
 				{ op: "rename", path: newPath },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.rename(oldPath, newPath);
 		},
@@ -208,7 +208,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "symlink", path: linkPath },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.symlink(target, linkPath);
 		},
@@ -216,7 +216,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "readlink", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.readlink(path);
 		},
@@ -224,7 +224,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "stat", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.lstat(path);
 		},
@@ -232,7 +232,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "link", path: newPath },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.link(oldPath, newPath);
 		},
@@ -240,7 +240,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "chmod", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.chmod(path, mode);
 		},
@@ -248,7 +248,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "chown", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.chown(path, uid, gid);
 		},
@@ -256,7 +256,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "utimes", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.utimes(path, atime, mtime);
 		},
@@ -264,7 +264,7 @@ export function wrapFileSystem(
 			checkPermission(
 				permissions?.fs,
 				{ op: "truncate", path },
-				(req) => createEaccesError(fsOpToSyscall(req.op), req.path),
+				(req, reason) => createEaccesError(fsOpToSyscall(req.op), req.path, reason),
 			);
 			return fs.truncate(path, length);
 		},
@@ -293,7 +293,7 @@ export function wrapNetworkAdapter(
 								: `http://0.0.0.0:${options.port ?? 3000}`,
 							method: "LISTEN",
 						},
-						(req) => createEaccesError("listen", req.url),
+						(req, reason) => createEaccesError("listen", req.url, reason),
 					);
 					return adapter.httpServerListen!(options);
 				}
@@ -307,7 +307,7 @@ export function wrapNetworkAdapter(
 			checkPermission(
 				permissions?.network,
 				{ op: "fetch", url, method: options?.method },
-				(req) => createEaccesError("connect", req.url),
+				(req, reason) => createEaccesError("connect", req.url, reason),
 			);
 			return adapter.fetch(url, options);
 		},
@@ -315,7 +315,7 @@ export function wrapNetworkAdapter(
 			checkPermission(
 				permissions?.network,
 				{ op: "dns", hostname },
-				(req) => createEaccesError("connect", req.hostname),
+				(req, reason) => createEaccesError("connect", req.hostname, reason),
 			);
 			return adapter.dnsLookup(hostname);
 		},
@@ -323,7 +323,7 @@ export function wrapNetworkAdapter(
 			checkPermission(
 				permissions?.network,
 				{ op: "http", url, method: options?.method },
-				(req) => createEaccesError("connect", req.url),
+				(req, reason) => createEaccesError("connect", req.url, reason),
 			);
 			return adapter.httpRequest(url, options);
 		},
@@ -340,7 +340,7 @@ export function wrapCommandExecutor(
 			checkPermission(
 				permissions?.childProcess,
 				{ command, args, cwd: options.cwd, env: options.env },
-				(req) => createEaccesError("spawn", req.command),
+				(req, reason) => createEaccesError("spawn", req.command, reason),
 			);
 			return executor.spawn(command, args, options);
 		},
@@ -351,8 +351,8 @@ export function envAccessAllowed(
 	permissions: Permissions | undefined,
 	request: EnvAccessRequest,
 ): void {
-	checkPermission(permissions?.env, request, (req) =>
-		createEaccesError("access", req.key),
+	checkPermission(permissions?.env, request, (req, reason) =>
+		createEaccesError("access", req.key, reason),
 	);
 }
 

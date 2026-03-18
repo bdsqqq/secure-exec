@@ -203,3 +203,73 @@ describe("allow helpers", () => {
 		expectEacces(envThrown, "access", "HIDDEN");
 	});
 });
+
+describe("permissions deny-by-default write-side", () => {
+	it("denies writeFile when fs checker is missing", async () => {
+		const guardedFs = wrapFileSystem(baseFs);
+		let thrown: unknown;
+		try {
+			await guardedFs.writeFile("/data.bin", new Uint8Array([1, 2]));
+		} catch (error) {
+			thrown = error;
+		}
+		expectEacces(thrown, "write", "/data.bin");
+	});
+
+	it("denies createDir when fs checker is missing", async () => {
+		const guardedFs = wrapFileSystem(baseFs);
+		let thrown: unknown;
+		try {
+			await guardedFs.createDir("/newdir");
+		} catch (error) {
+			thrown = error;
+		}
+		expectEacces(thrown, "mkdir", "/newdir");
+	});
+
+	it("denies removeFile when fs checker is missing", async () => {
+		const guardedFs = wrapFileSystem(baseFs);
+		let thrown: unknown;
+		try {
+			await guardedFs.removeFile("/secret.txt");
+		} catch (error) {
+			thrown = error;
+		}
+		expectEacces(thrown, "unlink", "/secret.txt");
+	});
+});
+
+describe("custom permission checker", () => {
+	it("fs checker returning { allow: false, reason } produces EACCES with reason", async () => {
+		const permissions: Permissions = {
+			fs: () => ({ allow: false, reason: "policy" }),
+		};
+		const guardedFs = wrapFileSystem(baseFs, permissions);
+		let thrown: unknown;
+		try {
+			await guardedFs.writeFile("/blocked.txt", new Uint8Array([1]));
+		} catch (error) {
+			thrown = error;
+		}
+		expect(thrown).toMatchObject({ code: "EACCES", syscall: "write" });
+		expect((thrown as Error).message).toContain("policy");
+	});
+
+	it("childProcess checker receives cwd parameter in request", () => {
+		const captured: { command: string; args: string[]; cwd?: string }[] = [];
+		const permissions: Permissions = {
+			childProcess: (req) => {
+				captured.push({
+					command: req.command,
+					args: req.args,
+					cwd: req.cwd,
+				});
+				return { allow: true };
+			},
+		};
+		const guardedExecutor = wrapCommandExecutor(baseExecutor, permissions);
+		guardedExecutor.spawn("node", ["-e", "1"], { cwd: "/app" });
+		expect(captured).toHaveLength(1);
+		expect(captured[0].cwd).toBe("/app");
+	});
+});

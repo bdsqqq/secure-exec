@@ -23,11 +23,16 @@ export function createSystemError(
 }
 
 /** Create a permission-denied error matching Node's EACCES format. */
-export function createEaccesError(op: string, path?: string): SystemError {
+export function createEaccesError(
+	op: string,
+	path?: string,
+	reason?: string,
+): SystemError {
 	const suffix = path ? ` '${path}'` : "";
+	const reasonSuffix = reason ? `: ${reason}` : "";
 	return createSystemError(
 		"EACCES",
-		`EACCES: permission denied, ${op}${suffix}`,
+		`EACCES: permission denied, ${op}${suffix}${reasonSuffix}`,
 		{ path, syscall: op },
 	);
 }
