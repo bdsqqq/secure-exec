@@ -2135,3 +2135,23 @@ PRD: ralph/kernel-hardening (46 stories)
   - project-matrix sandbox permissions (allowAllFs + allowAllEnv + allowAllNetwork) do NOT include allowAllChildProcess
   - Next.js pages ESM syntax (`export default`) fails build with `"type": "commonjs"` in package.json — SWC doesn't convert ESM to CJS for CJS packages
 ---
+
+## 2026-03-18 - US-162
+- Added Vite project-matrix fixture at packages/secure-exec/tests/projects/vite-pass/
+- Minimal Vite + React app with @vitejs/plugin-react, exercises ESM resolution, JSX transform, esbuild/rollup build pipeline
+- Entry script runs `vite build` via execSync, verifies dist/index.html and compiled JS assets contain expected content
+- All 24 project-matrix tests pass (including vite-pass)
+- Files changed:
+  - packages/secure-exec/tests/projects/vite-pass/fixture.json
+  - packages/secure-exec/tests/projects/vite-pass/package.json
+  - packages/secure-exec/tests/projects/vite-pass/vite.config.mjs
+  - packages/secure-exec/tests/projects/vite-pass/index.html
+  - packages/secure-exec/tests/projects/vite-pass/app/main.jsx
+  - packages/secure-exec/tests/projects/vite-pass/src/index.js
+  - scripts/ralph/prd.json — marked US-162 passes: true
+- **Learnings for future iterations:**
+  - Vite config must use `.mjs` extension (vite.config.mjs) when package.json has `"type": "commonjs"` — Vite 5 is ESM-only
+  - Vite app source (index.html, JSX files) can live outside src/ to avoid colliding with the CJS test entry at src/index.js
+  - esbuild build scripts may be ignored by pnpm approve-builds, but vite build still works because esbuild ships platform-specific prebuilt binaries as optionalDependencies
+  - e2e-project-matrix.test.ts (kernel) is globally broken — 22/23 tests fail with "could not retrieve pid for child process"; this is a pre-existing kernel infrastructure issue, not fixture-specific
+---

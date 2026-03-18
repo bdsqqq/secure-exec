@@ -2785,7 +2785,7 @@
         "Tests pass"
       ],
       "priority": 162,
-      "passes": false,
+      "passes": true,
       "notes": "Vite exercises ESM-first module resolution, esbuild/rollup compilation, worker threads for plugins, and native addon optional deps \u2014 all stress points for the sandbox."
     },
     {
