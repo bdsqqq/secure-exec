@@ -396,6 +396,7 @@ export type KernelErrorCode =
 	| "EINVAL"
 	| "EIO"
 	| "EISDIR"
+	| "EMFILE"
 	| "ENOENT"
 	| "ENOSYS"
 	| "ENOTEMPTY"

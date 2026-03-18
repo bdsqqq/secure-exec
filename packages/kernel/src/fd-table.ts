@@ -19,6 +19,9 @@ import {
 	KernelError,
 } from "./types.js";
 
+/** Maximum open FDs per process before allocations are rejected (EMFILE). */
+export const MAX_FDS_PER_PROCESS = 256;
+
 let nextDescriptionId = 1;
 
 function createFileDescription(
@@ -204,6 +207,10 @@ export class ProcessFDTable {
 	}
 
 	private allocateFd(): number {
+		// Enforce per-process FD limit
+		if (this.entries.size >= MAX_FDS_PER_PROCESS) {
+			throw new KernelError("EMFILE", "too many open files");
+		}
 		// Find lowest available FD >= nextFd hint
 		while (this.entries.has(this.nextFd)) {
 			this.nextFd++;

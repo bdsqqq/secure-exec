@@ -13,6 +13,10 @@ PRD: ralph/kernel-hardening (46 stories)
 - bridge-loader.ts in secure-exec resolves core package root via createRequire(import.meta.url).resolve("@secure-exec/core") to find bridge.js and source
 - Source-grep tests use readCoreSource() helper to read files from core's source tree
 - Kernel errors use `KernelError(code, message)` from types.ts — always use structured codes, not plain Error with embedded code in message
+- Pipe buffers are bounded by MAX_PIPE_BUFFER_BYTES (64KB) — writes to full buffer throw EAGAIN
+- PTY buffers are bounded by MAX_PTY_BUFFER_BYTES (64KB) — writes to full buffer throw EAGAIN
+- FD tables are bounded by MAX_FDS_PER_PROCESS (256) — excess allocations throw EMFILE
+- Constants exported from pipe-manager.ts, pty.ts, and fd-table.ts respectively
 - ERRNO_MAP in wasmvm/src/wasi-constants.ts is the single source of truth for POSIX→WASI errno mapping
 - Bridge ServerResponseBridge.write/end must treat null as no-op (Node.js convention: res.end(null) ends without writing; Fastify's sendTrailer calls res.end(null, null, null))
 - Use `pnpm run check-types` (turbo) for typecheck, not bare `tsc`
@@ -1136,4 +1140,32 @@ PRD: ralph/kernel-hardening (46 stories)
   - vm.runInThisContext('this') returns a context reference that differs from globalThis but is still within the sandbox (no host bindings available)
   - When testing optional-chain calls like g?.process?.dlopen?.(), be careful: if dlopen is undefined, the call returns undefined without throwing — test for function existence separately from call behavior
   - Object.setPrototypeOf(Object.prototype, ...) throws in the sandbox (immutable prototype exotic object)
+---
+
+## 2026-03-17 - US-069 (retroactive)
+- Already committed in 113b530 — marking passes: true
+---
+
+## 2026-03-17 - US-070 (retroactive)
+- Already committed in 3deaa68 — marking passes: true
+---
+
+## 2026-03-17 - US-071 (retroactive)
+- Already committed in 48b5b47 — marking passes: true
+---
+
+## 2026-03-17 - US-072
+- What was implemented: Added resource exhaustion guards and tests for pipe buffers, FD limits, and PTY buffers
+- Files changed:
+  - packages/kernel/src/pipe-manager.ts — added MAX_PIPE_BUFFER_BYTES (64KB) constant and buffer size enforcement in write()
+  - packages/kernel/src/fd-table.ts — added MAX_FDS_PER_PROCESS (256) constant and EMFILE enforcement in allocateFd()
+  - packages/kernel/src/pty.ts — added MAX_PTY_BUFFER_BYTES (64KB) constant and buffer size enforcement in write(), deliverInput(), echoOutput()
+  - packages/kernel/src/types.ts — added EMFILE to KernelErrorCode union
+  - packages/kernel/test/resource-exhaustion.test.ts (new) — 9 tests covering all three resource exhaustion vectors
+- **Learnings for future iterations:**
+  - PipeManager.write() delivers directly to readWaiters (bypasses buffer) when a reader is waiting — buffer limit only applies to unbuffered writes
+  - PTY has two independent buffer directions: inputBuffer (master→slave) and outputBuffer (slave→master) — each needs its own limit check
+  - PTY echoOutput() uses best-effort: drops echo data when output buffer is full rather than throwing, to avoid breaking line discipline processing
+  - ProcessFDTable starts nextFd at 3 (0-2 reserved for stdio) — initStdio() must be called explicitly; without it, FD 0 doesn't exist
+  - EMFILE is the POSIX error for "too many open files" — must be added to KernelErrorCode union type
 ---

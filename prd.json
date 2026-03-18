@@ -1173,7 +1173,7 @@
         "Tests pass"
       ],
       "priority": 69,
-      "passes": false,
+      "passes": true,
       "notes": "Audit M3, M4. Only _cryptoRandomFill is tested for freeze. No path traversal attack tests exist."
     },
     {
@@ -1189,7 +1189,7 @@
         "Tests pass"
       ],
       "priority": 70,
-      "passes": false,
+      "passes": true,
       "notes": "Audit M6. Python has env filtering tests; Node has zero coverage for env leakage."
     },
     {
@@ -1204,7 +1204,7 @@
         "Tests pass"
       ],
       "priority": 71,
-      "passes": false,
+      "passes": true,
       "notes": "Audit M7, M8. Both options are accepted by constructors but never tested for enforcement."
     },
     {
@@ -1220,7 +1220,7 @@
         "Tests pass"
       ],
       "priority": 72,
-      "passes": false,
+      "passes": true,
       "notes": "Audit M10, M11. CLAUDE.md flags 'host memory buildup and CPU amplification as critical risks'. Zero tests for this."
     },
     {

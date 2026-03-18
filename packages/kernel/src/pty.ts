@@ -52,6 +52,9 @@ interface PtyState {
 	foregroundPgid: number;
 }
 
+/** Maximum buffered bytes per PTY direction before writes are rejected (EAGAIN). */
+export const MAX_PTY_BUFFER_BYTES = 65_536; // 64 KB
+
 let nextPtyId = 0;
 let nextPtyDescId = 200_000; // High range to avoid FD/pipe ID collisions
 
@@ -142,6 +145,10 @@ export class PtyManager {
 				const waiter = state.outputWaiters.shift()!;
 				waiter(data);
 			} else {
+				// Enforce buffer limit to prevent unbounded memory growth
+				if (this.bufferBytes(state.outputBuffer) + data.length > MAX_PTY_BUFFER_BYTES) {
+					throw new KernelError("EAGAIN", "PTY output buffer full");
+				}
 				state.outputBuffer.push(new Uint8Array(data));
 			}
 		}
@@ -389,6 +396,10 @@ export class PtyManager {
 			const waiter = state.inputWaiters.shift()!;
 			waiter(data);
 		} else {
+			// Enforce buffer limit to prevent unbounded memory growth
+			if (this.bufferBytes(state.inputBuffer) + data.length > MAX_PTY_BUFFER_BYTES) {
+				throw new KernelError("EAGAIN", "PTY input buffer full");
+			}
 			state.inputBuffer.push(new Uint8Array(data));
 		}
 	}
@@ -399,7 +410,10 @@ export class PtyManager {
 			const waiter = state.outputWaiters.shift()!;
 			waiter(data);
 		} else {
-			state.outputBuffer.push(new Uint8Array(data));
+			// Best-effort: drop echo if output buffer is full
+			if (this.bufferBytes(state.outputBuffer) + data.length <= MAX_PTY_BUFFER_BYTES) {
+				state.outputBuffer.push(new Uint8Array(data));
+			}
 		}
 	}
 
@@ -410,6 +424,12 @@ export class PtyManager {
 		if (byte === cc.vsusp) return 20;  // SIGTSTP
 		if (byte === cc.vquit) return 3;   // SIGQUIT
 		return null;
+	}
+
+	private bufferBytes(buffer: Uint8Array[]): number {
+		let size = 0;
+		for (const chunk of buffer) size += chunk.length;
+		return size;
 	}
 
 	private drainBuffer(buffer: Uint8Array[], length: number): Uint8Array {

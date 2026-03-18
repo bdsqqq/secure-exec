@@ -25,6 +25,9 @@ interface PipeState {
 	readWaiters: Array<(data: Uint8Array | null) => void>;
 }
 
+/** Maximum buffered bytes per pipe before writes are rejected (EAGAIN). */
+export const MAX_PIPE_BUFFER_BYTES = 65_536; // 64 KB — matches Linux default
+
 let nextPipeId = 1;
 let nextDescId = 100_000; // High range to avoid FD table collisions
 
@@ -84,11 +87,16 @@ export class PipeManager {
 		if (!state) throw new KernelError("EBADF", "pipe not found");
 		if (state.closed.write) throw new KernelError("EPIPE", "write end closed");
 
-		// If readers are waiting, deliver directly
+		// If readers are waiting, deliver directly (no buffering)
 		if (state.readWaiters.length > 0) {
 			const waiter = state.readWaiters.shift()!;
 			waiter(data);
 		} else {
+			// Enforce buffer limit to prevent unbounded memory growth
+			const currentSize = this.bufferSize(state);
+			if (currentSize + data.length > MAX_PIPE_BUFFER_BYTES) {
+				throw new KernelError("EAGAIN", "pipe buffer full");
+			}
 			state.buffer.push(new Uint8Array(data));
 		}
 
@@ -160,6 +168,12 @@ export class PipeManager {
 		const readFd = fdTable.openWith(read.description, read.filetype);
 		const writeFd = fdTable.openWith(write.description, write.filetype);
 		return { readFd, writeFd };
+	}
+
+	private bufferSize(state: PipeState): number {
+		let size = 0;
+		for (const chunk of state.buffer) size += chunk.length;
+		return size;
 	}
 
 	private drainBuffer(state: PipeState, length: number): Uint8Array {
