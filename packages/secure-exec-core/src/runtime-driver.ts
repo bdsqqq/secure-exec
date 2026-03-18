@@ -30,6 +30,8 @@ export interface ResourceBudgets {
 	maxTimers?: number;
 	/** Maximum child_process.spawn() invocations per execution. */
 	maxChildProcesses?: number;
+	/** Maximum concurrent active handles (child processes, timers, servers) in the bridge handle map. */
+	maxHandles?: number;
 }
 
 export interface RuntimeDriverOptions {

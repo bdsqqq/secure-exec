@@ -60,4 +60,9 @@ export interface VirtualFileSystem {
 	chown(path: string, uid: number, gid: number): Promise<void>;
 	utimes(path: string, atime: number, mtime: number): Promise<void>;
 	truncate(path: string, length: number): Promise<void>;
+
+	// --- Positional read ---
+
+	/** Read a range from a file without loading the entire file into memory. */
+	pread(path: string, offset: number, length: number): Promise<Uint8Array>;
 }

@@ -1651,14 +1651,14 @@ exposeCustomGlobal("_http2Module", http2);
 exposeCustomGlobal("_dnsModule", dns);
 exposeCustomGlobal("_httpServerDispatch", dispatchServerRequest);
 
-// Make fetch API available globally
-(globalThis as Record<string, unknown>).fetch = fetch;
-(globalThis as Record<string, unknown>).Headers = Headers;
-(globalThis as Record<string, unknown>).Request = Request;
-(globalThis as Record<string, unknown>).Response = Response;
+// Harden fetch API globals (non-writable, non-configurable)
+exposeCustomGlobal("fetch", fetch);
+exposeCustomGlobal("Headers", Headers);
+exposeCustomGlobal("Request", Request);
+exposeCustomGlobal("Response", Response);
 if (typeof (globalThis as Record<string, unknown>).Blob === "undefined") {
   // Minimal Blob stub used by server frameworks for instanceof checks.
-  (globalThis as Record<string, unknown>).Blob = class BlobStub {};
+  exposeCustomGlobal("Blob", class BlobStub {});
 }
 
 export default {

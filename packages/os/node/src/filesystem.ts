@@ -127,6 +127,17 @@ export class NodeFileSystem implements VirtualFileSystem {
 	async truncate(p: string, length: number): Promise<void> {
 		await fs.truncate(this.resolve(p), length);
 	}
+
+	async pread(p: string, offset: number, length: number): Promise<Uint8Array> {
+		const handle = await fs.open(this.resolve(p), "r");
+		try {
+			const buf = new Uint8Array(length);
+			const { bytesRead } = await handle.read(buf, 0, length, offset);
+			return bytesRead < length ? buf.slice(0, bytesRead) : buf;
+		} finally {
+			await handle.close();
+		}
+	}
 }
 
 function toVirtualStat(s: import("node:fs").Stats): VirtualStat {

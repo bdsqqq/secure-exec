@@ -6,6 +6,7 @@ export {
 	NodeFileSystem,
 	NodeExecutionDriver,
 	filterEnv,
+	isPrivateIp,
 } from "@secure-exec/node";
 export type {
 	NodeDriverOptions,

@@ -5,7 +5,7 @@ import { createCommandExecutorStub, createFsStub, createNetworkStub, filterEnv, 
 import { executeWithRuntime } from "./execution.js";
 import type { NetworkAdapter, RuntimeDriver } from "@secure-exec/core";
 import type { StdioHook, ExecOptions, ExecResult, RunResult, TimingMitigation } from "@secure-exec/core/internal/shared/api-types";
-import { type DriverDeps, type NodeExecutionDriverOptions, createBudgetState, normalizePayloadLimit, getExecutionTimeoutMs, getTimingMitigation, DEFAULT_BRIDGE_BASE64_TRANSFER_BYTES, DEFAULT_ISOLATE_JSON_PAYLOAD_BYTES, DEFAULT_SANDBOX_CWD, DEFAULT_SANDBOX_HOME, DEFAULT_SANDBOX_TMPDIR } from "./isolate-bootstrap.js";
+import { type DriverDeps, type NodeExecutionDriverOptions, createBudgetState, clearActiveHostTimers, killActiveChildProcesses, normalizePayloadLimit, getExecutionTimeoutMs, getTimingMitigation, DEFAULT_BRIDGE_BASE64_TRANSFER_BYTES, DEFAULT_ISOLATE_JSON_PAYLOAD_BYTES, DEFAULT_MAX_TIMERS, DEFAULT_MAX_HANDLES, DEFAULT_SANDBOX_CWD, DEFAULT_SANDBOX_HOME, DEFAULT_SANDBOX_TMPDIR } from "./isolate-bootstrap.js";
 import { shouldRunAsESM } from "./module-resolver.js";
 import { precompileDynamicImports, runESM, setupDynamicImport } from "./esm-compiler.js";
 import { setupConsole, setupRequire, setupESMGlobals } from "./bridge-setup.js";
@@ -76,10 +76,13 @@ export class NodeExecutionDriver implements RuntimeDriver {
 			isolateJsonPayloadLimitBytes,
 			maxOutputBytes: budgets?.maxOutputBytes,
 			maxBridgeCalls: budgets?.maxBridgeCalls,
-			maxTimers: budgets?.maxTimers,
+			maxTimers: budgets?.maxTimers ?? DEFAULT_MAX_TIMERS,
 			maxChildProcesses: budgets?.maxChildProcesses,
+			maxHandles: budgets?.maxHandles ?? DEFAULT_MAX_HANDLES,
 			budgetState: createBudgetState(),
 			activeHttpServerIds: new Set(),
+			activeChildProcesses: new Map(),
+			activeHostTimers: new Set(),
 			esmModuleCache: new Map(),
 			esmModuleReverseCache: new Map(),
 			moduleFormatCache: new Map(),
@@ -112,6 +115,17 @@ export class NodeExecutionDriver implements RuntimeDriver {
 	async __unsafeCreateContext(options: { env?: Record<string, string>; cwd?: string; filePath?: string } = {}): Promise<ivm.Context> {
 		if (this.disposed) throw new Error("NodeRuntime has been disposed");
 		this.deps.budgetState = createBudgetState();
+		// Clear module caches to prevent cache poisoning across contexts
+		this.deps.esmModuleCache.clear();
+		this.deps.esmModuleReverseCache.clear();
+		this.deps.dynamicImportCache.clear();
+		this.deps.dynamicImportPending.clear();
+		this.deps.resolutionCache.resolveResults.clear();
+		this.deps.resolutionCache.packageJsonResults.clear();
+		this.deps.resolutionCache.existsResults.clear();
+		this.deps.resolutionCache.statResults.clear();
+		this.deps.moduleFormatCache.clear();
+		this.deps.packageTypeCache.clear();
 		const context = await this.deps.isolate.createContext();
 		const jail = context.global;
 		await jail.set("global", jail.derefInto());
@@ -170,7 +184,6 @@ export class NodeExecutionDriver implements RuntimeDriver {
 				resolutionCache: d.resolutionCache,
 				moduleFormatCache: d.moduleFormatCache,
 				packageTypeCache: d.packageTypeCache,
-				activeHttpServerIds: d.activeHttpServerIds,
 				getTimingMitigation: (mode) => getTimingMitigation(mode, d.timingMitigation),
 				getExecutionTimeoutMs: (override) => getExecutionTimeoutMs(override, d.cpuTimeLimitMs),
 				getExecutionDeadlineMs: (timeoutMs) => getExecutionDeadlineMs(timeoutMs),
@@ -213,6 +226,9 @@ export class NodeExecutionDriver implements RuntimeDriver {
 		if (this.disposed) {
 			return;
 		}
+		killActiveChildProcesses(this.deps);
+		this.closeActiveHttpServers();
+		clearActiveHostTimers(this.deps);
 		this.deps.isolate.dispose();
 		this.deps.isolate = this.runtimeCreateIsolate(this.memoryLimit);
 	}
@@ -222,6 +238,9 @@ export class NodeExecutionDriver implements RuntimeDriver {
 			return;
 		}
 		this.disposed = true;
+		killActiveChildProcesses(this.deps);
+		this.closeActiveHttpServers();
+		clearActiveHostTimers(this.deps);
 		this.deps.isolate.dispose();
 	}
 
@@ -229,13 +248,30 @@ export class NodeExecutionDriver implements RuntimeDriver {
 		if (this.disposed) {
 			return;
 		}
+		killActiveChildProcesses(this.deps);
 		const adapter = this.deps.networkAdapter;
 		if (adapter?.httpServerClose) {
 			const ids = Array.from(this.deps.activeHttpServerIds);
 			await Promise.allSettled(ids.map((id) => adapter.httpServerClose!(id)));
 		}
 		this.deps.activeHttpServerIds.clear();
+		clearActiveHostTimers(this.deps);
 		this.disposed = true;
 		this.deps.isolate.dispose();
+	}
+
+	/** Close all tracked HTTP servers without awaiting. */
+	private closeActiveHttpServers(): void {
+		const adapter = this.deps.networkAdapter;
+		if (adapter?.httpServerClose) {
+			for (const id of this.deps.activeHttpServerIds) {
+				try {
+					adapter.httpServerClose(id);
+				} catch {
+					// Server may already be closed
+				}
+			}
+		}
+		this.deps.activeHttpServerIds.clear();
 	}
 }

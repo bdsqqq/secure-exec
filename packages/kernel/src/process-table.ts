@@ -142,6 +142,11 @@ export class ProcessTable {
 	 * If pid < 0, signal all processes in process group abs(pid).
 	 */
 	kill(pid: number, signal: number): void {
+		// Validate signal range (POSIX: 0 = existence check, 1-64 = real signals)
+		if (signal < 0 || signal > 64) {
+			throw new KernelError("EINVAL", `invalid signal ${signal}`);
+		}
+
 		if (pid < 0) {
 			// Process group kill
 			const pgid = -pid;
@@ -149,7 +154,7 @@ export class ProcessTable {
 			for (const entry of this.entries.values()) {
 				if (entry.pgid === pgid && entry.status === "running") {
 					found = true;
-					entry.driverProcess.kill(signal);
+					if (signal !== 0) entry.driverProcess.kill(signal);
 				}
 			}
 			if (!found) throw new KernelError("ESRCH", `no such process group ${pgid}`);
@@ -158,6 +163,8 @@ export class ProcessTable {
 		const entry = this.entries.get(pid);
 		if (!entry) throw new KernelError("ESRCH", `no such process ${pid}`);
 		if (entry.status === "exited") return;
+		// Signal 0: existence check only — don't deliver
+		if (signal === 0) return;
 		entry.driverProcess.kill(signal);
 	}
 
@@ -174,6 +181,10 @@ export class ProcessTable {
 			let groupExists = false;
 			for (const e of this.entries.values()) {
 				if (e.pgid === targetPgid && e.status !== "exited") {
+					// Reject cross-session group joining (POSIX)
+					if (e.sid !== entry.sid) {
+						throw new KernelError("EPERM", `cannot join process group in different session`);
+					}
 					groupExists = true;
 					break;
 				}
@@ -220,6 +231,14 @@ export class ProcessTable {
 		return entry.ppid;
 	}
 
+	/** Check if any running process belongs to the given process group. */
+	hasProcessGroup(pgid: number): boolean {
+		for (const entry of this.entries.values()) {
+			if (entry.pgid === pgid && entry.status !== "exited") return true;
+		}
+		return false;
+	}
+
 	/** Get a read-only view of process info for all processes. */
 	listProcesses(): Map<number, ProcessInfo> {
 		const result = new Map<number, ProcessInfo>();
@@ -264,7 +283,7 @@ export class ProcessTable {
 				// Best effort
 			}
 		}
-		// Wait briefly for exits
+		// Wait briefly for graceful exits
 		await Promise.allSettled(
 			running.map((e) =>
 				Promise.race([
@@ -273,5 +292,25 @@ export class ProcessTable {
 				]),
 			),
 		);
+
+		// Escalate to SIGKILL for processes that survived SIGTERM
+		const survivors = running.filter((e) => e.status === "running");
+		for (const entry of survivors) {
+			try {
+				entry.driverProcess.kill(9); // SIGKILL
+			} catch {
+				// Best effort
+			}
+		}
+		if (survivors.length > 0) {
+			await Promise.allSettled(
+				survivors.map((e) =>
+					Promise.race([
+						e.driverProcess.wait(),
+						new Promise((r) => setTimeout(r, 500)),
+					]),
+				),
+			);
+		}
 	}
 }

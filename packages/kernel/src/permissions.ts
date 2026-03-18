@@ -70,6 +70,7 @@ export function wrapFileSystem(
 		chown: async (path, uid, gid) => { check("chown", path); return fs.chown(path, uid, gid); },
 		utimes: async (path, atime, mtime) => { check("utimes", path); return fs.utimes(path, atime, mtime); },
 		truncate: async (path, length) => { check("truncate", path); return fs.truncate(path, length); },
+		pread: async (path, offset, length) => { check("read", path); return fs.pread(path, offset, length); },
 	};
 }
 

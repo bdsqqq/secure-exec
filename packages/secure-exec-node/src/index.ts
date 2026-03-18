@@ -36,6 +36,7 @@ export {
 	createNodeRuntimeDriverFactory,
 	NodeFileSystem,
 	filterEnv,
+	isPrivateIp,
 } from "./driver.js";
 export type {
 	NodeDriverOptions,

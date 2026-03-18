@@ -99,6 +99,25 @@ describe("PipeManager", () => {
 		expect(Array.from(rest!)).toEqual(Array.from(data.subarray(10)));
 	});
 
+	it("write after read-end close throws EPIPE", () => {
+		const manager = new PipeManager();
+		const { read, write } = manager.createPipe();
+
+		manager.close(read.description.id);
+
+		expect(() => {
+			manager.write(write.description.id, new TextEncoder().encode("fail"));
+		}).toThrow(expect.objectContaining({ code: "EPIPE" }));
+	});
+
+	it("write with open read end succeeds", () => {
+		const manager = new PipeManager();
+		const { write } = manager.createPipe();
+
+		const bytes = manager.write(write.description.id, new TextEncoder().encode("ok"));
+		expect(bytes).toBe(2);
+	});
+
 	it("multiple partial reads drain pipe incrementally", async () => {
 		const manager = new PipeManager();
 		const { read, write } = manager.createPipe();

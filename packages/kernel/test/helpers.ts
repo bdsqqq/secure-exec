@@ -202,6 +202,14 @@ export class TestFileSystem implements VirtualFileSystem {
 			f.data = nd;
 		}
 	}
+
+	async pread(path: string, offset: number, length: number): Promise<Uint8Array> {
+		const n = normalizePath(path);
+		const f = this.files.get(n);
+		if (!f) throw new Error(`ENOENT: no such file or directory, open '${n}'`);
+		if (offset >= f.data.length) return new Uint8Array(0);
+		return f.data.slice(offset, Math.min(offset + length, f.data.length));
+	}
 }
 
 // ---------------------------------------------------------------------------

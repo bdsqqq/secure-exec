@@ -95,6 +95,7 @@ declare global {
 	var _childProcessSpawnSync: ChildProcessSpawnSyncBridgeRef;
 	var _log: ProcessLogBridgeRef;
 	var _error: ProcessErrorBridgeRef;
+	var _maxHandles: number | undefined;
 	var _registerHandle: RegisterHandleBridgeFn;
 	var _unregisterHandle: UnregisterHandleBridgeFn;
 	var require: ((request: string) => unknown) | undefined;

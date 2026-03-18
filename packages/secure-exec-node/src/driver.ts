@@ -1,5 +1,6 @@
 import * as dns from "node:dns";
 import * as fs from "node:fs/promises";
+import * as net from "node:net";
 import type { AddressInfo } from "node:net";
 import * as http from "node:http";
 import * as https from "node:https";
@@ -180,6 +181,76 @@ function normalizeLoopbackHostname(hostname?: string): string {
 	);
 }
 
+/** Check whether an IP address falls in a private/reserved range (SSRF protection). */
+export function isPrivateIp(ip: string): boolean {
+	// Normalize IPv4-mapped IPv6 (::ffff:a.b.c.d → a.b.c.d)
+	const normalized = ip.startsWith("::ffff:") ? ip.slice(7) : ip;
+
+	if (net.isIPv4(normalized)) {
+		const parts = normalized.split(".").map(Number);
+		const [a, b] = parts;
+		return (
+			a === 10 ||                                  // 10.0.0.0/8
+			(a === 172 && b >= 16 && b <= 31) ||         // 172.16.0.0/12
+			(a === 192 && b === 168) ||                   // 192.168.0.0/16
+			a === 127 ||                                  // 127.0.0.0/8
+			(a === 169 && b === 254) ||                   // 169.254.0.0/16 (link-local)
+			a === 0 ||                                    // 0.0.0.0/8
+			(a >= 224 && a <= 239) ||                     // 224.0.0.0/4 (multicast)
+			(a >= 240)                                    // 240.0.0.0/4 (reserved)
+		);
+	}
+
+	if (net.isIPv6(normalized)) {
+		const lower = normalized.toLowerCase();
+		return (
+			lower === "::1" ||                            // loopback
+			lower === "::" ||                             // unspecified
+			lower.startsWith("fc") ||                     // fc00::/7 (ULA)
+			lower.startsWith("fd") ||                     // fc00::/7 (ULA)
+			lower.startsWith("fe80") ||                   // fe80::/10 (link-local)
+			lower.startsWith("ff")                        // ff00::/8 (multicast)
+		);
+	}
+
+	return false;
+}
+
+/** Resolve hostname to IP and block private/reserved ranges (SSRF protection). */
+async function assertNotPrivateHost(url: string): Promise<void> {
+	const parsed = new URL(url);
+	// Non-network schemes don't need SSRF checks
+	if (parsed.protocol === "data:" || parsed.protocol === "blob:") return;
+
+	const hostname = parsed.hostname;
+	// Strip brackets from IPv6 literals
+	const bare = hostname.startsWith("[") && hostname.endsWith("]")
+		? hostname.slice(1, -1)
+		: hostname;
+
+	// If hostname is already an IP literal, check directly
+	if (net.isIP(bare)) {
+		if (isPrivateIp(bare)) {
+			throw new Error(`SSRF blocked: ${hostname} resolves to private IP`);
+		}
+		return;
+	}
+
+	// Resolve DNS and check all addresses
+	const address = await new Promise<string>((resolve, reject) => {
+		dns.lookup(bare, (err, addr) => {
+			if (err) reject(err);
+			else resolve(addr);
+		});
+	});
+
+	if (isPrivateIp(address)) {
+		throw new Error(`SSRF blocked: ${hostname} resolves to private IP ${address}`);
+	}
+}
+
+const MAX_REDIRECTS = 20;
+
 /**
  * Create a Node.js network adapter that provides real fetch, DNS, HTTP client,
  * and loopback-only HTTP server support. Binary responses are base64-encoded
@@ -241,13 +312,9 @@ export function createDefaultNetworkAdapter(): NetworkAdapter {
 					} else {
 						res.end();
 					}
-				} catch (error) {
+				} catch {
 					res.statusCode = 500;
-					res.end(
-						error instanceof Error
-							? error.message
-							: "Sandbox HTTP server bridge error",
-					);
+					res.end("Internal Server Error");
 				}
 			});
 
@@ -290,42 +357,68 @@ export function createDefaultNetworkAdapter(): NetworkAdapter {
 		},
 
 		async fetch(url, options) {
-			const response = await fetch(url, {
-				method: options?.method || "GET",
-				headers: options?.headers,
-				body: options?.body,
-			});
-			const headers: Record<string, string> = {};
-			response.headers.forEach((v, k) => {
-				headers[k] = v;
-			});
+			// SSRF: validate initial URL and manually follow redirects
+			let currentUrl = url;
+			let redirected = false;
 
-			delete headers["content-encoding"];
+			for (let i = 0; i <= MAX_REDIRECTS; i++) {
+				await assertNotPrivateHost(currentUrl);
 
-			const contentType = response.headers.get("content-type") || "";
-			const isBinary =
-				contentType.includes("octet-stream") ||
-				contentType.includes("gzip") ||
-				url.endsWith(".tgz");
+				const response = await fetch(currentUrl, {
+					method: options?.method || "GET",
+					headers: options?.headers,
+					body: options?.body,
+					redirect: "manual",
+				});
 
-			let body: string;
-			if (isBinary) {
-				const buffer = await response.arrayBuffer();
-				body = Buffer.from(buffer).toString("base64");
-				headers["x-body-encoding"] = "base64";
-			} else {
-				body = await response.text();
+				// Follow redirects with re-validation
+				const status = response.status;
+				if (status === 301 || status === 302 || status === 303 || status === 307 || status === 308) {
+					const location = response.headers.get("location");
+					if (!location) break;
+					currentUrl = new URL(location, currentUrl).href;
+					redirected = true;
+					// POST→GET for 301/302/303
+					if (status === 301 || status === 302 || status === 303) {
+						options = { ...options, method: "GET", body: undefined };
+					}
+					continue;
+				}
+
+				const headers: Record<string, string> = {};
+				response.headers.forEach((v, k) => {
+					headers[k] = v;
+				});
+
+				delete headers["content-encoding"];
+
+				const contentType = response.headers.get("content-type") || "";
+				const isBinary =
+					contentType.includes("octet-stream") ||
+					contentType.includes("gzip") ||
+					currentUrl.endsWith(".tgz");
+
+				let body: string;
+				if (isBinary) {
+					const buffer = await response.arrayBuffer();
+					body = Buffer.from(buffer).toString("base64");
+					headers["x-body-encoding"] = "base64";
+				} else {
+					body = await response.text();
+				}
+
+				return {
+					ok: response.ok,
+					status: response.status,
+					statusText: response.statusText,
+					headers,
+					body,
+					url: currentUrl,
+					redirected,
+				};
 			}
 
-			return {
-				ok: response.ok,
-				status: response.status,
-				statusText: response.statusText,
-				headers,
-				body,
-				url: response.url,
-				redirected: response.redirected,
-			};
+			throw new Error("Too many redirects");
 		},
 
 		async dnsLookup(hostname) {
@@ -341,6 +434,9 @@ export function createDefaultNetworkAdapter(): NetworkAdapter {
 		},
 
 		async httpRequest(url, options) {
+			// SSRF: block requests to private/reserved IPs
+			await assertNotPrivateHost(url);
+
 			return new Promise((resolve, reject) => {
 				const urlObj = new URL(url);
 				const isHttps = urlObj.protocol === "https:";

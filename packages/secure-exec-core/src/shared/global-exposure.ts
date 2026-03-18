@@ -315,8 +315,8 @@ export const NODE_CUSTOM_GLOBAL_INVENTORY: readonly CustomGlobalInventoryEntry[]
 	},
 	{
 		name: "_moduleCache",
-		classification: "mutable-runtime-state",
-		rationale: "Per-execution CommonJS/require cache state.",
+		classification: "hardened",
+		rationale: "Per-execution CommonJS/require cache — hardened via read-only Proxy to prevent cache poisoning.",
 	},
 	{
 		name: "_pendingModules",
@@ -367,6 +367,31 @@ export const NODE_CUSTOM_GLOBAL_INVENTORY: readonly CustomGlobalInventoryEntry[]
 		name: "__dirname",
 		classification: "mutable-runtime-state",
 		rationale: "Per-execution CommonJS file context state.",
+	},
+	{
+		name: "fetch",
+		classification: "hardened",
+		rationale: "Network fetch API global — must not be replaceable by sandbox code.",
+	},
+	{
+		name: "Headers",
+		classification: "hardened",
+		rationale: "Network Headers API global — must not be replaceable by sandbox code.",
+	},
+	{
+		name: "Request",
+		classification: "hardened",
+		rationale: "Network Request API global — must not be replaceable by sandbox code.",
+	},
+	{
+		name: "Response",
+		classification: "hardened",
+		rationale: "Network Response API global — must not be replaceable by sandbox code.",
+	},
+	{
+		name: "Blob",
+		classification: "hardened",
+		rationale: "Blob API global stub — must not be replaceable by sandbox code.",
 	},
 ];
 

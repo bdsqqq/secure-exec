@@ -101,13 +101,34 @@ interface OutputStreamStub {
   readable: boolean;
   _listeners: Record<string, EventListener[]>;
   _onceListeners: Record<string, EventListener[]>;
+  _maxListeners: number;
+  _maxListenersWarned: Set<string>;
   on(event: string, listener: EventListener): OutputStreamStub;
   once(event: string, listener: EventListener): OutputStreamStub;
   emit(event: string, ...args: unknown[]): boolean;
   read(): null;
   setEncoding(): OutputStreamStub;
+  setMaxListeners(n: number): OutputStreamStub;
+  getMaxListeners(): number;
   pipe<T extends NodeJS.WritableStream>(dest: T): T;
 }
+
+/** Warn when listener count exceeds max (Node.js: warn, don't crash) */
+function checkStreamMaxListeners(stream: OutputStreamStub, event: string): void {
+  if (stream._maxListeners > 0 && !stream._maxListenersWarned.has(event)) {
+    const total = (stream._listeners[event]?.length ?? 0) + (stream._onceListeners[event]?.length ?? 0);
+    if (total > stream._maxListeners) {
+      stream._maxListenersWarned.add(event);
+      const warning = `MaxListenersExceededWarning: Possible EventEmitter memory leak detected. ${total} ${event} listeners added. MaxListeners is ${stream._maxListeners}. Use emitter.setMaxListeners() to increase limit`;
+      if (typeof console !== "undefined" && console.error) {
+        console.error(warning);
+      }
+    }
+  }
+}
+
+// Monotonic counter for unique ChildProcess PIDs
+let _nextChildPid = 1000;
 
 /**
  * Polyfill of Node.js `ChildProcess`. Provides event-emitting stdin/stdout/stderr
@@ -117,8 +138,10 @@ interface OutputStreamStub {
 class ChildProcess {
   private _listeners: Record<string, EventListener[]> = {};
   private _onceListeners: Record<string, EventListener[]> = {};
+  private _maxListeners = 10;
+  private _maxListenersWarned = new Set<string>();
 
-  pid: number = Math.floor(Math.random() * 10000) + 1000;
+  pid: number = _nextChildPid++;
   killed = false;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
@@ -157,14 +180,18 @@ class ChildProcess {
       readable: true,
       _listeners: {},
       _onceListeners: {},
+      _maxListeners: 10,
+      _maxListenersWarned: new Set(),
       on(event: string, listener: EventListener): OutputStreamStub {
         if (!this._listeners[event]) this._listeners[event] = [];
         this._listeners[event].push(listener);
+        checkStreamMaxListeners(this, event);
         return this;
       },
       once(event: string, listener: EventListener): OutputStreamStub {
         if (!this._onceListeners[event]) this._onceListeners[event] = [];
         this._onceListeners[event].push(listener);
+        checkStreamMaxListeners(this, event);
         return this;
       },
       emit(event: string, ...args: unknown[]): boolean {
@@ -182,6 +209,13 @@ class ChildProcess {
       },
       setEncoding(): OutputStreamStub {
         return this;
+      },
+      setMaxListeners(n: number): OutputStreamStub {
+        this._maxListeners = n;
+        return this;
+      },
+      getMaxListeners(): number {
+        return this._maxListeners;
       },
       pipe<T extends NodeJS.WritableStream>(dest: T): T {
         return dest;
@@ -193,14 +227,18 @@ class ChildProcess {
       readable: true,
       _listeners: {},
       _onceListeners: {},
+      _maxListeners: 10,
+      _maxListenersWarned: new Set(),
       on(event: string, listener: EventListener): OutputStreamStub {
         if (!this._listeners[event]) this._listeners[event] = [];
         this._listeners[event].push(listener);
+        checkStreamMaxListeners(this, event);
         return this;
       },
       once(event: string, listener: EventListener): OutputStreamStub {
         if (!this._onceListeners[event]) this._onceListeners[event] = [];
         this._onceListeners[event].push(listener);
+        checkStreamMaxListeners(this, event);
         return this;
       },
       emit(event: string, ...args: unknown[]): boolean {
@@ -218,6 +256,13 @@ class ChildProcess {
       },
       setEncoding(): OutputStreamStub {
         return this;
+      },
+      setMaxListeners(n: number): OutputStreamStub {
+        this._maxListeners = n;
+        return this;
+      },
+      getMaxListeners(): number {
+        return this._maxListeners;
       },
       pipe<T extends NodeJS.WritableStream>(dest: T): T {
         return dest;
@@ -230,12 +275,14 @@ class ChildProcess {
   on(event: string, listener: EventListener): this {
     if (!this._listeners[event]) this._listeners[event] = [];
     this._listeners[event].push(listener);
+    this._checkMaxListeners(event);
     return this;
   }
 
   once(event: string, listener: EventListener): this {
     if (!this._onceListeners[event]) this._onceListeners[event] = [];
     this._onceListeners[event].push(listener);
+    this._checkMaxListeners(event);
     return this;
   }
 
@@ -249,6 +296,28 @@ class ChildProcess {
 
   removeListener(event: string, listener: EventListener): this {
     return this.off(event, listener);
+  }
+
+  setMaxListeners(n: number): this {
+    this._maxListeners = n;
+    return this;
+  }
+
+  getMaxListeners(): number {
+    return this._maxListeners;
+  }
+
+  private _checkMaxListeners(event: string): void {
+    if (this._maxListeners > 0 && !this._maxListenersWarned.has(event)) {
+      const total = (this._listeners[event]?.length ?? 0) + (this._onceListeners[event]?.length ?? 0);
+      if (total > this._maxListeners) {
+        this._maxListenersWarned.add(event);
+        const warning = `MaxListenersExceededWarning: Possible EventEmitter memory leak detected. ${total} ${event} listeners added to [ChildProcess]. MaxListeners is ${this._maxListeners}. Use emitter.setMaxListeners() to increase limit`;
+        if (typeof console !== "undefined" && console.error) {
+          console.error(warning);
+        }
+      }
+    }
   }
 
   emit(event: string, ...args: unknown[]): boolean {
@@ -352,20 +421,22 @@ function exec(
   let maxBufferExceeded = false;
 
   child.stdout.on("data", (data: unknown) => {
+    if (maxBufferExceeded) return;
     const chunk = String(data);
     stdout += chunk;
     stdoutBytes += chunk.length;
-    if (stdoutBytes > maxBuffer && !maxBufferExceeded) {
+    if (stdoutBytes > maxBuffer) {
       maxBufferExceeded = true;
       child.kill("SIGTERM");
     }
   });
 
   child.stderr.on("data", (data: unknown) => {
+    if (maxBufferExceeded) return;
     const chunk = String(data);
     stderr += chunk;
     stderrBytes += chunk.length;
-    if (stderrBytes > maxBuffer && !maxBufferExceeded) {
+    if (stderrBytes > maxBuffer) {
       maxBufferExceeded = true;
       child.kill("SIGTERM");
     }
@@ -575,7 +646,7 @@ function spawnSync(
 
   if (typeof _childProcessSpawnSync === "undefined") {
     return {
-      pid: 0,
+      pid: _nextChildPid++,
       output: [null, "", "child_process.spawnSync requires CommandExecutor to be configured"],
       stdout: "",
       stderr: "child_process.spawnSync requires CommandExecutor to be configured",
@@ -608,7 +679,7 @@ function spawnSync(
       const err: ExecError = new Error("stdout maxBuffer length exceeded");
       err.code = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" as unknown as number;
       return {
-        pid: Math.floor(Math.random() * 10000) + 1000,
+        pid: _nextChildPid++,
         output: [null, stdoutBuf as string | Buffer, stderrBuf as string | Buffer],
         stdout: stdoutBuf as string | Buffer,
         stderr: stderrBuf as string | Buffer,
@@ -619,7 +690,7 @@ function spawnSync(
     }
 
     return {
-      pid: Math.floor(Math.random() * 10000) + 1000,
+      pid: _nextChildPid++,
       output: [null, stdoutBuf as string | Buffer, stderrBuf as string | Buffer],
       stdout: stdoutBuf as string | Buffer,
       stderr: stderrBuf as string | Buffer,
@@ -632,7 +703,7 @@ function spawnSync(
     const stderrBuf = typeof Buffer !== "undefined" ? Buffer.from(errMsg) : errMsg;
 
     return {
-      pid: 0,
+      pid: _nextChildPid++,
       output: [null, "", stderrBuf as string | Buffer],
       stdout: typeof Buffer !== "undefined" ? Buffer.from("") : "",
       stderr: stderrBuf as string | Buffer,

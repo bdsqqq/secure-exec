@@ -237,8 +237,8 @@ if (__moduleCache) {
 			);
 		},
 		deserialize: function (buffer: Buffer) {
-			const text = buffer.toString();
-			if (Buffer.byteLength(text, "utf8") > __jsonPayloadLimitBytes) {
+			// Check raw buffer size BEFORE allocating the decoded string
+			if (buffer.length > __jsonPayloadLimitBytes) {
 				throw new Error(
 					__payloadLimitErrorCode +
 						": v8.deserialize exceeds " +
@@ -246,6 +246,7 @@ if (__moduleCache) {
 						" bytes",
 				);
 			}
+			const text = buffer.toString();
 			const envelope = JSON.parse(text) as {
 				$v8sc?: number;
 				d?: unknown;

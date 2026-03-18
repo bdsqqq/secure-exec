@@ -45,8 +45,11 @@ export interface DriverDeps {
 	maxBridgeCalls?: number;
 	maxTimers?: number;
 	maxChildProcesses?: number;
+	maxHandles?: number;
 	budgetState: BudgetState;
 	activeHttpServerIds: Set<number>;
+	activeChildProcesses: Map<number, SpawnedProcess>;
+	activeHostTimers: Set<ReturnType<typeof setTimeout>>;
 	esmModuleCache: Map<string, ivm.Module>;
 	esmModuleReverseCache: Map<ivm.Module, string>;
 	moduleFormatCache: Map<string, "esm" | "cjs" | "json">;
@@ -63,6 +66,8 @@ export const MIN_CONFIGURED_PAYLOAD_BYTES = 1024;
 export const MAX_CONFIGURED_PAYLOAD_BYTES = 64 * 1024 * 1024;
 export const PAYLOAD_LIMIT_ERROR_CODE = "ERR_SANDBOX_PAYLOAD_TOO_LARGE";
 export const RESOURCE_BUDGET_ERROR_CODE = "ERR_RESOURCE_BUDGET_EXCEEDED";
+export const DEFAULT_MAX_TIMERS = 10_000;
+export const DEFAULT_MAX_HANDLES = 10_000;
 export const DEFAULT_SANDBOX_CWD = "/root";
 export const DEFAULT_SANDBOX_HOME = "/root";
 export const DEFAULT_SANDBOX_TMPDIR = "/tmp";
@@ -130,6 +135,24 @@ export function assertTextPayloadSize(
 
 export function createBudgetState(): BudgetState {
 	return { outputBytes: 0, bridgeCalls: 0, activeTimers: 0, childProcesses: 0 };
+}
+
+export function clearActiveHostTimers(deps: Pick<DriverDeps, "activeHostTimers">): void {
+	for (const id of deps.activeHostTimers) {
+		clearTimeout(id);
+	}
+	deps.activeHostTimers.clear();
+}
+
+export function killActiveChildProcesses(deps: Pick<DriverDeps, "activeChildProcesses">): void {
+	for (const proc of deps.activeChildProcesses.values()) {
+		try {
+			proc.kill(9); // SIGKILL
+		} catch {
+			// Process may already be dead
+		}
+	}
+	deps.activeChildProcesses.clear();
 }
 
 export function checkBridgeBudget(deps: Pick<DriverDeps, "maxBridgeCalls" | "budgetState">): void {

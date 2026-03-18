@@ -272,4 +272,225 @@ describe("shell-terminal", () => {
 
 		expect(harness.screenshotTrimmed()).toBe(screenAfterNoecho);
 	});
+
+	it("waitFor occurrence=2 — waits for second appearance of text", async () => {
+		const driver = new MockShellDriver();
+		const { kernel } = await createTestKernel({ drivers: [driver] });
+		harness = new TerminalHarness(kernel);
+
+		await harness.waitFor("$");
+
+		// Run command: screen shows "$ echo AAA\nAAA\n$ " — "AAA" appears twice
+		await harness.type("echo AAA\n");
+
+		// occurrence=2 should succeed (once in echoed command line, once in output)
+		await harness.waitFor("AAA", 2);
+
+		expect(harness.screenshotTrimmed()).toBe(
+			["$ echo AAA", "AAA", "$ "].join("\n"),
+		);
+	});
+
+	it("waitFor occurrence=3 on text appearing twice — times out", async () => {
+		const driver = new MockShellDriver();
+		const { kernel } = await createTestKernel({ drivers: [driver] });
+		harness = new TerminalHarness(kernel);
+
+		await harness.waitFor("$");
+		await harness.type("echo AAA\n");
+
+		// "AAA" appears only twice — occurrence=3 should timeout
+		await expect(
+			harness.waitFor("AAA", 3, 200),
+		).rejects.toThrow(/timed out/);
+	});
+
+	it("type() on no-output input — resolves via settlement timer", async () => {
+		const driver = new MockShellDriver();
+		const { kernel } = await createTestKernel({ drivers: [driver] });
+		harness = new TerminalHarness(kernel);
+
+		await harness.waitFor("$");
+
+		// Disable echo so typed text produces zero output
+		await harness.type("noecho\n");
+
+		// type() with echo off and no newline → zero output produced.
+		// Settlement timer fires after SETTLE_MS (50ms), resolving the promise.
+		const start = Date.now();
+		await harness.type("silent");
+		const elapsed = Date.now() - start;
+
+		// Should resolve in roughly SETTLE_MS (50ms), not hang or instant
+		expect(elapsed).toBeGreaterThanOrEqual(30);
+		expect(elapsed).toBeLessThan(500);
+
+		// Screen unchanged — "silent" is not visible because echo is off
+		expect(harness.screenshotTrimmed()).toBe(["$ noecho", "$ "].join("\n"));
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Concurrent openShell() session isolation
+// ---------------------------------------------------------------------------
+
+describe("concurrent openShell sessions", () => {
+	let harnessA: TerminalHarness;
+	let harnessB: TerminalHarness;
+
+	afterEach(async () => {
+		await harnessA?.dispose();
+		await harnessB?.dispose();
+	});
+
+	it("output isolation — data from shell A never appears in shell B", async () => {
+		const driver = new MockShellDriver();
+		const { kernel } = await createTestKernel({ drivers: [driver] });
+
+		harnessA = new TerminalHarness(kernel);
+		harnessB = new TerminalHarness(kernel);
+
+		await harnessA.waitFor("$");
+		await harnessB.waitFor("$");
+
+		// Send different commands to each shell
+		await harnessA.type("echo ALPHA\n");
+		await harnessB.type("echo BRAVO\n");
+
+		// Shell A has ALPHA, never BRAVO
+		const screenA = harnessA.screenshotTrimmed();
+		expect(screenA).toBe(["$ echo ALPHA", "ALPHA", "$ "].join("\n"));
+
+		// Shell B has BRAVO, never ALPHA
+		const screenB = harnessB.screenshotTrimmed();
+		expect(screenB).toBe(["$ echo BRAVO", "BRAVO", "$ "].join("\n"));
+	});
+
+	it("exit one shell — surviving shell is unaffected", async () => {
+		const driver = new MockShellDriver();
+		const { kernel } = await createTestKernel({ drivers: [driver] });
+
+		harnessA = new TerminalHarness(kernel);
+		harnessB = new TerminalHarness(kernel);
+
+		await harnessA.waitFor("$");
+		await harnessB.waitFor("$");
+
+		// Exit shell A
+		const codeA = await harnessA.exit();
+		expect(codeA).toBe(0);
+
+		// Shell B still works — run a command
+		await harnessB.type("echo STILL_ALIVE\n");
+		expect(harnessB.screenshotTrimmed()).toBe(
+			["$ echo STILL_ALIVE", "STILL_ALIVE", "$ "].join("\n"),
+		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// readPump lifecycle tests — verify pump is tracked, exits on shell exit,
+// errors are propagated, and wait() drains before resolving.
+// ---------------------------------------------------------------------------
+
+describe("openShell readPump lifecycle", () => {
+	it("wait() resolves only after pump finishes delivering data", async () => {
+		const driver = new MockShellDriver();
+		const { kernel } = await createTestKernel({ drivers: [driver] });
+
+		const chunks: Uint8Array[] = [];
+		const shell = kernel.openShell();
+
+		shell.onData = (data) => {
+			chunks.push(data);
+		};
+
+		// Wait for prompt
+		await new Promise((r) => setTimeout(r, 100));
+
+		// Exit shell — ^D
+		shell.write("\x04");
+		const exitCode = await shell.wait();
+
+		expect(exitCode).toBe(0);
+		// Pump delivered at least the prompt before wait() resolved
+		const text = new TextDecoder().decode(
+			new Uint8Array(chunks.reduce((acc, c) => [...acc, ...c], [] as number[])),
+		);
+		expect(text).toContain("$ ");
+	});
+
+	it("pump exits promptly when shell is killed", async () => {
+		const driver = new MockShellDriver();
+		const { kernel } = await createTestKernel({ drivers: [driver] });
+
+		const shell = kernel.openShell();
+		shell.onData = () => {};
+
+		// Wait for shell to be ready
+		await new Promise((r) => setTimeout(r, 50));
+
+		// Kill the shell
+		shell.kill();
+		const exitCode = await Promise.race([
+			shell.wait(),
+			new Promise<number>((_, rej) => setTimeout(() => rej(new Error("wait() hung")), 2000)),
+		]);
+
+		// Shell killed with SIGTERM → 128 + 15
+		expect(exitCode).toBe(128 + 15);
+	});
+
+	it("onData callback error is logged, pump continues for remaining data", async () => {
+		const driver = new MockShellDriver();
+		const { kernel } = await createTestKernel({ drivers: [driver] });
+
+		const errors: unknown[] = [];
+		const origError = console.error;
+		console.error = (...args: unknown[]) => {
+			if (typeof args[0] === "string" && args[0].includes("onData callback error")) {
+				errors.push(args[1]);
+			}
+		};
+
+		try {
+			const shell = kernel.openShell();
+			let thrown = false;
+			shell.onData = () => {
+				if (!thrown) {
+					thrown = true;
+					throw new Error("callback boom");
+				}
+			};
+
+			// Wait for prompt to be delivered (which triggers the error)
+			await new Promise((r) => setTimeout(r, 100));
+
+			// Shell should still be alive — send exit
+			shell.write("\x04");
+			const exitCode = await shell.wait();
+			expect(exitCode).toBe(0);
+
+			// Error was logged, not silently swallowed
+			expect(errors.length).toBeGreaterThanOrEqual(1);
+			expect((errors[0] as Error).message).toBe("callback boom");
+		} finally {
+			console.error = origError;
+		}
+	});
+
+	it("multiple wait() calls return the same exit code", async () => {
+		const driver = new MockShellDriver();
+		const { kernel } = await createTestKernel({ drivers: [driver] });
+
+		const shell = kernel.openShell();
+		shell.onData = () => {};
+
+		await new Promise((r) => setTimeout(r, 50));
+
+		shell.write("\x04");
+		const [code1, code2] = await Promise.all([shell.wait(), shell.wait()]);
+		expect(code1).toBe(0);
+		expect(code2).toBe(0);
+	});
 });

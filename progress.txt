@@ -3,6 +3,11 @@ Started: 2026-03-17
 PRD: ralph/kernel-hardening (46 stories)
 
 ## Codebase Patterns
+- openShell() controller must close its slave FD after spawn (close-after-fork) — otherwise slave refCount stays >0 and master reads never get EOF
+- fd_pipe/fd_dup (host_process) return kernel FDs — MUST register in local FDTable + localToKernelFd map for WASI fd_renumber/fd_close to work
+- KernelFDTable.renumber closes kernel FD of overwritten target (POSIX close-on-renumber) — critical for pipe write end closure during stdout restore
+- Kernel fdWrite is async for VFS files (read-modify-write at cursor), sync for pipes/PTYs — return type is number | Promise<number>
+- proc_spawn must convert local FDs to kernel FDs via localToKernelFd before passing to kernel spawn RPC
 - WASI oflags: 0x1=CREAT, 0x2=DIRECTORY, 0x4=EXCL, 0x8=TRUNC — different from POSIX; kernel-worker.ts must map correctly
 - Worker local FD table has preopen FD 3 ("/") absent from kernel FD table — use localToKernelFd map for all file I/O RPCs (kernel-worker.ts)
 - WASI path_open with OFLAG_DIRECTORY bypasses kernel fdOpen — verifies via vfsStat and creates preopen-style local FD for fd_readdir
@@ -93,6 +98,8 @@ PRD: ralph/kernel-hardening (46 stories)
 - Console output (logRef/errorRef) should NOT count against maxBridgeCalls — output has its own maxOutputBytes budget; counting it would exhaust the budget during error reporting
 - Per-execution budget state: `budgetState` object reset via `resetBudgetState()` before each context creation (executeInternal and __unsafeCreateContext)
 - Kernel maxProcesses: check `processTable.runningCount() >= maxProcesses` in spawnInternal before PID allocation; throws EAGAIN
+- Cross-runtime spawn (WasmVM→Node, WasmVM→Python): kernel.spawnInternal registers child PID in parent's driver PID set AND inherits parent's onStdout/onStderr callbacks when stdout is not piped
+- kernel.exec() always runs `sh -c command` through brush-shell — all cross-runtime commands go through WasmVM proc_spawn
 - ERR_RESOURCE_BUDGET_EXCEEDED is the error code for all bridge resource budget violations
 - maxBuffer enforcement: host-side for sync paths (spawnSyncRef tracks bytes, kills, returns maxBufferExceeded flag), bridge-side for async paths (exec/execFile track bytes, kill child); default 1MB for exec/execSync/execFile/execFileSync, unlimited for spawnSync
 - Adding a new bridge fs operation requires 10+ file changes: types.ts, all 4 VFS impls, permissions.ts, bridge-contract.ts, global-exposure.ts, setup-fs-facade.ts, runtime-globals.d.ts, execution-driver.ts, bridge/fs.ts, and runtime-node adapters
@@ -1326,4 +1333,412 @@ PRD: ralph/kernel-hardening (46 stories)
   - WASI path_open with OFLAG_DIRECTORY should NOT go through kernel fdOpen — use vfsStat to verify existence and create a local preopen-style FD for fd_readdir
   - Child processes spawned via proc_spawn get their own kernel VFS proxy with lazy directory population — this works but paths must be normalized first
   - brush-shell proc_spawn emits "WARN could not retrieve pid for child process" — this is benign and comes from the Rust binary, cannot be suppressed
+---
+
+## 2026-03-18 - US-084
+- Implemented 6 new WasmVM terminal tests: cat VFS file, pipe data via redirect, bad command, stderr output, file redirection, and multi-line quoted input
+- Fixed kernel-worker FD mapping: fd_pipe and fd_dup now register pipe FDs in local FDTable with kernel mapping, enabling WASI fd_renumber to find them
+- Added KernelFDTable subclass with mapping-aware renumber that closes kernel FDs of overwritten targets (POSIX close-on-renumber semantics)
+- Fixed proc_spawn to convert local FDs to kernel FDs for stdio overrides
+- Added kernel fdWrite VFS support (async write at cursor position) — enables shell output redirection (`echo hello > /tmp/out`)
+- Added close-on-exec for pipe FDs in kernel createChildFDTable (only closes counterpart pipe ends sharing the same pipe ID as stdio overrides)
+- Added PipeManager.pipeIdFor() method for pipe identity lookup
+- Files changed:
+  - packages/kernel/src/kernel.ts (fdWrite VFS support, FDEntry import, vfsWrite helper, close-on-exec for pipe FDs)
+  - packages/kernel/src/pipe-manager.ts (pipeIdFor method)
+  - packages/kernel/src/types.ts (fdWrite return type: number | Promise<number>)
+  - packages/runtime/wasmvm/src/driver.ts (await fdWrite)
+  - packages/runtime/wasmvm/src/kernel-worker.ts (KernelFDTable, fd_pipe local registration, fd_dup mapping, proc_spawn FD conversion, auto-close pipe FDs after spawn)
+  - packages/runtime/wasmvm/test/shell-terminal.test.ts (6 new tests)
+- **Learnings for future iterations:**
+  - fd_pipe (host_process) returns kernel FDs to WASM, but WASI polyfill operations (fd_renumber, fd_write) use local FDTable — pipe FDs MUST be registered in both
+  - KernelFDTable.renumber must close the kernel FD of the overwritten target to implement POSIX close-on-renumber (critical for pipe EOF delivery via fd_renumber restore)
+  - Kernel fdWrite was no-op for regular files — async VFS write (read-modify-write at cursor) was needed for shell output redirection
+  - Shell pipe deadlock (`echo foo | cat`) remains — child inherits parent's pipe FDs via FD table fork; close-on-exec mitigates for stdio-overridden pipes but brush-shell's pipe management still blocks (likely runs echo as builtin without fully closing write end)
+  - brush-shell 0.4 does NOT support backslash line continuation; double-quote continuation works
+  - VFS files MUST end with newline for cat to work correctly (cat reads in a loop and no newline causes repeated reads from position 0)
+---
+
+## 2026-03-18 - US-114
+- Implemented cross-PID authorization for KernelInterface
+- Each driver's KernelInterface is now scoped: `assertOwns(pid)` validates the calling driver owns the target PID
+- Added `driverPids: Map<string, Set<number>>` to KernelImpl for tracking PID ownership per driver
+- PIDs registered to driver set in `spawnInternal()` before `driver.spawn()`; cleaned up in `onProcessExit`
+- Negative PIDs (process group kills) bypass ownership check — kernel-managed via process table
+- `waitpid` wraps assertOwns in try/catch to return rejected Promise (matching existing behavior)
+- Non-existent PIDs throw ESRCH; cross-driver PIDs throw EPERM
+- Files changed: packages/kernel/src/kernel.ts, packages/kernel/test/cross-pid-auth.test.ts (new)
+- **Learnings for future iterations:**
+  - SpyDriver in tests must call `driverProc.onExit?.(code)` (deferred via queueMicrotask) so the kernel's process table learns about exit — otherwise PID cleanup never fires
+  - `assertOwns` must distinguish ESRCH (PID doesn't exist anywhere) from EPERM (PID exists but belongs to another driver) — iterates all driver PID sets
+  - Async KernelInterface methods (waitpid) that previously returned rejected Promises need assertOwns wrapped in try/catch to preserve the rejection pattern
+  - Process group kills (negative PID in kill) must bypass per-driver ownership since groups can span drivers
+---
+
+## 2026-03-18 - US-115
+- Fixed exec() timeout to kill process (SIGTERM), detach stdout/stderr callbacks, and clear timer on normal exit
+- Files changed: packages/kernel/src/kernel.ts, packages/kernel/test/kernel-integration.test.ts
+- **Learnings for future iterations:**
+  - exec() uses Promise.race for timeout — the timer branch must clean up the process (kill + detach callbacks) and the normal branch must clear the timer
+  - MockRuntimeDriver `neverExit` + `killSignals` configs are useful for testing timeout/kill behavior
+  - vi.useFakeTimers() + vi.advanceTimersByTimeAsync() works well for verifying timer cleanup
+---
+
+## 2026-03-18 - US-116
+- Implemented: Capped cryptoRandomFill host allocation to 65536 bytes (Web Crypto API spec limit)
+- Guest-side validation in bridge/process.ts throws RangeError before calling host (proper error propagation)
+- Host-side validation in bridge-setup.ts as defense-in-depth against OOM
+- Files changed:
+  - packages/secure-exec-node/src/bridge-setup.ts (host-side cap)
+  - packages/secure-exec-core/src/bridge/process.ts (guest-side RangeError)
+  - packages/secure-exec/tests/runtime-driver/node/index.test.ts (3 new tests)
+- **Learnings for future iterations:**
+  - Bridge guest-side catch blocks (process.ts) swallow all errors into "not supported" — validation that should produce specific errors (e.g., RangeError) must go BEFORE the try block
+  - Web Crypto API getRandomValues limit is 65536 bytes; Node.js matches this
+  - Defense-in-depth: validate on both guest side (for proper error type) and host side (for OOM protection)
+---
+
+## 2026-03-18 - US-117
+- Implemented host timer tracking and cleanup on isolate disposal/recycling
+- Files changed:
+  - packages/secure-exec-node/src/isolate-bootstrap.ts — added `activeHostTimers` to DriverDeps, `clearActiveHostTimers()` helper
+  - packages/secure-exec-node/src/bridge-setup.ts — added `activeHostTimers` to BridgeDeps, tracked timer IDs in scheduleTimerRef
+  - packages/secure-exec-node/src/execution-driver.ts — call clearActiveHostTimers in recycleIsolate(), dispose(), terminate()
+  - packages/secure-exec/tests/runtime-driver/node/resource-budgets.test.ts — added host timer cleanup tests
+- **Learnings for future iterations:**
+  - BridgeDeps is a Pick<DriverDeps, ...> — adding a field to DriverDeps also requires adding it to BridgeDeps if used in bridge-setup.ts
+  - Timeout exit code is 124 (TIMEOUT_EXIT_CODE), not 1
+  - Bridge timers use a Promise-based wrapper — the host setTimeout resolve function is the callback, so clearing it prevents dead isolate reference leaks
+---
+
+## 2026-03-18 - US-118
+- Hardened fetch/Headers/Request/Response/Blob globals as non-writable and non-configurable
+- Replaced direct property assignment with exposeCustomGlobal() calls in network.ts
+- Added all 5 globals to NODE_CUSTOM_GLOBAL_INVENTORY with "hardened" classification
+- Added "fetch API globals remain functional after hardening" test verifying constructors/types work
+- Files changed:
+  - packages/secure-exec-core/src/bridge/network.ts (use exposeCustomGlobal instead of assignment)
+  - packages/secure-exec-core/src/shared/global-exposure.ts (add inventory entries)
+  - packages/secure-exec/tests/runtime-driver/node/index.test.ts (add functional test)
+- **Learnings for future iterations:**
+  - exposeCustomGlobal() is already imported in network.ts — just replace assignment with call
+  - Adding to NODE_CUSTOM_GLOBAL_INVENTORY with "hardened" classification auto-includes in HARDENED_NODE_CUSTOM_GLOBALS
+  - The existing "hardens all custom globals" test automatically covers new hardened entries
+  - Blob uses a conditional check (only installed if undefined) — use exposeCustomGlobal inside the conditional
+---
+
+## 2026-03-18 - US-119
+- Implemented MAX_CANON (4096 bytes) cap on PTY canonical-mode line buffer
+- Bytes exceeding the cap are silently discarded (matching POSIX behavior)
+- Files changed: packages/kernel/src/pty.ts, packages/kernel/test/kernel-integration.test.ts
+- **Learnings for future iterations:**
+  - lineBuffer is `number[]` (not Uint8Array) — cap check uses `.length` comparison
+  - Discarding excess bytes with `continue` is simplest; no need for error since POSIX silently drops excess
+  - MAX_CANON exported from pty.ts alongside MAX_PTY_BUFFER_BYTES for test import
+---
+
+## 2026-03-18 - US-120
+- Implemented controller PID FD table cleanup when shell exits in openShell()
+- Added `proc.wait().then(() => this.cleanupProcessFDs(controllerPid))` to kernel.ts openShell()
+- This ensures the controller's FD table (holding the PTY master FD) is freed when the shell process exits
+- Files changed: packages/kernel/src/kernel.ts, packages/kernel/test/kernel-integration.test.ts
+- **Learnings for future iterations:**
+  - Controller PID in openShell() is a "phantom" PID — allocated but never registered in the process table; only anchors an FD table for the PTY master
+  - cleanupProcessFDs handles both FD table removal and managed resource (pipe/PTY) cleanup when refCounts drop to zero
+  - PTY write/read after cleanup throws EBADF ("PTY not found") — use this as observable assertion in tests
+  - proc.wait() returns a Promise that resolves after the process exits and processTable.markExited runs — safe to chain cleanup
+---
+
+## 2026-03-18 - US-121
+- Implemented fdWrite to VFS for regular files — the vfsWrite method was already in place (read-modify-write at cursor); added missing test coverage
+- Added 4 tests: write+readback, write at offset with fdPread verification, multiple sequential writes, and write past end of file with zero-fill gap
+- Files changed: packages/kernel/test/kernel-integration.test.ts
+- **Learnings for future iterations:**
+  - fdWrite to VFS was already implemented (vfsWrite private method) but had zero test coverage — always check for existing impl before coding
+  - fdOpen flags: 0=RDONLY, 2=RDWR — use 2 for write tests
+  - vfsWrite does async read-modify-write: reads current VFS content, merges at cursor, writes back — be aware of potential race conditions with concurrent writes
+---
+
+## 2026-03-18 - US-123
+- Resolved PTY read waiter on same-end close — closing slave now resolves pending slave reads (inputWaiters) with null, and closing master now resolves pending master reads (outputWaiters) with null
+- Previously, only the opposite end's waiters were resolved on close, leaving same-end readers hanging forever
+- Added 2 tests: slave read + slave close → EOF, master read + master close → EOF
+- Files changed: packages/kernel/src/pty.ts, packages/kernel/test/kernel-integration.test.ts
+- **Learnings for future iterations:**
+  - Kernel fdRead converts PTY null returns to empty Uint8Array (data ?? new Uint8Array(0)) — test for `.length === 0` not `toBeNull()`
+  - PTY close() must resolve BOTH same-end and opposite-end waiters — master close affects outputWaiters (same) + inputWaiters (opposite)
+---
+
+## 2026-03-18 - US-125
+- Fixed output byte budget enforcement: changed logRef/errorRef to check `outputBytes + bytes > maxOutputBytes` before emitting (rejects messages that would exceed limit, not just checks if already exceeded)
+- Added default maxBuffer (1MB) to spawnSync in bridge-setup.ts — matches exec/execSync/execFileSync convention
+- Fixed exec() bridge-side to stop accumulating stdout/stderr after maxBufferExceeded (early return in data handlers)
+- Updated tests: stricter enforcement (total <= budget, no overflow), added test for single large message rejection, added spawnSync default maxBuffer test
+- Files changed: packages/secure-exec-node/src/bridge-setup.ts, packages/secure-exec-core/src/bridge/child-process.ts, packages/secure-exec/tests/runtime-driver/node/resource-budgets.test.ts
+- **Learnings for future iterations:**
+  - exec() result from proc.exec() has no `stdout` field — output goes through `onStdio` callback; use `capture.stdout()` in tests
+  - Bridge-side exec() wraps spawn() which goes through host bridge; testing exec callback behavior requires the full bridge stack, not just mock CommandExecutor
+  - Mock CommandExecutor only affects spawnSync and spawn paths, not bridge-side exec() which creates its own ChildProcess
+---
+
+## 2026-03-18 - US-126
+- Implemented bridge-side FD table limit (MAX_BRIDGE_FDS = 1024) in fs.ts openSync — throws EMFILE when exceeded
+- Added maxListeners enforcement with warnings to process EventEmitter, ChildProcess, and OutputStreamStub (stdout/stderr)
+- setMaxListeners/getMaxListeners now actually store and return the configured value (was no-op/hardcoded 10)
+- Exceeding maxListeners emits MaxListenersExceededWarning (matching Node.js behavior — warn, don't crash)
+- Files changed: bridge/fs.ts, bridge/child-process.ts, bridge/process.ts, bridge-hardening.test.ts
+- **Learnings for future iterations:**
+  - Bridge FD table is separate from kernel FD table — bridge-side limits prevent resource exhaustion within a single execution
+  - Error properties (code, errno) from bridge-side createFsError DO survive inside the isolate (they're set on the Error object in-isolate)
+  - Error properties from host-thrown errors (via applySyncPromise) do NOT survive — only message and stack cross the boundary
+  - Testing FD exhaustion requires pre-populating VFS with files (InMemoryFileSystem starts empty, no /tmp or /app directories)
+  - createInMemoryFileSystem().writeFile() auto-creates parent directories
+---
+
+## 2026-03-18 - US-127
+- Validated process.chdir against VFS: stat the target, throw ENOENT if missing, ENOTDIR if not a directory
+- Enforced minimum 1ms delay for setInterval to prevent microtask CPU spin (Math.max(1, delay ?? 0))
+- Added 3 tests: chdir non-existent throws ENOENT, chdir existing directory succeeds, setInterval(0) counter is bounded
+- Files changed:
+  - `packages/secure-exec-core/src/bridge/process.ts` — added _fs declaration, chdir validation with stat+isDirectory, setInterval minimum delay
+  - `packages/secure-exec/tests/runtime-driver/node/bridge-hardening.test.ts` — added chdir validation and setInterval minimum delay test sections
+- **Learnings for future iterations:**
+  - Bridge process.ts needs `declare const _fs: FsFacadeBridge` to access the VFS bridge for chdir validation — _fs is a host-injected global
+  - stat bridge returns JSON with `isDirectory` boolean field (not a method) — parsed.isDirectory, not parsed.isDirectory()
+  - setInterval(0) without minimum delay causes infinite microtask loop in the else branch when _scheduleTimer is available but actualDelay is 0 — the condition `actualDelay > 0` skips the host timer path
+  - setTimeout(0) does NOT need the same fix since it's one-shot (no infinite loop)
+---
+
+## 2026-03-18 - US-128
+- Added payload size validation on network response bodies (fetch, httpRequest) and readDir results before transferring to the isolate
+- Files changed:
+  - `packages/secure-exec-node/src/bridge-setup.ts` — added assertTextPayloadSize checks on fetch response JSON, httpRequest response JSON, and readDir JSON; added fsJsonPayloadLimit variable in fs block
+  - `packages/secure-exec/tests/runtime-driver/node/payload-limits.test.ts` — added 5 tests: oversized fetch response, oversized httpRequest response, oversized readDir, normal readDir, normal fetch response
+- **Learnings for future iterations:**
+  - Network response validation uses the same assertTextPayloadSize + jsonPayloadLimit pattern as request validation — validate after JSON.stringify, before returning to isolate
+  - readDir is in the fs block which had no jsonPayloadLimit variable — need to pull deps.isolateJsonPayloadLimitBytes into a local const (fsJsonPayloadLimit)
+  - Creating ~136k VFS files for readDir overflow test is fast with InMemoryFileSystem (writeFile auto-creates parents)
+  - httpRequest sandbox test uses http.request() with callback pattern (not fetch) to exercise the separate httpRequest adapter path
+---
+
+## 2026-03-18 - US-129
+- Moved module-level ID counters to per-instance counters in FDTableManager, PipeManager, and PtyManager
+- FDTableManager now owns `nextDescriptionId` counter and provides `DescriptionAllocator` to ProcessFDTable instances
+- PipeManager `nextPipeId`/`nextDescId` are now instance fields instead of module globals
+- PtyManager `nextPtyId`/`nextPtyDescId` are now instance fields instead of module globals
+- Files changed: packages/kernel/src/fd-table.ts, packages/kernel/src/pipe-manager.ts, packages/kernel/src/pty.ts, packages/kernel/test/resource-exhaustion.test.ts
+- **Learnings for future iterations:**
+  - ProcessFDTable constructor now requires a DescriptionAllocator — tests creating ProcessFDTable directly must pass one
+  - The DescriptionAllocator type is exported from fd-table.ts for test use
+  - Separate kernel instances now have independent ID counters — IDs from different instances may overlap, which is correct since they are scoped to their kernel
+---
+
+## 2026-03-18 - US-130
+- Implemented path normalization in permission wrapper (`normalizeFsPath`) to resolve `.`, `..`, double slashes before permission checks
+- Fixed `realpathSync` in bridge fs to resolve symlinks by walking path components via `lstatSync` + `readlinkSync` with ELOOP protection (max 40 symlinks)
+- Files changed:
+  - `packages/secure-exec-core/src/shared/permissions.ts` — added `normalizeFsPath()`, refactored `wrapFileSystem` to use `checkFs` helper that normalizes before checking
+  - `packages/secure-exec-core/src/bridge/fs.ts` — rewrote `realpathSync` to use queue-based symlink resolution instead of simple path normalization
+  - `packages/secure-exec/tests/permissions.test.ts` — added 3 tests: `..` traversal denial, double-slash/dot normalization, multi-op normalization
+  - `packages/secure-exec/tests/runtime-driver/node/index.test.ts` — added 3 tests: symlink resolution, `.`/`..` normalization, chained symlink resolution
+- **Learnings for future iterations:**
+  - Permission wrapper receives raw user paths — normalization must happen at the wrapper level, not the VFS level, to prevent traversal bypasses
+  - realpathSync needs queue-based component walking (prepend symlink target segments to pending queue) to handle chained symlinks correctly
+  - Bridge fs has both `lstatSync` (no follow) and `readlinkSync` available for symlink resolution
+  - The `realpath` async and `realpathSync.native` both delegate to `realpathSync`, so fixing one fixes all variants
+---
+
+## 2026-03-18 - US-131
+- What was implemented
+  - Added 16MB cap to WriteStream._chunks buffering — emits error event, sets destroyed/errored, returns false from write() when exceeded
+  - Added MAX_GLOB_DEPTH=100 recursion depth limit to _globCollect — stops traversal beyond 100 levels to prevent stack overflow
+- Files changed
+  - `packages/secure-exec-core/src/bridge/fs.ts` — added MAX_WRITE_STREAM_BYTES (16MB), buffer check in write(); added MAX_GLOB_DEPTH (100), depth parameter to walk()
+  - `packages/secure-exec/tests/runtime-driver/node/index.test.ts` — added 2 tests: WriteStream buffer cap error emission, globSync depth limit enforcement
+- **Learnings for future iterations:**
+  - Bridge code events emitted via Promise.resolve().then() are async — tests checking event state synchronously after write() should check synchronous state (ws.errored, ws.destroyed) rather than async event handlers
+  - WriteStream cap must be testable within V8 isolate memory limits — 16MB is practical; 256MB would exceed typical isolate heap
+  - _globCollect walk() needs explicit depth parameter threading — JavaScript doesn't have built-in recursion depth limits
+---
+
+## 2026-03-18 - US-133
+- Implemented setpgid cross-session check: rejects joining a process group in a different session with EPERM (POSIX)
+- Implemented terminateAll SIGKILL escalation: after 1s SIGTERM grace period, sends SIGKILL to surviving processes
+- Files changed:
+  - packages/kernel/src/process-table.ts (setpgid session check + terminateAll SIGKILL escalation)
+  - packages/kernel/test/kernel-integration.test.ts (2 new tests)
+- **Learnings for future iterations:**
+  - MockRuntimeDriver `survivableSignals: [15]` makes a process ignore SIGTERM but still die on SIGKILL — useful for testing signal escalation
+  - setsid requires the process NOT be a group leader (pgid !== pid); spawned children inherit parent's pgid, so they're not leaders by default
+  - After terminateAll SIGTERM wait, check `e.status === "running"` on the original running list to find survivors
+---
+
+## 2026-03-18 - US-134
+- Already implemented in prior iteration (commit 306cfea); verified tests pass and marked as passing
+---
+
+## 2026-03-18 - US-135
+- CommandRegistry now logs warning when a driver overrides an existing command; added getWarnings() for test inspection
+- DeviceLayer writeFile intercepts /dev/zero and /dev/urandom as no-ops (previously only /dev/null)
+- DeviceLayer realpath returns device path directly instead of falling through to backing VFS
+- Kernel fdOpen /dev/fd/N validates: rejects non-integer, negative, and malformed paths (e.g., "abc", "-1", "1.5", "")
+- Files changed:
+  - packages/kernel/src/command-registry.ts (override warning + getWarnings)
+  - packages/kernel/src/device-layer.ts (write interception + realpath)
+  - packages/kernel/src/kernel.ts (/dev/fd/N validation)
+  - packages/kernel/test/command-registry.test.ts (1 new test)
+  - packages/kernel/test/device-layer.test.ts (2 new tests)
+  - packages/kernel/test/kernel-integration.test.ts (1 new test)
+- **Learnings for future iterations:**
+  - parseInt("1.5", 10) returns 1, not NaN — use String(n) !== raw to reject non-integer strings
+  - DeviceLayer realpath must intercept device paths (isDevicePath || isDeviceDir) to avoid backing VFS ENOENT
+  - DEVICE_PATHS set contains the 6 static devices; DEVICE_DIRS has /dev/fd and /dev/pts
+---
+
+## 2026-03-18 - US-136
+- Sanitized module access error messages: OUT_OF_SCOPE and NATIVE_ADDON errors now use virtual paths instead of host canonical paths / hostNodeModulesRoot
+- Sanitized HTTP server 500 error handler: replaced `error.message` with generic "Internal Server Error"
+- Files changed:
+  - packages/secure-exec-node/src/module-access.ts (lines 253-262: sanitized error messages)
+  - packages/secure-exec-node/src/driver.ts (line 244: generic 500 body)
+  - packages/secure-exec/tests/runtime-driver/node/module-access.test.ts (added out-of-scope error sanitization test)
+  - packages/secure-exec/tests/runtime-driver/node/bridge-hardening.test.ts (added HTTP 500 error sanitization test)
+- **Learnings for future iterations:**
+  - collectOverlayAllowedRoots only scans top-level and @scoped symlinks in node_modules — nested symlinks can trigger OUT_OF_SCOPE
+  - createDefaultNetworkAdapter() is directly testable for HTTP server behavior without going through the full runtime
+  - Security error tests should verify BOTH that the error is raised AND that it doesn't leak sensitive information
+---
+
+## 2026-03-18 - US-137
+- Implemented three bridge hardening fixes:
+  1. ChildProcess.pid: replaced Math.random() with monotonic counter (`_nextChildPid++`) in ChildProcess class and all spawnSync return paths
+  2. process.kill: added signal name→number mapping table and `_resolveSignal()` helper; all signals now produce correct 128+signum exit codes (not just SIGTERM)
+  3. v8.deserialize: moved buffer size check before `buffer.toString()` to prevent full string allocation on oversized payloads
+- Files changed:
+  - packages/secure-exec-core/src/bridge/child-process.ts (monotonic PID counter)
+  - packages/secure-exec-core/src/bridge/process.ts (signal map + _resolveSignal)
+  - packages/secure-exec-core/isolate-runtime/src/inject/bridge-initial-globals.ts (buffer.length check before toString)
+  - packages/secure-exec-core/dist/bridge.js (rebuilt)
+  - packages/secure-exec-core/src/generated/isolate-runtime.ts (rebuilt)
+  - packages/secure-exec/tests/runtime-driver/node/bridge-hardening.test.ts (4 new tests)
+- **Learnings for future iterations:**
+  - Bridge refs (_childProcessSpawnStart etc.) may be defined but point to ENOSYS stubs when no command executor is configured — spawn() throws synchronously in that case
+  - spawnSync has FOUR return paths that each need a PID: success, maxBufferExceeded, catch(err), and _childProcessSpawnSync-undefined — all must use the counter
+  - process.exit() in the bridge fires the "exit" event and throws ProcessExitError — don't bypass it with a direct throw
+  - The isolate-runtime bridge-initial-globals.ts must be rebuilt via `pnpm -C packages/secure-exec-core run build:isolate-runtime` after changes
+---
+
+## 2026-03-18 04:10 - US-138
+- Added `opost` and `onlcr` boolean fields to `Termios` interface and `defaultTermios()` (both default true, POSIX standard)
+- Modified `PtyManager.processOutput()` to skip ONLCR CR insertion when `opost` or `onlcr` is disabled in termios
+- Updated `getTermios`/`setTermios` to handle the new fields
+- Added signal range validation to `ProcessTable.kill()`: EINVAL for signal < 0 or > 64, signal 0 = existence check (no delivery)
+- Files changed: packages/kernel/src/types.ts, packages/kernel/src/pty.ts, packages/kernel/src/process-table.ts, packages/kernel/test/process-table.test.ts, packages/kernel/test/kernel-integration.test.ts
+- **Learnings for future iterations:**
+  - `processOutput` was a pure function — needed to thread `PtyState` through to access termios flags
+  - POSIX ONLCR requires BOTH opost (master gate) AND onlcr (specific flag) to be enabled
+  - Signal 0 in kill() is a POSIX existence check — must NOT call driverProcess.kill, just verify the process exists
+  - Termios fields flow: types.ts interface → pty.ts getTermios/setTermios → kernel.ts tcgetattr/tcsetattr (Partial<Termios>)
+---
+
+## 2026-03-18 - US-104 (P109)
+- Moved all setup code in connectTerminal() inside the try block so finally always runs
+- Declared onStdinData/onResize before try, assigned inside — finally guards cleanup with null checks
+- Added test: "cleans up stdin listener when openShell throws" (no driver → spawnInternal fails)
+- Added test: "restores terminal state when shell.wait() rejects" (verifies listener cleanup on normal exit too)
+- Files changed: packages/kernel/src/kernel.ts, packages/kernel/test/kernel-integration.test.ts
+- **Learnings for future iterations:**
+  - process.stdin.setRawMode does not exist in test environments (not a TTY) — spy on it will throw
+  - Test listener cleanup via listenerCount("data") before/after instead of spying setRawMode
+  - connectTerminal tests emit on process.stdin directly to simulate TTY input
+---
+
+## 2026-03-18 - US-105
+- Implemented proper readPump lifecycle tracking in openShell()
+- Read pump promise is now tracked (not fire-and-forget)
+- Pump uses `pump.exited` flag to exit promptly when shell exits
+- Callback errors are logged via console.error, not silently swallowed
+- wait() now resolves after both shell exit AND pump drain (via waitPromise chaining)
+- Controller closes its copy of slave FD after spawn (Unix close-after-fork pattern) — prevents slave refCount from staying >0 and blocking master EOF
+- Cleanup (cleanupProcessFDs for controller) happens after pump completes
+- Files changed:
+  - packages/kernel/src/kernel.ts (openShell method)
+  - packages/kernel/test/shell-terminal.test.ts (4 new readPump lifecycle tests)
+- **Learnings for future iterations:**
+  - Controller's slave FD must be closed after spawning the child (Unix close-after-fork pattern); otherwise the slave refCount stays >0 and master reads never get EOF
+  - TypeScript narrows `let x = null` to `null` inside async closures when it doesn't see reassignment in the same scope — use an object wrapper `{ prop: null }` to prevent narrowing
+  - PTY slave close notifies master outputWaiters with `null`; master close notifies slave inputWaiters with `null` (pty.ts close method)
+---
+
+## 2026-03-18 - US-109
+- What was implemented: Added two tests verifying stale foregroundPgid behavior after process group leader exit
+- Test 1: Set foregroundPgid → kill group leader → send ^C — verifies no crash (try/catch in kernel handles stale PGID gracefully)
+- Test 2: Set foregroundPgid → kill group leader → set new valid group → ^C reaches new group — verifies recovery
+- Files changed:
+  - packages/kernel/test/kernel-integration.test.ts — 2 new tests in PTY section
+- Also marked US-106 (P111), US-107 (P112), US-108 (P113) as passes: true (already committed in prior iterations but not marked)
+- **Learnings for future iterations:**
+  - Kernel constructor wires PtyManager signal callback with try/catch: `try { this.processTable.kill(-pgid, signal); } catch {}` — this is what makes stale foregroundPgid safe
+  - `hasProcessGroup(pgid)` in process-table.ts checks for any non-exited process with that pgid — once all members exit, the group is gone
+  - MockRuntimeDriver with `neverExit: true` + `killSignals: []` is the standard pattern for testing signal delivery
+---
+
+## 2026-03-18 - US-111
+- What was implemented: Added three edge-case tests for TerminalHarness API
+  - waitFor with occurrence=2 — runs "echo AAA" and verifies waitFor("AAA", 2) succeeds (text appears in echoed command line + output)
+  - waitFor with occurrence=3 on text appearing only twice — verifies timeout rejection
+  - type() with echo disabled and no newline (zero output) — verifies settlement timer fires after SETTLE_MS (~50ms), not hanging
+- Files changed:
+  - packages/kernel/test/shell-terminal.test.ts — added 3 tests to shell-terminal describe block
+  - prd.json — marked US-111 (P116) as passes: true
+- **Learnings for future iterations:**
+  - PTY echo causes typed text to appear on screen, so "AAA" in "echo AAA" command counts as an occurrence in waitFor
+  - type() starts settlement timer before writing input — even with zero output it resolves after SETTLE_MS (50ms)
+  - Disabling echo via "noecho" command + ptySetDiscipline is a clean way to test zero-output type() scenarios
+---
+
+## 2026-03-18 - US-112
+- What was implemented: Added two concurrent openShell() session isolation tests
+  - Output isolation: open two shells, send different commands (ALPHA vs BRAVO), verify each screen only contains its own output
+  - Exit isolation: exit shell A, verify shell B still works by running a command
+- Files changed:
+  - packages/kernel/test/shell-terminal.test.ts — added "concurrent openShell sessions" describe block with 2 tests
+  - prd.json — marked US-112 (P117) as passes: true
+- **Learnings for future iterations:**
+  - Multiple TerminalHarness instances on the same kernel work correctly — each gets its own PTY pair via openShell()
+  - MockShellDriver supports multiple concurrent shell processes since each spawn() creates independent state
+---
+
+## 2026-03-18 - US-113
+- What was implemented: Added try/catch around PTY onSignal callback and tests
+  - pty.ts: wrapped onSignal?.(pgid, signal) in try/catch at line ~393 — errors caught silently, line discipline continues
+  - Test 1: onSignal throws on ^C → PTY doesn't crash, subsequent write/read/echo still works
+  - Test 2: multiple ^C with throwing handler → no accumulated errors, echo and input delivery still work
+- Files changed:
+  - packages/kernel/src/pty.ts — added try/catch around onSignal call
+  - packages/kernel/test/resource-exhaustion.test.ts — added "PTY signal callback error handling" describe with 2 tests
+  - prd.json — marked US-113 (P118) as passes: true
+- **Learnings for future iterations:**
+  - Kernel already wraps onSignal at line 57 (try/catch around processTable.kill), but PTY-level protection is defense-in-depth
+  - PtyManager constructor takes optional onSignal callback — pass a throwing function in tests to verify resilience
+  - setForegroundPgid requires a non-zero pgid for signal delivery to trigger
+---
+
+## 2026-03-18 - US-085
+- What was implemented: Cross-runtime terminal tests and kernel fix for cross-runtime child process output routing
+  - Fixed kernel spawnInternal: cross-runtime children now inherit parent's onStdout/onStderr callbacks when stdout is not piped, enabling child output to reach exec() collector
+  - Fixed kernel spawnInternal: parent driver's PID set now includes cross-runtime child PIDs, allowing parent to waitpid on children spawned via different runtime drivers
+  - Test 1: `node -e "console.log(42)"` from brush-shell → "42" appears on screen via TerminalHarness
+  - Test 2: `^C` during `node -e "setTimeout(...)"` → shell survives, prompt returns, can run more commands
+  - Test 3: `python3 -c "print(99)"` from brush-shell → "99" appears (gated on pyodide ESM import availability)
+- Files changed:
+  - packages/kernel/src/kernel.ts — added cross-runtime PID ownership sharing + parent stdout/stderr callback inheritance
+  - packages/secure-exec/tests/kernel/cross-runtime-terminal.test.ts — NEW: 3 cross-runtime terminal tests
+  - prd.json — marked US-085 (P120) as passes: true
+- **Learnings for future iterations:**
+  - Root cause of cross-runtime EPERM: kernel assertOwns(pid) check rejected parent driver accessing child PID owned by a different driver — fix: register child PID in parent's driver PID set too
+  - Root cause of empty stdout: child process got its own isolated stdoutBuf instead of inheriting parent's callback — fix: look up parent's ProcessEntry.driverProcess.onStdout
+  - kernel.exec() always routes through `sh -c` (brush-shell) — ALL cross-runtime commands go through WasmVM proc_spawn
+  - pyodide `require.resolve()` succeeds but `await import('pyodide')` fails — use dynamic import check for accurate gating
+  - Cross-runtime pipe tests (echo | node) still fail — separate issue from output routing (pipe EOF/close semantics)
 ---

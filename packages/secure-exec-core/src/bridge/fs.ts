@@ -9,7 +9,8 @@ import type { FsFacadeBridge } from "../shared/bridge-contract.js";
 // Declare globals that are set up by the host environment
 declare const _fs: FsFacadeBridge;
 
-// File descriptor table
+// File descriptor table — capped to prevent resource exhaustion
+const MAX_BRIDGE_FDS = 1024;
 const fdTable = new Map<number, { path: string; flags: number; position: number }>();
 let nextFd = 3;
 
@@ -450,6 +451,7 @@ class ReadStream {
 
 // WriteStream class for createWriteStream
 // This provides a type-safe implementation that satisfies nodeFs.WriteStream
+const MAX_WRITE_STREAM_BYTES = 16 * 1024 * 1024; // 16MB cap to prevent memory exhaustion
 // We use 'as' assertion at the return site since the full interface is complex
 class WriteStream {
   // WriteStream-specific properties
@@ -514,6 +516,18 @@ class WriteStream {
       data = chunk;
     } else {
       data = Buffer.from(String(chunk));
+    }
+
+    // Cap buffered data to prevent memory exhaustion
+    if (this.writableLength + data.length > MAX_WRITE_STREAM_BYTES) {
+      const err = new Error(`WriteStream buffer exceeded ${MAX_WRITE_STREAM_BYTES} bytes`);
+      this.errored = err;
+      this.destroyed = true;
+      this.writable = false;
+      const cb = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+      if (cb) Promise.resolve().then(() => cb(err));
+      Promise.resolve().then(() => this.emit("error", err));
+      return false;
     }
 
     this._chunks.push(data);
@@ -776,7 +790,7 @@ function createFsError(
     path?: string;
   };
   err.code = code;
-  err.errno = code === "ENOENT" ? -2 : code === "EACCES" ? -13 : code === "EBADF" ? -9 : -1;
+  err.errno = code === "ENOENT" ? -2 : code === "EACCES" ? -13 : code === "EBADF" ? -9 : code === "EMFILE" ? -24 : -1;
   err.syscall = syscall;
   if (path) err.path = path;
   return err;
@@ -869,11 +883,14 @@ function _globGetBase(pattern: string): string {
 
 // Recursively walk VFS directory and collect matching paths
 // We use a reference to `fs` via late-binding in the fs object method
+const MAX_GLOB_DEPTH = 100; // Prevent stack overflow on deeply nested trees
+
 function _globCollect(pattern: string, results: string[]): void {
   const regex = _globToRegex(pattern);
   const base = _globGetBase(pattern);
 
-  const walk = (dir: string): void => {
+  const walk = (dir: string, depth: number): void => {
+    if (depth > MAX_GLOB_DEPTH) return;
     let entries: string[];
     try {
       entries = _globReadDir(dir);
@@ -890,7 +907,7 @@ function _globCollect(pattern: string, results: string[]): void {
       try {
         const stat = _globStat(fullPath);
         if (stat.isDirectory()) {
-          walk(fullPath);
+          walk(fullPath, depth + 1);
         }
       } catch {
         // Not a directory or stat failed — skip
@@ -908,7 +925,7 @@ function _globCollect(pattern: string, results: string[]): void {
         return;
       }
     }
-    walk(base);
+    walk(base, 0);
   } catch {
     // Base doesn't exist — no matches
   }
@@ -1308,6 +1325,10 @@ const fs = {
   // File descriptor methods
 
   openSync(path: PathLike, flags: OpenMode, _mode?: Mode | null): number {
+    // Enforce bridge-side FD limit
+    if (fdTable.size >= MAX_BRIDGE_FDS) {
+      throw createFsError("EMFILE", "EMFILE: too many open files, open '" + toPathString(path) + "'", "open", toPathString(path));
+    }
     const rawPath = toPathString(path);
     const pathStr = rawPath;
     const numFlags = parseFlags(flags);
@@ -2319,16 +2340,68 @@ const fs = {
 
   realpathSync: Object.assign(
     function realpathSync(path: PathLike): string {
-      // In our virtual fs, just normalize the path (keep /data prefix for consistency)
-      return toPathString(path)
-        .replace(/\/\/+/g, "/")
-        .replace(/\/$/, "") || "/";
+      // Resolve symlinks by walking each path component via lstat + readlink
+      const MAX_SYMLINK_DEPTH = 40;
+      let symlinksFollowed = 0;
+      const raw = toPathString(path);
+
+      // Build initial queue: normalize . and .. segments
+      const pending: string[] = [];
+      for (const seg of raw.split("/")) {
+        if (!seg || seg === ".") continue;
+        if (seg === "..") { if (pending.length > 0) pending.pop(); }
+        else pending.push(seg);
+      }
+
+      // Walk each component, resolving symlinks via a queue
+      const resolved: string[] = [];
+      while (pending.length > 0) {
+        const seg = pending.shift()!;
+        if (seg === ".") continue;
+        if (seg === "..") { if (resolved.length > 0) resolved.pop(); continue; }
+        resolved.push(seg);
+        const currentPath = "/" + resolved.join("/");
+        try {
+          const stat = fs.lstatSync(currentPath);
+          if (stat.isSymbolicLink()) {
+            if (++symlinksFollowed > MAX_SYMLINK_DEPTH) {
+              const err = new Error(`ELOOP: too many levels of symbolic links, realpath '${raw}'`) as NodeJS.ErrnoException;
+              err.code = "ELOOP";
+              err.syscall = "realpath";
+              err.path = raw;
+              throw err;
+            }
+            const target = fs.readlinkSync(currentPath);
+            // Prepend target segments to pending for re-resolution
+            const targetSegs = target.split("/").filter(Boolean);
+            if (target.startsWith("/")) {
+              // Absolute symlink — restart from root
+              resolved.length = 0;
+            } else {
+              // Relative symlink — drop current component
+              resolved.pop();
+            }
+            // Prepend target segments so they're processed next
+            pending.unshift(...targetSegs);
+          }
+        } catch (e: unknown) {
+          const err = e as NodeJS.ErrnoException;
+          if (err.code === "ELOOP") throw e;
+          if (err.code === "ENOENT" || err.code === "ENOTDIR") {
+            const enoent = new Error(`ENOENT: no such file or directory, realpath '${raw}'`) as NodeJS.ErrnoException;
+            enoent.code = "ENOENT";
+            enoent.syscall = "realpath";
+            enoent.path = raw;
+            throw enoent;
+          }
+          break;
+        }
+      }
+      return "/" + resolved.join("/") || "/";
     },
     {
       native(path: PathLike): string {
-        return toPathString(path)
-          .replace(/\/\/+/g, "/")
-          .replace(/\/$/, "") || "/";
+        return fs.realpathSync(path);
       }
     }
   ),

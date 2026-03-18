@@ -106,6 +106,8 @@ PRD: ralph/kernel-hardening (46 stories)
 - NodeExecutionDriver split into 5 modules in src/node/: isolate-bootstrap.ts (types+utilities), module-resolver.ts, esm-compiler.ts, bridge-setup.ts, execution-lifecycle.ts; facade is execution-driver.ts (<300 lines)
 - Source policy tests (isolate-runtime-injection-policy, bridge-registry-policy) read specific source files by path — update them when moving code between files
 - esmModuleCache has a sibling esmModuleReverseCache (Map<ivm.Module, string>) for O(1) module→path lookup — both must be updated together and cleared together in execution.ts
+- Network adapter SSRF: isPrivateIp() + assertNotPrivateHost() in driver.ts; fetch uses redirect:'manual' with per-hop re-validation; httpRequest has pre-flight check only (no auto-redirect); data:/blob: URLs skip SSRF check
+- V8 isolate native `performance` object has non-configurable `now` — must replace entire global with frozen proxy; after build:isolate-runtime, also run core tsc to update dist .js
 
 ---
 
@@ -1312,4 +1314,329 @@ PRD: ralph/kernel-hardening (46 stories)
   - brush-shell's cd builtin hangs when target dir exists — likely blocks on WASI path_open or fd_readdir after path_filestat_get succeeds
   - ls from interactive shell shows "WARN could not retrieve pid for child process" — proc_spawn return value not read correctly by brush-shell
   - kernel VFS adapter getIno must parse the vfsStat RPC response's "type" field (not "isDirectory") since the handler encodes type as string
+---
+
+## 2026-03-18 - US-122
+- What was implemented: Added EPIPE check for pipe write when read end is closed
+- Files changed:
+  - `packages/kernel/src/pipe-manager.ts` — added `state.closed.read` check in write() before buffering
+  - `packages/kernel/test/pipe-manager.test.ts` — added two tests: write-after-read-close throws EPIPE, write-with-open-read succeeds
+- **Learnings for future iterations:**
+  - PipeManager write() already checked write-end closure but not read-end — POSIX requires EPIPE when no readers exist
+  - The check order matters: EBADF → EPIPE (write closed) → EPIPE (read closed) → deliver/buffer
+---
+
+## 2026-03-18 - US-124
+- What was implemented: Clean up child processes and HTTP servers on isolate disposal/timeout
+  - Added `activeChildProcesses: Map<number, SpawnedProcess>` to DriverDeps for host-level child process tracking
+  - Added `killActiveChildProcesses()` utility that SIGKILL's all tracked processes
+  - Changed bridge-setup.ts to use `deps.activeChildProcesses` instead of local `sessions` map (promotes tracking from context-local to driver-level)
+  - Removed `activeHttpServerIds.clear()` from execution.ts exec() start — servers from previous exec are now tracked across calls
+  - Removed `activeHttpServerIds` from ExecutionRuntime type (no longer needed in execution.ts)
+  - Added `closeActiveHttpServers()` to execution-driver.ts for sync fire-and-forget server cleanup
+  - recycleIsolate(): now calls killActiveChildProcesses + closeActiveHttpServers before disposing
+  - dispose(): now calls killActiveChildProcesses + closeActiveHttpServers before disposing
+  - terminate(): now calls killActiveChildProcesses before awaiting server close
+- Files changed:
+  - packages/secure-exec-node/src/isolate-bootstrap.ts — added activeChildProcesses to DriverDeps, added killActiveChildProcesses()
+  - packages/secure-exec-node/src/bridge-setup.ts — added activeChildProcesses to BridgeDeps, replaced local sessions map
+  - packages/secure-exec-node/src/execution.ts — removed activeHttpServerIds.clear() and from ExecutionRuntime type
+  - packages/secure-exec-node/src/execution-driver.ts — added cleanup to recycleIsolate/dispose/terminate, added closeActiveHttpServers()
+  - packages/secure-exec/tests/runtime-driver/node/resource-budgets.test.ts — added child process cleanup and HTTP server cleanup tests
+- **Learnings for future iterations:**
+  - Bridge's local `sessions` Map was context-scoped — each setupRequire() call created a new one, orphaning processes from previous contexts. Moving to DriverDeps fixes this.
+  - `activeHttpServerIds.clear()` in exec() start was silently losing server tracking — servers created in exec N were invisible to cleanup after exec N+1 started
+  - recycleIsolate is called on CPU timeout — any resource cleanup that should happen on timeout must be added there, not just in terminate()
+  - closeActiveHttpServers uses fire-and-forget (no await) since the isolate is being disposed — awaiting could block disposal
+  - Tests for timeout-triggered cleanup: create resource, then `while (true) {}` to trigger CPU timeout, verify cleanup happened
+---
+
+## 2026-03-18 - US-125
+- Verified all fixes already implemented in prior iterations:
+  - logRef/errorRef check `budgetState.outputBytes + bytes > maxOutputBytes` (not `>=` on previous total)
+  - spawnSync defaults to `options.maxBuffer ?? 1024 * 1024` (1MB)
+  - exec() bridge-side has `if (maxBufferExceeded) return;` guard in both stdout/stderr data handlers
+- Tests already exist and pass:
+  - resource-budgets.test.ts: maxOutputBytes budget rejection of single large message (1MB vs 1024 budget), stderr budget, default spawnSync maxBuffer
+  - maxbuffer.test.ts: execSync/spawnSync/execFileSync maxBuffer enforcement
+- All 25 tests pass, typecheck passes
+- Files verified (no changes needed):
+  - packages/secure-exec-node/src/bridge-setup.ts (logRef/errorRef budget check, spawnSync default maxBuffer)
+  - packages/secure-exec-core/src/bridge/child-process.ts (exec maxBufferExceeded early return)
+  - packages/secure-exec/tests/runtime-driver/node/resource-budgets.test.ts
+  - packages/secure-exec/tests/runtime-driver/node/maxbuffer.test.ts
+- **Learnings for future iterations:**
+  - US-125 was already fully implemented but PRD wasn't updated — always verify code state before implementing
+---
+
+## 2026-03-18 - US-126, US-127, US-123, US-128, US-129, US-130, US-131
+- Batch-verified 7 stories already implemented in prior iterations with passing tests
+- Updated PRD to mark all as passes: true
+- **Learnings for future iterations:**
+  - Multiple stories were implemented but PRD wasn't updated — batch-verify before starting new work
+---
+
+## 2026-03-18 - US-132
+- Added module cache clearing to `__unsafeCreateContext` in execution-driver.ts — clears all 10 caches (esmModuleCache, esmModuleReverseCache, dynamicImportCache, dynamicImportPending, 4 resolutionCache maps, moduleFormatCache, packageTypeCache)
+- Added test verifying module cache isolation: first context requires module v1, VFS updated to v2, second context correctly sees v2
+- Files changed:
+  - packages/secure-exec-node/src/execution-driver.ts — added cache clearing to `__unsafeCreateContext`
+  - packages/secure-exec/tests/runtime-driver/node/bridge-hardening.test.ts — added module cache isolation test
+- **Learnings for future iterations:**
+  - `__unsafeCreateContext` requires absolute paths for require() — relative paths fail because filename is synthetic
+  - Module caches on `deps` must be cleared in BOTH `executeWithRuntime` and `__unsafeCreateContext`
+---
+
+## 2026-03-18 - US-134
+- Added `pread(path, offset, length)` method to kernel VirtualFileSystem interface for range-based reads
+- Updated fdRead in kernel.ts to use pread instead of readFile+slice — avoids loading entire file for partial reads
+- Implemented pread in all kernel VFS implementations: TestFileSystem, NodeFileSystem (os/node), InMemoryFileSystem (os/browser)
+- Updated device-layer.ts to handle pread for device nodes (/dev/null, /dev/zero, /dev/urandom)
+- Updated permissions.ts to wrap pread with "read" permission check
+- Added 2 tests: 1MB file single-byte read, sequential cursor advancement
+- Files changed:
+  - packages/kernel/src/vfs.ts — added pread to interface
+  - packages/kernel/src/kernel.ts — fdRead now uses pread
+  - packages/kernel/src/device-layer.ts — pread wrapper for device nodes
+  - packages/kernel/src/permissions.ts — pread permission check
+  - packages/kernel/test/helpers.ts — TestFileSystem.pread
+  - packages/os/node/src/filesystem.ts — NodeFileSystem.pread (uses fs.open + handle.read for true partial read)
+  - packages/os/browser/src/filesystem.ts — InMemoryFileSystem.pread
+  - packages/kernel/test/kernel-integration.test.ts — 2 new tests
+- **Learnings for future iterations:**
+  - Kernel VFS (packages/kernel/src/vfs.ts) is separate from core VFS (packages/secure-exec-core/src/types.ts) — only kernel VFS implementations need updating for kernel-only methods
+  - Only 3 classes implement kernel VFS: TestFileSystem (kernel tests), NodeFileSystem (os/node), InMemoryFileSystem (os/browser)
+  - NodeFileSystem.pread uses fs.open() + handle.read(buf, 0, length, offset) for true OS-level positional read
+  - device-layer pread for /dev/zero returns exactly `length` zero bytes (unlike readFile which returns fixed 4096)
+---
+
+## 2026-03-18 - US-133
+- Already implemented in prior iteration: setpgid cross-session EPERM check (process-table.ts:184-186) and terminateAll SIGKILL escalation (process-table.ts:288-306)
+- Tests already exist: kernel-integration.test.ts lines 934-954 (terminateAll SIGKILL) and 2196-2235 (setpgid cross-session)
+- Marked passes: true in prd.json
+- **Learnings for future iterations:**
+  - None new — patterns already documented
+---
+
+## 2026-03-18 - US-136
+- Already implemented in prior iteration: error message sanitization for module access and HTTP handlers
+- Tests pass in bridge-hardening.test.ts and module-access.test.ts
+- Marked passes: true in prd.json
+---
+
+## 2026-03-18 - US-137, US-138, US-104 (p110), US-105 (p111)
+- All already implemented in prior iterations (feat commits in git log)
+- Batch-marked passes: true in prd.json
+---
+
+## 2026-03-18 - US-106 (p112)
+- Changed `echoOutput()` in pty.ts to throw EAGAIN when output buffer is full (was silent drop)
+- Added test: fill output buffer, verify echo EAGAIN, drain, verify echo recovery
+- Files changed:
+  - packages/kernel/src/pty.ts — echoOutput throws EAGAIN instead of silent drop
+  - packages/kernel/test/resource-exhaustion.test.ts — new echo buffer overflow test
+- **Learnings for future iterations:**
+  - echoOutput is called from processInput (master write path) — EAGAIN propagates to the caller who can drain and retry
+  - deliverInput already throws EAGAIN for full input buffer; now echo is consistent
+---
+
+## 2026-03-18 - US-135
+- Already implemented: command registry override warnings, /dev/zero write no-op, device realpath, /dev/fd/N parsing validation
+- Tests already exist in command-registry.test.ts, device-layer.test.ts, kernel-integration.test.ts
+- Marked passes: true in prd.json
+- **Learnings for future iterations:**
+  - None new — patterns already documented
+---
+
+## 2026-03-18 - US-107
+- Implemented PGID validation in tcsetpgrp — throws ESRCH for non-existent process groups
+- Added `hasProcessGroup(pgid)` method to ProcessTable that checks for running processes with matching pgid
+- Added validation check in kernel.ts tcsetpgrp handler before delegating to ptyManager
+- Added two new tests: non-existent pgid throws ESRCH, valid pgid succeeds
+- Files changed: packages/kernel/src/process-table.ts, packages/kernel/src/kernel.ts, packages/kernel/test/kernel-integration.test.ts
+- **Learnings for future iterations:**
+  - ProcessTable already has pgid loop patterns in setpgid() and kill() — hasProcessGroup follows same pattern (iterate entries, check pgid + status)
+  - Validation belongs in kernel.ts (not pty.ts) since process groups are kernel-level concepts; PtyManager shouldn't need to know about ProcessTable
+  - All 158 kernel integration tests pass, including all existing tcsetpgrp tests
+---
+
+## 2026-03-18 - US-108
+- Added adversarial PTY stress tests to packages/kernel/test/resource-exhaustion.test.ts
+- 7 new tests in "PTY adversarial stress" describe block:
+  - Rapid sequential master writes (100+ chunks, 1KB each) with no slave reader — verifies EAGAIN and bounded memory
+  - Single large master write (1MB) — verifies immediate EAGAIN, no partial buffering
+  - Single large slave write (1MB) — same for output direction
+  - Multiple PTY pairs (5) simultaneously filled — verifies isolation (drain one, others stay full)
+  - Canonical mode line buffer under sustained input without newline — verifies MAX_CANON cap
+  - Canonical mode with echo — verifies echo output stays bounded under sustained input
+  - Rapid sequential slave writes (100+ chunks) with no master reader — verifies EAGAIN and bounded memory
+- Files changed: packages/kernel/test/resource-exhaustion.test.ts
+- **Learnings for future iterations:**
+  - PtyManager.close() removes descToPty entries immediately — async drain loops must catch EBADF after close
+  - In canonical mode, chars beyond MAX_CANON are silently dropped (no EAGAIN) — only buffer-level EAGAIN applies to input/output buffers
+  - Echo with canonical mode: echo output is bounded by MAX_CANON (only accepted chars get echoed) + 2 bytes for CR+LF on newline flush
+---
+
+## 2026-03-18 - US-109, US-110
+- US-109: Already implemented in prior iteration (commit 667669d). Verified tests pass, marked passes: true.
+- US-110: Added 2 kernel-integration-level PTY echo buffer exhaustion tests through fdWrite/fdRead kernel interface
+  - Test 1: fill output buffer via slave write, verify fdWrite to master with echo enabled throws EAGAIN
+  - Test 2: drain buffer via master read, verify echo resumes (write 'B', read echo 'B' back)
+- Files changed: packages/kernel/test/kernel-integration.test.ts (added MAX_PTY_BUFFER_BYTES import + 2 tests in termios section)
+- **Learnings for future iterations:**
+  - Integration-level PTY tests use ki.fdWrite/ki.fdRead (kernel interface), not ptyManager.write/read directly
+  - Output buffer fills via slave write (slave→master direction); echo goes in the same direction, so echo is blocked when output buffer is full
+---
+
+## 2026-03-18 - US-109
+- What was implemented: Filter dangerous env vars (LD_PRELOAD, NODE_OPTIONS, LD_LIBRARY_PATH, DYLD_INSERT_LIBRARIES) from child process spawn env in bridge-setup.ts
+- Files changed:
+  - packages/secure-exec-node/src/bridge-setup.ts — added stripDangerousEnv() function applied to both spawnStartRef and spawnSyncRef env passthrough
+  - packages/secure-exec/tests/runtime-driver/node/env-leakage.test.ts — added 3 tests: LD_PRELOAD stripped, NODE_OPTIONS stripped, normal env vars pass through
+  - scripts/ralph/prd.json — marked US-109 as passes: true
+- **Learnings for future iterations:**
+  - Bridge-setup.ts has two separate spawn paths (spawnStartRef for async spawn, spawnSyncRef for execSync/spawnSync) — both must be updated for any env/security changes
+  - Mock command executor pattern (createCapturingExecutor) captures spawn args/env without needing real child processes — useful for bridge-level security tests
+  - filterEnv in permissions.ts is permission-based filtering; dangerous env var stripping is a separate concern applied at the bridge boundary
+---
+
+## 2026-03-18 - US-110
+- What was implemented: SSRF protection for network adapter — blocks requests to private/reserved IP ranges and re-validates redirect targets
+- Files changed:
+  - packages/secure-exec-node/src/driver.ts — added isPrivateIp(), assertNotPrivateHost(), MAX_REDIRECTS; modified fetch() to use redirect:'manual' with re-validation; modified httpRequest() with pre-flight IP check
+  - packages/secure-exec-node/src/index.ts — exported isPrivateIp
+  - packages/secure-exec/src/node/driver.ts — re-exported isPrivateIp
+  - packages/secure-exec/tests/runtime-driver/node/ssrf-protection.test.ts — new test file with 37 tests
+- **Learnings for future iterations:**
+  - isPrivateIp must handle IPv4-mapped IPv6 (::ffff:a.b.c.d) by stripping the prefix before checking
+  - assertNotPrivateHost must skip non-network URL schemes (data:, blob:) — existing test suite uses data: URLs
+  - fetch redirect following uses redirect:'manual' and manually follows up to 20 hops, re-validating each target URL against the private IP blocklist
+  - httpRequest (node http module) doesn't follow redirects by default, so only pre-flight check needed
+  - DNS rebinding is documented as a known limitation — would require pinning resolved IPs to the connection, not possible with native fetch
+  - 5 pre-existing test failures in index.test.ts (http.Agent, upgrade, server termination) are NOT caused by SSRF changes — they fail identically on the pre-SSRF commit
+---
+
+## 2026-03-18 - US-114
+- Implemented process.env isolation: child processes spawned without explicit env now receive the init-time filtered env instead of inheriting undefined (which could allow host env leakage)
+- Modified both streaming spawn (spawnStartRef) and synchronous spawn (spawnSyncRef) in bridge-setup.ts to fall back to `deps.processConfig.env` when `options.env` is undefined
+- Combined with existing `stripDangerousEnv()`, this provides defense-in-depth: sandbox env mutations never reach children, and dangerous keys are always stripped
+- Files changed:
+  - packages/secure-exec-node/src/bridge-setup.ts (init-time env fallback for both spawn paths)
+  - packages/secure-exec/tests/runtime-driver/node/env-leakage.test.ts (2 new tests)
+- **Learnings for future iterations:**
+  - Two-layer env defense: permission-based filterEnv() at init + stripDangerousEnv() per-spawn — both layers needed
+  - `deps.processConfig.env` is the init-time filtered env (already filtered by `filterEnv()` in execution-driver.ts) — safe to use as fallback
+  - When `options.env` is undefined, `stripDangerousEnv(undefined)` returns undefined — the fallback must happen BEFORE the strip call
+---
+
+## 2026-03-18 - US-105
+- What was implemented: Added assertTextPayloadSize guard to readFileRef (text file read bridge path), matching the existing guard in readFileBinaryRef
+- The text read path was missing payload size validation, allowing sandbox code to read arbitrarily large text files into host memory via readFileSync('path', 'utf8')
+- Files changed:
+  - packages/secure-exec-node/src/bridge-setup.ts — added assertTextPayloadSize call with fsJsonPayloadLimit before returning text
+  - packages/secure-exec/tests/runtime-driver/node/payload-limits.test.ts — added 2 tests: oversized text file read rejection and normal-sized text file read preservation
+- **Learnings for future iterations:**
+  - Text file reads use fsJsonPayloadLimit (4MB default) not base64Limit — text is passed directly, not base64-encoded
+  - assertTextPayloadSize is the convenience wrapper for text (handles UTF-8 byte length calculation)
+  - readFileRef returns string from readTextFile; readFileBinaryRef returns base64-encoded Buffer — different limits and guards needed
+---
+
+## 2026-03-18 - US-115
+- What was implemented: Hardened SharedArrayBuffer deletion in timing mitigation freeze
+  - Replaced simple `delete` with `Object.defineProperty` using `configurable: false, writable: false` to lock the global
+  - Added prototype neutering: byteLength, slice, grow, maxByteLength, growable properties redefined as throwing getters
+  - Fallback path preserved for edge cases where defineProperty fails
+- Files changed:
+  - packages/secure-exec-core/isolate-runtime/src/inject/apply-timing-mitigation-freeze.ts — replaced 3-line delete with robust hardening (prototype neutering + non-configurable defineProperty)
+  - packages/secure-exec-core/src/generated/isolate-runtime.ts — auto-regenerated by build:isolate-runtime
+  - packages/secure-exec/tests/runtime-driver/node/index.test.ts — added 2 tests: cannot restore SAB via defineProperty/assignment, property descriptor is non-configurable/non-writable
+- **Learnings for future iterations:**
+  - Object.defineProperty with configurable: false prevents sandbox code from redefining globals — use this for all security-critical global removals
+  - Prototype neutering must happen BEFORE the global is deleted/replaced, since after deletion you lose the reference
+  - isolate-runtime sources must be regenerated via `pnpm --filter @secure-exec/core run build:isolate-runtime` after any change
+  - 5 HTTP/network tests in index.test.ts are pre-existing ECONNREFUSED flakes (serves requests, coerces 0.0.0.0, terminate server, maxSockets, upgrade)
+---
+
+## 2026-03-18 - US-116-B
+- What was implemented: Changed process.binding() and process._linkedBinding() to throw errors instead of returning stub objects
+- Files changed:
+  - packages/secure-exec-core/src/bridge/process.ts — replaced stub dictionary with throw statements
+  - packages/secure-exec/tests/runtime-driver/node/sandbox-escape.test.ts — updated test to verify throws for binding('fs'), binding('buffer'), and _linkedBinding('fs'); updated 2 other tests that called process.binding() in escape-detection logic to wrap in try/catch
+- **Learnings for future iterations:**
+  - process.binding stubs were only consumed by tests, not production code — safe to remove without cascading changes
+  - BUFFER_CONSTANTS/BUFFER_MAX_LENGTH are still used elsewhere in process.ts (global Buffer setup) — don't remove them
+  - Multiple sandbox escape tests reference process.binding() as a sentinel for "real bindings" — when changing binding behavior, grep all test files for `process.binding` calls
+---
+
+## 2026-03-18 - US-119-B
+- What was implemented: Blocked module cache poisoning within a single execution by wrapping the internal `_moduleCache` object in a read-only Proxy
+- Changes:
+  - `require-setup.ts`: Captured internal cache reference, replaced all internal `_moduleCache[` writes with `__internalModuleCache[`, created read-only Proxy (rejects set/delete/defineProperty), assigned to `require.cache` and `_moduleCache` global, updated `Module._cache` references
+  - `global-exposure.ts`: Changed `_moduleCache` classification from `mutable-runtime-state` to `hardened` so `applyCustomGlobalExposurePolicy` locks the property as non-writable/non-configurable after bridge setup
+  - `bridge-hardening.test.ts`: Added 5 tests covering require.cache set/delete rejection, normal require caching, `_moduleCache` global protection, and `Module._cache` protection
+- Files changed:
+  - packages/secure-exec-core/isolate-runtime/src/inject/require-setup.ts
+  - packages/secure-exec-core/src/shared/global-exposure.ts
+  - packages/secure-exec-core/src/generated/isolate-runtime.ts (auto-generated)
+  - packages/secure-exec/tests/runtime-driver/node/bridge-hardening.test.ts
+- **Learnings for future iterations:**
+  - `applyCustomGlobalExposurePolicy` runs AFTER `setupRequire` — any property made `configurable: false` in require-setup.ts will cause the policy to fail when it tries to re-apply. Use `configurable: true` and let the policy finalize it.
+  - The bridge setup order is: globalExposureHelpers → bridge-initial-globals → bridge bundle (module.ts) → bridge attach → timing mitigation → require-setup. Module.ts evaluates BEFORE require-setup, so Module._cache captures the raw cache object and must be explicitly updated.
+  - Internal require system writes need a captured local reference (`__internalModuleCache`) since the globalThis property gets replaced with a Proxy that rejects writes.
+  - `proc.run()` returns `{ code, exports }` not just exports — test assertions must use `result.exports`.
+---
+
+## 2026-03-18 - US-107
+- What was implemented: Added default concurrent host timer cap (10,000) and missing test coverage
+- Changes:
+  - packages/secure-exec-node/src/isolate-bootstrap.ts — added DEFAULT_MAX_TIMERS = 10_000 constant
+  - packages/secure-exec-node/src/execution-driver.ts — imported constant, applied as default via ?? operator
+  - packages/secure-exec/tests/runtime-driver/node/resource-budgets.test.ts — added "cleared timers free slots for new ones" and "normal code with fewer than 100 timers works fine" tests
+- **Learnings for future iterations:**
+  - Timer budget was already mostly implemented (bridge-side _checkTimerBudget, host injection of _maxTimers, two existing tests) — the gap was only the default value and two specific test scenarios
+  - Budget defaults live in isolate-bootstrap.ts alongside other constants; undefined means unlimited for all budget fields
+  - The "normal code" test intentionally omits resourceBudgets to exercise the default value path
+---
+
+## 2026-03-18 - US-108
+- What was implemented: Added configurable max size cap (default 10000) to the ActiveHandles map, preventing unbounded growth from spawning thousands of child processes, timers, or servers
+- Files changed:
+  - packages/secure-exec-core/src/runtime-driver.ts — added `maxHandles` to ResourceBudgets interface
+  - packages/secure-exec-core/src/bridge/active-handles.ts — added `_maxHandles` declaration and cap enforcement in `_registerHandle` (skips check for re-registration of existing handle)
+  - packages/secure-exec-core/isolate-runtime/src/common/runtime-globals.d.ts — added `_maxHandles` global declaration
+  - packages/secure-exec-node/src/isolate-bootstrap.ts — added `maxHandles` to DriverDeps, added DEFAULT_MAX_HANDLES = 10_000
+  - packages/secure-exec-node/src/execution-driver.ts — imported DEFAULT_MAX_HANDLES, wired `maxHandles` through to deps
+  - packages/secure-exec-node/src/bridge-setup.ts — added `maxHandles` to deps Pick type, injects `_maxHandles` into isolate jail
+  - packages/secure-exec/tests/runtime-driver/node/resource-budgets.test.ts — added 2 tests: cap enforcement and slot reuse after removal
+- **Learnings for future iterations:**
+  - Active handle cap follows the same pattern as _maxTimers: host injects a number global into the bridge jail, bridge checks synchronously before registering
+  - _registerHandle allows re-registration of an existing ID without counting against the cap (idempotent set behavior)
+  - Testing handle cap directly via _registerHandle/_unregisterHandle globals from sandbox code is simpler and more reliable than testing through child_process.spawn (which has async lifecycle)
+  - The 5 failures in tests/runtime-driver/node/index.test.ts (ECONNREFUSED + upgrade) are pre-existing and unrelated
+---
+
+## 2026-03-18 - US-111
+- What was implemented: Hardened timing mitigation — Date.now frozen as non-configurable/non-writable, Date constructor patched to return frozen time for no-arg `new Date()`, performance global replaced with frozen proxy object
+- Files changed:
+  - packages/secure-exec-core/isolate-runtime/src/inject/apply-timing-mitigation-freeze.ts — Date.now: configurable/writable→false; new Date constructor wrapper with frozen no-arg time; performance: replaced native with Object.create(null) + Object.freeze + non-configurable global property
+  - packages/secure-exec-core/src/generated/isolate-runtime.ts — auto-regenerated by build:isolate-runtime
+  - packages/secure-exec/tests/runtime-driver/node/index.test.ts — added 3 tests: Date.now override blocked (strict mode assignment + defineProperty), new Date().getTime() matches frozen Date.now(), performance.now override blocked
+- **Learnings for future iterations:**
+  - V8 isolate's native `performance` object has non-configurable `now` property — Object.defineProperty in-place fails silently to catch block; must replace the entire global with a frozen proxy
+  - `Object.defineProperty(globalThis, "performance", { configurable: false })` works in isolated-vm — the global proxy supports non-configurable data properties
+  - Assignment to non-writable property silently fails in sloppy mode, throws TypeError only in strict mode — security tests must use `'use strict'` to verify TypeError
+  - `build:isolate-runtime` generates the `.ts` source, but `@secure-exec/core` tsc must run to compile to dist `.js` — tests resolve through compiled dist, not raw .ts
+  - Date constructor replacement: must use Object.defineProperty for prototype (direct assignment fails with TS2540), forward parse/UTC, lock Date.now on replacement too
+---
+
+## 2026-03-18 - US-112
+- Added ownership tracking to httpServerClose in bridge-setup.ts
+- Per-context `ownedHttpServers` Set tracks server IDs created via httpServerListen
+- httpServerClose now rejects with error if serverId not in the owned set
+- Changed close ref from async to sync-throw + promise-return to avoid ivm unhandled rejection
+- Files changed: packages/secure-exec-node/src/bridge-setup.ts, packages/secure-exec/tests/runtime-driver/node/bridge-hardening.test.ts
+- **Learnings for future iterations:**
+  - ivm async Reference functions that throw create unhandled rejections on the host even when sandbox catches them — use synchronous throw + `.then()` pattern instead of async/await for validation errors
+  - Host bridge global names use `_` prefix convention (e.g. `_networkHttpServerCloseRaw`), classified as "hardened" (non-writable, non-configurable) but still readable by sandbox code
+  - Per-context ownership tracking pattern: create a local Set in the bridge-setup closure, add on create, check on close/delete, clean up on success
 ---

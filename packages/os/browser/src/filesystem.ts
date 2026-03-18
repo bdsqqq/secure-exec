@@ -381,6 +381,16 @@ export class InMemoryFileSystem implements VirtualFileSystem {
 		entry.ctimeMs = Date.now();
 	}
 
+	async pread(path: string, offset: number, length: number): Promise<Uint8Array> {
+		const entry = this.resolveEntry(path);
+		if (!entry || entry.type !== "file") {
+			throw this.enoent("open", path);
+		}
+		entry.atimeMs = Date.now();
+		if (offset >= entry.data.length) return new Uint8Array(0);
+		return entry.data.slice(offset, Math.min(offset + length, entry.data.length));
+	}
+
 	// --- Helpers ---
 
 	/**

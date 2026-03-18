@@ -28,23 +28,22 @@ interface PipeState {
 /** Maximum buffered bytes per pipe before writes are rejected (EAGAIN). */
 export const MAX_PIPE_BUFFER_BYTES = 65_536; // 64 KB — matches Linux default
 
-let nextPipeId = 1;
-let nextDescId = 100_000; // High range to avoid FD table collisions
-
 export class PipeManager {
 	private pipes: Map<number, PipeState> = new Map();
 	/** Map description ID → pipe ID for routing reads/writes */
 	private descToPipe: Map<number, { pipeId: number; end: "read" | "write" }> = new Map();
+	private nextPipeId = 1;
+	private nextDescId = 100_000; // High range to avoid FD table collisions
 
 	/**
 	 * Create a pipe. Returns two FileDescriptions:
 	 * one for reading and one for writing.
 	 */
 	createPipe(): { read: PipeEnd; write: PipeEnd } {
-		const id = nextPipeId++;
+		const id = this.nextPipeId++;
 
 		const readDesc: FileDescription = {
-			id: nextDescId++,
+			id: this.nextDescId++,
 			path: `pipe:${id}:read`,
 			cursor: 0n,
 			flags: O_RDONLY,
@@ -52,7 +51,7 @@ export class PipeManager {
 		};
 
 		const writeDesc: FileDescription = {
-			id: nextDescId++,
+			id: this.nextDescId++,
 			path: `pipe:${id}:write`,
 			cursor: 0n,
 			flags: O_WRONLY,
@@ -86,6 +85,7 @@ export class PipeManager {
 		const state = this.pipes.get(ref.pipeId);
 		if (!state) throw new KernelError("EBADF", "pipe not found");
 		if (state.closed.write) throw new KernelError("EPIPE", "write end closed");
+		if (state.closed.read) throw new KernelError("EPIPE", "read end closed");
 
 		// If readers are waiting, deliver directly (no buffering)
 		if (state.readWaiters.length > 0) {
@@ -157,6 +157,11 @@ export class PipeManager {
 	/** Check if a description ID belongs to a pipe */
 	isPipe(descriptionId: number): boolean {
 		return this.descToPipe.has(descriptionId);
+	}
+
+	/** Get the pipe ID for a description, or undefined if not a pipe */
+	pipeIdFor(descriptionId: number): number | undefined {
+		return this.descToPipe.get(descriptionId)?.pipeId;
 	}
 
 	/**

@@ -55,8 +55,8 @@ interface PtyState {
 /** Maximum buffered bytes per PTY direction before writes are rejected (EAGAIN). */
 export const MAX_PTY_BUFFER_BYTES = 65_536; // 64 KB
 
-let nextPtyId = 0;
-let nextPtyDescId = 200_000; // High range to avoid FD/pipe ID collisions
+/** Maximum canonical-mode line buffer size (POSIX MAX_CANON). */
+export const MAX_CANON = 4096;
 
 export class PtyManager {
 	private ptys: Map<number, PtyState> = new Map();
@@ -64,6 +64,8 @@ export class PtyManager {
 	private descToPty: Map<number, { ptyId: number; end: "master" | "slave" }> = new Map();
 	/** Callback for signal delivery (pgid, signal) */
 	private onSignal: ((pgid: number, signal: number) => void) | null;
+	private nextPtyId = 0;
+	private nextPtyDescId = 200_000; // High range to avoid FD/pipe ID collisions
 
 	constructor(onSignal?: (pgid: number, signal: number) => void) {
 		this.onSignal = onSignal ?? null;
@@ -74,11 +76,11 @@ export class PtyManager {
 	 * one for the master and one for the slave.
 	 */
 	createPty(): { master: PtyEnd; slave: PtyEnd; path: string } {
-		const id = nextPtyId++;
+		const id = this.nextPtyId++;
 		const path = `/dev/pts/${id}`;
 
 		const masterDesc: FileDescription = {
-			id: nextPtyDescId++,
+			id: this.nextPtyDescId++,
 			path: `pty:${id}:master`,
 			cursor: 0n,
 			flags: O_RDWR,
@@ -86,7 +88,7 @@ export class PtyManager {
 		};
 
 		const slaveDesc: FileDescription = {
-			id: nextPtyDescId++,
+			id: this.nextPtyDescId++,
 			path: path,
 			cursor: 0n,
 			flags: O_RDWR,
@@ -142,7 +144,7 @@ export class PtyManager {
 			if (state.closed.slave) throw new KernelError("EIO", "slave closed");
 			if (state.closed.master) throw new KernelError("EIO", "master closed");
 
-			const processed = this.processOutput(data);
+			const processed = this.processOutput(state, data);
 			if (state.outputWaiters.length > 0) {
 				const waiter = state.outputWaiters.shift()!;
 				waiter(processed);
@@ -217,6 +219,11 @@ export class PtyManager {
 				waiter(null);
 			}
 			state.inputWaiters.length = 0;
+			// Resolve any pending master reads (same-end close → EOF)
+			for (const waiter of state.outputWaiters) {
+				waiter(null);
+			}
+			state.outputWaiters.length = 0;
 		} else {
 			state.closed.slave = true;
 			// Notify blocked master readers with null (EIO / hangup)
@@ -224,6 +231,11 @@ export class PtyManager {
 				waiter(null);
 			}
 			state.outputWaiters.length = 0;
+			// Resolve any pending slave reads (same-end close → EOF)
+			for (const waiter of state.inputWaiters) {
+				waiter(null);
+			}
+			state.inputWaiters.length = 0;
 		}
 
 		this.descToPty.delete(descriptionId);
@@ -284,6 +296,8 @@ export class PtyManager {
 		const state = this.ptys.get(ptyId);
 		if (!state) throw new KernelError("EBADF", "PTY not found");
 		return {
+			opost: state.termios.opost,
+			onlcr: state.termios.onlcr,
 			icanon: state.termios.icanon,
 			echo: state.termios.echo,
 			isig: state.termios.isig,
@@ -297,6 +311,8 @@ export class PtyManager {
 		const state = this.ptys.get(ptyId);
 		if (!state) throw new KernelError("EBADF", "PTY not found");
 
+		if (termios.opost !== undefined) state.termios.opost = termios.opost;
+		if (termios.onlcr !== undefined) state.termios.onlcr = termios.onlcr;
 		if (termios.icanon !== undefined) state.termios.icanon = termios.icanon;
 		if (termios.echo !== undefined) state.termios.echo = termios.echo;
 		if (termios.isig !== undefined) state.termios.isig = termios.isig;
@@ -322,8 +338,11 @@ export class PtyManager {
 	// Output processing (ONLCR)
 	// -------------------------------------------------------------------
 
-	/** Convert lone \n to \r\n in output data (POSIX ONLCR). */
-	private processOutput(data: Uint8Array): Uint8Array {
+	/** Convert lone \n to \r\n in output data (POSIX ONLCR). Skipped when opost/onlcr disabled. */
+	private processOutput(state: PtyState, data: Uint8Array): Uint8Array {
+		// Skip output processing when opost or onlcr is off
+		if (!state.termios.opost || !state.termios.onlcr) return data;
+
 		// Fast path: no newlines → return as-is
 		if (!data.includes(0x0a)) return data;
 
@@ -371,7 +390,13 @@ export class PtyManager {
 				const signal = this.signalForByte(state, byte);
 				if (signal !== null) {
 					if (termios.icanon) state.lineBuffer.length = 0;
-					if (state.foregroundPgid > 0) this.onSignal?.(state.foregroundPgid, signal);
+					if (state.foregroundPgid > 0) {
+						try {
+							this.onSignal?.(state.foregroundPgid, signal);
+						} catch {
+							// Signal delivery failure must not break line discipline
+						}
+					}
 					continue;
 				}
 			}
@@ -408,7 +433,8 @@ export class PtyManager {
 					continue;
 				}
 
-				// Regular char: buffer
+				// Regular char: buffer (capped at MAX_CANON to prevent unbounded growth)
+				if (state.lineBuffer.length >= MAX_CANON) continue;
 				state.lineBuffer.push(byte);
 				if (termios.echo) this.echoOutput(state, new Uint8Array([byte]));
 			} else {
@@ -435,16 +461,16 @@ export class PtyManager {
 		}
 	}
 
-	/** Echo data to output (master reads it back for display). */
+	/** Echo data to output (master reads it back for display). Throws EAGAIN when buffer is full. */
 	private echoOutput(state: PtyState, data: Uint8Array): void {
 		if (state.outputWaiters.length > 0) {
 			const waiter = state.outputWaiters.shift()!;
 			waiter(data);
 		} else {
-			// Best-effort: drop echo if output buffer is full
-			if (this.bufferBytes(state.outputBuffer) + data.length <= MAX_PTY_BUFFER_BYTES) {
-				state.outputBuffer.push(new Uint8Array(data));
+			if (this.bufferBytes(state.outputBuffer) + data.length > MAX_PTY_BUFFER_BYTES) {
+				throw new KernelError("EAGAIN", "PTY output buffer full (echo backpressure)");
 			}
+			state.outputBuffer.push(new Uint8Array(data));
 		}
 	}
 

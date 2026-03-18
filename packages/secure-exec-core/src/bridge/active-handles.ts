@@ -11,6 +11,9 @@ import { exposeCustomGlobal } from "../shared/global-exposure.js";
  * See: docs-internal/node/ACTIVE_HANDLES.md
  */
 
+// _maxHandles is injected by the host when resourceBudgets.maxHandles is set.
+declare const _maxHandles: number | undefined;
+
 // Map of active handles: id -> description (for debugging)
 const _activeHandles = new Map<string, string>();
 
@@ -19,10 +22,15 @@ let _waitResolvers: Array<() => void> = [];
 
 /**
  * Register an active handle that keeps the sandbox alive.
+ * Throws if the handle cap (_maxHandles) would be exceeded.
  * @param id Unique identifier for the handle
  * @param description Human-readable description for debugging
  */
 export function _registerHandle(id: string, description: string): void {
+	// Enforce handle cap (skip check for re-registration of existing handle)
+	if (typeof _maxHandles !== "undefined" && !_activeHandles.has(id) && _activeHandles.size >= _maxHandles) {
+		throw new Error("ERR_RESOURCE_BUDGET_EXCEEDED: maximum active handles exceeded");
+	}
 	_activeHandles.set(id, description);
 }
 

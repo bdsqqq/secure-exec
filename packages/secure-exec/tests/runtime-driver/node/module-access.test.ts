@@ -323,6 +323,54 @@ describe("moduleAccess overlay", () => {
 		expect(result.errorMessage).toContain("ERR_MODULE_ACCESS_NATIVE_ADDON");
 	});
 
+	it("module access out-of-scope error does not leak host paths", async () => {
+		const projectDir = await createTempProject();
+		tempDirs.push(projectDir);
+
+		// Create a package with a nested symlink pointing outside allowed roots.
+		// collectOverlayAllowedRoots only scans top-level symlinks, so a nested
+		// symlink's target won't be in the allowed list.
+		await writePackage(projectDir, "leak-probe", {
+			files: {
+				"index.js": "module.exports = {};",
+			},
+		});
+		const nestedDir = path.join(
+			projectDir,
+			"node_modules",
+			"leak-probe",
+			"nested",
+		);
+		await mkdir(nestedDir, { recursive: true });
+		// Symlink to a directory that is not in allowed roots
+		await symlink("/usr", path.join(nestedDir, "escape"), "dir");
+
+		const driver = createModuleAccessDriver({
+			moduleAccess: {
+				cwd: projectDir,
+			},
+		});
+		proc = createTestNodeRuntime({ driver });
+
+		const result = await proc.exec(
+			`
+      const fs = require("fs");
+      try {
+        fs.readFileSync("/root/node_modules/leak-probe/nested/escape/share", "utf8");
+        console.log("unexpected");
+      } catch (error) {
+        console.log("ERROR:" + error.message);
+      }
+    `,
+			{ cwd: "/root", filePath: "/root/index.js" },
+		);
+		// Error message must not contain the host canonical path or hostNodeModulesRoot
+		const output = result.errorMessage ?? "";
+		expect(output).not.toContain(projectDir);
+		expect(output).not.toContain("/usr");
+		expect(output).not.toContain("node_modules");
+	});
+
 	it("keeps non-overlay host paths denied when overlay reads are allowed", async () => {
 		const projectDir = await createTempProject();
 		tempDirs.push(projectDir);

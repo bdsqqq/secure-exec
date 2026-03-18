@@ -45,6 +45,28 @@ import {
 } from "./isolate-bootstrap.js";
 import type { DriverDeps } from "./isolate-bootstrap.js";
 
+// Env vars that could hijack child processes (library injection, node flags)
+const DANGEROUS_ENV_KEYS = new Set([
+	"LD_PRELOAD",
+	"LD_LIBRARY_PATH",
+	"NODE_OPTIONS",
+	"DYLD_INSERT_LIBRARIES",
+]);
+
+/** Strip env vars that allow library injection or node flag smuggling. */
+function stripDangerousEnv(
+	env: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+	if (!env) return env;
+	const result: Record<string, string> = {};
+	for (const [key, value] of Object.entries(env)) {
+		if (!DANGEROUS_ENV_KEYS.has(key)) {
+			result[key] = value;
+		}
+	}
+	return result;
+}
+
 type BridgeDeps = Pick<
 	DriverDeps,
 	| "filesystem"
@@ -57,9 +79,12 @@ type BridgeDeps = Pick<
 	| "maxOutputBytes"
 	| "maxTimers"
 	| "maxChildProcesses"
+	| "maxHandles"
 	| "bridgeBase64TransferLimitBytes"
 	| "isolateJsonPayloadLimitBytes"
 	| "activeHttpServerIds"
+	| "activeChildProcesses"
+	| "activeHostTimers"
 	| "resolutionCache"
 >;
 
@@ -88,10 +113,10 @@ export async function setupConsole(
 ): Promise<void> {
 	const logRef = new ivm.Reference((msg: string) => {
 		const str = String(msg);
-		// Enforce output byte budget — silently drop writes that exceed the limit
+		// Enforce output byte budget — reject messages that would exceed the limit
 		if (deps.maxOutputBytes !== undefined) {
 			const bytes = Buffer.byteLength(str, "utf8");
-			if (deps.budgetState.outputBytes >= deps.maxOutputBytes) return;
+			if (deps.budgetState.outputBytes + bytes > deps.maxOutputBytes) return;
 			deps.budgetState.outputBytes += bytes;
 		}
 		emitConsoleEvent(onStdio, { channel: "stdout", message: str });
@@ -100,7 +125,7 @@ export async function setupConsole(
 		const str = String(msg);
 		if (deps.maxOutputBytes !== undefined) {
 			const bytes = Buffer.byteLength(str, "utf8");
-			if (deps.budgetState.outputBytes >= deps.maxOutputBytes) return;
+			if (deps.budgetState.outputBytes + bytes > deps.maxOutputBytes) return;
 			deps.budgetState.outputBytes += bytes;
 		}
 		emitConsoleEvent(onStdio, { channel: "stderr", message: str });
@@ -202,7 +227,11 @@ export async function setupRequire(
 	const scheduleTimerRef = new ivm.Reference((delayMs: number) => {
 		checkBridgeBudget(deps);
 		return new Promise<void>((resolve) => {
-			globalThis.setTimeout(resolve, delayMs);
+			const id = globalThis.setTimeout(() => {
+				deps.activeHostTimers.delete(id);
+				resolve();
+			}, delayMs);
+			deps.activeHostTimers.add(id);
 		});
 	});
 	await jail.set(HOST_BRIDGE_GLOBAL_KEYS.scheduleTimer, scheduleTimerRef);
@@ -212,8 +241,19 @@ export async function setupRequire(
 		await jail.set("_maxTimers", deps.maxTimers, { copy: true });
 	}
 
+	// Inject maxHandles limit for bridge-side active handle cap
+	if (deps.maxHandles !== undefined) {
+		await jail.set("_maxHandles", deps.maxHandles, { copy: true });
+	}
+
 	// Set up host crypto references for secure randomness.
+	// Cap matches Web Crypto API spec (65536 bytes) to prevent host OOM.
 	const cryptoRandomFillRef = new ivm.Reference((byteLength: number) => {
+		if (byteLength > 65536) {
+			throw new RangeError(
+				`The ArrayBufferView's byte length (${byteLength}) exceeds the number of bytes of entropy available via this API (65536)`,
+			);
+		}
 		const buffer = Buffer.allocUnsafe(byteLength);
 		randomFillSync(buffer);
 		return buffer.toString("base64");
@@ -228,11 +268,18 @@ export async function setupRequire(
 	{
 		const fs = deps.filesystem;
 		const base64Limit = deps.bridgeBase64TransferLimitBytes;
+		const fsJsonPayloadLimit = deps.isolateJsonPayloadLimitBytes;
 
 		// Create individual References for each fs operation
 		const readFileRef = new ivm.Reference(async (path: string) => {
 			checkBridgeBudget(deps);
-			return fs.readTextFile(path);
+			const text = await fs.readTextFile(path);
+			assertTextPayloadSize(
+				`fs.readFile ${path}`,
+				text,
+				fsJsonPayloadLimit,
+			);
+			return text;
 		});
 		const writeFileRef = new ivm.Reference(
 			async (path: string, content: string) => {
@@ -268,8 +315,10 @@ export async function setupRequire(
 		const readDirRef = new ivm.Reference(async (path: string) => {
 			checkBridgeBudget(deps);
 			const entries = await fs.readDirWithTypes(path);
-			// Return as JSON string for transfer
-			return JSON.stringify(entries);
+			// Validate payload size before transfer
+			const json = JSON.stringify(entries);
+			assertTextPayloadSize(`fs.readDir ${path}`, json, fsJsonPayloadLimit);
+			return json;
 		});
 		const mkdirRef = new ivm.Reference(async (path: string) => {
 			checkBridgeBudget(deps);
@@ -391,7 +440,7 @@ export async function setupRequire(
 	{
 		const executor = deps.commandExecutor ?? createCommandExecutorStub();
 		let nextSessionId = 1;
-		const sessions = new Map<number, SpawnedProcess>();
+		const sessions = deps.activeChildProcesses;
 		const jsonPayloadLimit = deps.isolateJsonPayloadLimitBytes;
 
 		// Lazy-initialized dispatcher reference from isolate
@@ -442,9 +491,13 @@ export async function setupRequire(
 				}>("child_process.spawn options", optionsJson, jsonPayloadLimit);
 				const sessionId = nextSessionId++;
 
+				// Use init-time filtered env when no explicit env — sandbox
+				// process.env mutations must not propagate to children
+				const childEnv = stripDangerousEnv(options.env ?? deps.processConfig.env);
+
 				const proc = executor.spawn(command, args, {
 					cwd: options.cwd,
-					env: options.env,
+					env: childEnv,
 					onStdout: (data) => {
 						getDispatchRef().applySync(
 							undefined,
@@ -514,17 +567,21 @@ export async function setupRequire(
 					maxBuffer?: number;
 				}>("child_process.spawnSync options", optionsJson, jsonPayloadLimit);
 
-				// Collect stdout/stderr with optional maxBuffer enforcement
-				const maxBuffer = options.maxBuffer;
+				// Collect stdout/stderr with maxBuffer enforcement (default 1MB)
+				const maxBuffer = options.maxBuffer ?? 1024 * 1024;
 				const stdoutChunks: Uint8Array[] = [];
 				const stderrChunks: Uint8Array[] = [];
 				let stdoutBytes = 0;
 				let stderrBytes = 0;
 				let maxBufferExceeded = false;
 
+				// Use init-time filtered env when no explicit env — sandbox
+				// process.env mutations must not propagate to children
+				const childEnv = stripDangerousEnv(options.env ?? deps.processConfig.env);
+
 				const proc = executor.spawn(command, args, {
 					cwd: options.cwd,
-					env: options.env,
+					env: childEnv,
 					onStdout: (data) => {
 						if (maxBufferExceeded) return;
 						stdoutBytes += data.length;
@@ -582,7 +639,11 @@ export async function setupRequire(
 				}>("network.fetch options", optionsJson, jsonPayloadLimit);
 				return adapter
 					.fetch(url, options)
-					.then((result) => JSON.stringify(result));
+					.then((result) => {
+						const json = JSON.stringify(result);
+						assertTextPayloadSize("network.fetch response", json, jsonPayloadLimit);
+						return json;
+					});
 			},
 		);
 
@@ -606,9 +667,16 @@ export async function setupRequire(
 				}>("network.httpRequest options", optionsJson, jsonPayloadLimit);
 				return adapter
 					.httpRequest(url, options)
-					.then((result) => JSON.stringify(result));
+					.then((result) => {
+						const json = JSON.stringify(result);
+						assertTextPayloadSize("network.httpRequest response", json, jsonPayloadLimit);
+						return json;
+					});
 			},
 		);
+
+		// Track server IDs created in this context for ownership validation
+		const ownedHttpServers = new Set<number>();
 
 		// Lazy dispatcher reference for in-sandbox HTTP server callbacks
 		let httpServerDispatchRef: ivm.Reference<
@@ -665,6 +733,7 @@ export async function setupRequire(
 							}>("network.httpServer response", String(responseJson), jsonPayloadLimit);
 						},
 					});
+					ownedHttpServers.add(options.serverId);
 					deps.activeHttpServerIds.add(options.serverId);
 					return JSON.stringify(result);
 				})();
@@ -673,14 +742,22 @@ export async function setupRequire(
 
 		// Reference for closing an in-sandbox HTTP server
 		const networkHttpServerCloseRef = new ivm.Reference(
-			async (serverId: number): Promise<void> => {
+			(serverId: number): Promise<void> => {
 				if (!adapter.httpServerClose) {
 					throw new Error(
 						"http.createServer close requires NetworkAdapter.httpServerClose support",
 					);
 				}
-				await adapter.httpServerClose(serverId);
-				deps.activeHttpServerIds.delete(serverId);
+				// Ownership check: only allow closing servers created in this context
+				if (!ownedHttpServers.has(serverId)) {
+					throw new Error(
+						`Cannot close server ${serverId}: not owned by this execution context`,
+					);
+				}
+				return adapter.httpServerClose(serverId).then(() => {
+					ownedHttpServers.delete(serverId);
+					deps.activeHttpServerIds.delete(serverId);
+				});
 			},
 		);
 

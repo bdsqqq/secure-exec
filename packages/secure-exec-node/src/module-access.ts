@@ -252,13 +252,13 @@ export class ModuleAccessFileSystem implements VirtualFileSystem {
 			) {
 				throw createModuleAccessError(
 					MODULE_ACCESS_OUT_OF_SCOPE,
-					`resolved path '${canonical}' escapes overlay roots rooted at '${this.hostNodeModulesRoot}'`,
+					`resolved path for '${virtualPath}' escapes allowed overlay roots`,
 				);
 			}
 			if (isNativeAddonPath(canonical)) {
 				throw createModuleAccessError(
 					MODULE_ACCESS_NATIVE_ADDON,
-					`native addon '${canonical}' is not supported for module overlay`,
+					`native addon '${virtualPath}' is not supported for module overlay`,
 				);
 			}
 			return canonical;

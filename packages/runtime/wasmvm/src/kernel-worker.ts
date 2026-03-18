@@ -22,6 +22,7 @@ import {
   FILETYPE_DIRECTORY,
   ERRNO_SUCCESS,
   ERRNO_EINVAL,
+  ERRNO_EBADF,
 } from './wasi-constants.ts';
 import { VfsError } from './wasi-types.ts';
 import type { WasiVFS, WasiInode, VfsStat, VfsSnapshotEntry } from './wasi-types.ts';
@@ -83,11 +84,40 @@ function rpcCall(call: string, args: Record<string, unknown>): {
 // Local FD table — mirrors kernel state for rights checking / routing
 // -------------------------------------------------------------------------
 
-const fdTable = new FDTable();
-
 // Local FD → kernel FD mapping: the local FD table has a preopen at FD 3
 // that the kernel doesn't know about, so opened-file FDs diverge.
 const localToKernelFd = new Map<number, number>();
+
+// Mapping-aware FDTable: updates localToKernelFd on renumber so pipe/redirect
+// FDs remain reachable after WASI fd_renumber moves them to stdio positions.
+// Also closes the kernel FD of the overwritten target (POSIX renumber semantics).
+class KernelFDTable extends FDTable {
+  renumber(oldFd: number, newFd: number): number {
+    if (oldFd === newFd) {
+      return this.has(oldFd) ? ERRNO_SUCCESS : ERRNO_EBADF;
+    }
+
+    // Capture mappings before super changes entries
+    const sourceMapping = localToKernelFd.get(oldFd);
+    const targetKernelFd = localToKernelFd.get(newFd) ?? newFd;
+
+    const result = super.renumber(oldFd, newFd);
+    if (result === ERRNO_SUCCESS) {
+      // Close kernel FD of overwritten target (mirrors POSIX close-on-renumber)
+      rpcCall('fdClose', { fd: targetKernelFd });
+
+      // Move source mapping to target position
+      localToKernelFd.delete(oldFd);
+      localToKernelFd.delete(newFd);
+      if (sourceMapping !== undefined) {
+        localToKernelFd.set(newFd, sourceMapping);
+      }
+    }
+    return result;
+  }
+}
+
+const fdTable = new KernelFDTable();
 
 // -------------------------------------------------------------------------
 // Kernel-backed WasiFileIO
@@ -400,19 +430,36 @@ function createHostProcessImports(getMemory: () => WebAssembly.Memory | null) {
         ? decoder.decode(bytes.slice(cwd_ptr, cwd_ptr + cwd_len))
         : init.cwd;
 
+      // Convert local FDs to kernel FDs for pipe wiring
+      const stdinFd = stdin_fd === -1 ? undefined : (localToKernelFd.get(stdin_fd) ?? stdin_fd);
+      const stdoutFd = stdout_fd === -1 ? undefined : (localToKernelFd.get(stdout_fd) ?? stdout_fd);
+      const stderrFd = stderr_fd === -1 ? undefined : (localToKernelFd.get(stderr_fd) ?? stderr_fd);
+
       // Route through kernel with FD overrides for pipe wiring
       const res = rpcCall('spawn', {
         command,
         spawnArgs: args,
         env,
         cwd,
-        stdinFd: stdin_fd,
-        stdoutFd: stdout_fd,
-        stderrFd: stderr_fd,
+        stdinFd,
+        stdoutFd,
+        stderrFd,
       });
 
       if (res.errno !== 0) return res.errno;
       new DataView(mem.buffer).setUint32(ret_pid_ptr, res.intResult, true);
+
+      // Close pipe FDs used as stdio overrides in the parent (POSIX close-after-fork)
+      // Without this, the parent retains a reference to the pipe ends, preventing EOF.
+      for (const localFd of [stdin_fd, stdout_fd, stderr_fd]) {
+        if (localFd >= 0 && localToKernelFd.has(localFd)) {
+          const kFd = localToKernelFd.get(localFd)!;
+          fdTable.close(localFd);
+          localToKernelFd.delete(localFd);
+          rpcCall('fdClose', { fd: kFd });
+        }
+      }
+
       return ERRNO_SUCCESS;
     },
 
@@ -440,6 +487,7 @@ function createHostProcessImports(getMemory: () => WebAssembly.Memory | null) {
     /**
      * fd_pipe(ret_read_fd, ret_write_fd) -> errno
      * Creates a kernel pipe and installs both ends in this process's FD table.
+     * Registers pipe FDs in the local FDTable so WASI fd_renumber can find them.
      */
     fd_pipe(ret_read_fd_ptr: number, ret_write_fd_ptr: number): number {
       const mem = getMemory();
@@ -448,24 +496,49 @@ function createHostProcessImports(getMemory: () => WebAssembly.Memory | null) {
       const res = rpcCall('pipe', {});
       if (res.errno !== 0) return res.errno;
 
-      const view = new DataView(mem.buffer);
       // Read/write FDs packed in intResult: read in low 16 bits, write in high 16 bits
-      const readFd = res.intResult & 0xFFFF;
-      const writeFd = (res.intResult >>> 16) & 0xFFFF;
-      view.setUint32(ret_read_fd_ptr, readFd, true);
-      view.setUint32(ret_write_fd_ptr, writeFd, true);
+      const kernelReadFd = res.intResult & 0xFFFF;
+      const kernelWriteFd = (res.intResult >>> 16) & 0xFFFF;
+
+      // Register pipe FDs in local table as vfsFile — fd_read/fd_write for
+      // vfsFile routes through kernel FileIO bridge, which detects pipe FDs
+      const localReadFd = fdTable.open(
+        { type: 'vfsFile', ino: 0, path: '' },
+        { filetype: FILETYPE_CHARACTER_DEVICE },
+      );
+      const localWriteFd = fdTable.open(
+        { type: 'vfsFile', ino: 0, path: '' },
+        { filetype: FILETYPE_CHARACTER_DEVICE },
+      );
+      localToKernelFd.set(localReadFd, kernelReadFd);
+      localToKernelFd.set(localWriteFd, kernelWriteFd);
+
+      const view = new DataView(mem.buffer);
+      view.setUint32(ret_read_fd_ptr, localReadFd, true);
+      view.setUint32(ret_write_fd_ptr, localWriteFd, true);
       return ERRNO_SUCCESS;
     },
 
-    /** fd_dup(fd, ret_new_fd) -> errno */
+    /**
+     * fd_dup(fd, ret_new_fd) -> errno
+     * Converts local FD to kernel FD, dups in kernel, registers new local FD.
+     */
     fd_dup(fd: number, ret_new_fd_ptr: number): number {
       const mem = getMemory();
       if (!mem) return ERRNO_EINVAL;
 
-      const res = rpcCall('fdDup', { fd });
+      const kFd = localToKernelFd.get(fd) ?? fd;
+      const res = rpcCall('fdDup', { fd: kFd });
       if (res.errno !== 0) return res.errno;
 
-      new DataView(mem.buffer).setUint32(ret_new_fd_ptr, res.intResult, true);
+      const newKernelFd = res.intResult;
+      const newLocalFd = fdTable.open(
+        { type: 'vfsFile', ino: 0, path: '' },
+        { filetype: FILETYPE_CHARACTER_DEVICE },
+      );
+      localToKernelFd.set(newLocalFd, newKernelFd);
+
+      new DataView(mem.buffer).setUint32(ret_new_fd_ptr, newLocalFd, true);
       return ERRNO_SUCCESS;
     },
 

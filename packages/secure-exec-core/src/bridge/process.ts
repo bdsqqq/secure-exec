@@ -14,6 +14,7 @@ import { Buffer as BufferPolyfill } from "buffer";
 import type {
 	CryptoRandomFillBridgeRef,
 	CryptoRandomUuidBridgeRef,
+	FsFacadeBridge,
 	ProcessErrorBridgeRef,
 	ProcessLogBridgeRef,
 	ScheduleTimerBridgeRef,
@@ -53,6 +54,8 @@ declare const _error: ProcessErrorBridgeRef;
 declare const _scheduleTimer: ScheduleTimerBridgeRef | undefined;
 declare const _cryptoRandomFill: CryptoRandomFillBridgeRef | undefined;
 declare const _cryptoRandomUUID: CryptoRandomUuidBridgeRef | undefined;
+// Filesystem bridge for chdir validation
+declare const _fs: FsFacadeBridge;
 // Timer budget injected by the host when resourceBudgets.maxTimers is set
 declare const _maxTimers: number | undefined;
 
@@ -163,10 +166,30 @@ export class ProcessExitError extends Error {
 // Make available globally
 exposeCustomGlobal("ProcessExitError", ProcessExitError);
 
+// Signal name → number mapping (POSIX standard)
+const _signalNumbers: Record<string, number> = {
+  SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6,
+  SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12,
+  SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGCHLD: 17, SIGCONT: 18,
+  SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23,
+  SIGXCPU: 24, SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28,
+  SIGIO: 29, SIGPWR: 30, SIGSYS: 31,
+};
+
+function _resolveSignal(signal?: string | number): number {
+  if (signal === undefined || signal === null) return 15; // default SIGTERM
+  if (typeof signal === "number") return signal;
+  const num = _signalNumbers[signal];
+  if (num !== undefined) return num;
+  throw new Error("Unknown signal: " + signal);
+}
+
 // EventEmitter implementation for process
 type EventListener = (...args: unknown[]) => void;
 const _processListeners: Record<string, EventListener[]> = {};
 const _processOnceListeners: Record<string, EventListener[]> = {};
+let _processMaxListeners = 10;
+const _processMaxListenersWarned = new Set<string>();
 
 function _addListener(
   event: string,
@@ -178,6 +201,20 @@ function _addListener(
     target[event] = [];
   }
   target[event].push(listener);
+
+  // Warn when exceeding maxListeners (Node.js behavior: warn, don't crash)
+  if (_processMaxListeners > 0 && !_processMaxListenersWarned.has(event)) {
+    const total = (_processListeners[event]?.length ?? 0) + (_processOnceListeners[event]?.length ?? 0);
+    if (total > _processMaxListeners) {
+      _processMaxListenersWarned.add(event);
+      const warning = `MaxListenersExceededWarning: Possible EventEmitter memory leak detected. ${total} ${event} listeners added to [process]. MaxListeners is ${_processMaxListeners}. Use emitter.setMaxListeners() to increase limit`;
+      // Use console.error to emit warning without recursion risk
+      if (typeof _error !== "undefined") {
+        _error.applySync(undefined, [warning]);
+      }
+    }
+  }
+
   return process;
 }
 
@@ -552,6 +589,27 @@ const process: Record<string, unknown> & {
   },
 
   chdir(dir: string): void {
+    // Validate directory exists in VFS before setting cwd
+    let statJson: string;
+    try {
+      statJson = _fs.stat.applySyncPromise(undefined, [dir]);
+    } catch {
+      const err = new Error(`ENOENT: no such file or directory, chdir '${dir}'`) as Error & { code: string; errno: number; syscall: string; path: string };
+      err.code = "ENOENT";
+      err.errno = -2;
+      err.syscall = "chdir";
+      err.path = dir;
+      throw err;
+    }
+    const parsed = JSON.parse(statJson);
+    if (!parsed.isDirectory) {
+      const err = new Error(`ENOTDIR: not a directory, chdir '${dir}'`) as Error & { code: string; errno: number; syscall: string; path: string };
+      err.code = "ENOTDIR";
+      err.errno = -20;
+      err.syscall = "chdir";
+      err.path = dir;
+      throw err;
+    }
     _cwd = dir;
   },
 
@@ -682,11 +740,10 @@ const process: Record<string, unknown> & {
       err.syscall = "kill";
       throw err;
     }
-    // Self-kill - treat as exit
-    if (!signal || signal === "SIGTERM" || signal === 15) {
-      (process as unknown as { exit: (code: number) => never }).exit(143);
-    }
-    return true;
+    // Resolve signal name to number (default SIGTERM)
+    const sigNum = _resolveSignal(signal);
+    // Self-kill - exit with 128 + signal number (POSIX convention)
+    return (process as unknown as { exit: (code: number) => never }).exit(128 + sigNum);
   },
 
   // EventEmitter methods
@@ -765,11 +822,12 @@ const process: Record<string, unknown> & {
     ];
   },
 
-  setMaxListeners() {
+  setMaxListeners(n: number) {
+    _processMaxListeners = n;
     return process;
   },
   getMaxListeners(): number {
-    return 10;
+    return _processMaxListeners;
   },
   rawListeners(event: string): EventListener[] {
     return (process as unknown as { listeners: (event: string) => EventListener[] }).listeners(event);
@@ -792,34 +850,12 @@ const process: Record<string, unknown> & {
     _emit("warning", { message: msg, name: "Warning" });
   },
 
-  binding(name: string): Record<string, unknown> {
-    // Return stub implementations for common bindings
-    const stubs: Record<string, Record<string, unknown>> = {
-      fs: {},
-      buffer: {
-        Buffer: (globalThis as Record<string, unknown>).Buffer,
-        constants: BUFFER_CONSTANTS,
-        kMaxLength: BUFFER_MAX_LENGTH,
-        kStringMaxLength: BUFFER_MAX_STRING_LENGTH,
-      },
-      process_wrap: {},
-      natives: {},
-      config: {},
-      uv: { UV_UDP_REUSEADDR: 4 },
-      constants: {
-        MAX_LENGTH: BUFFER_MAX_LENGTH,
-        MAX_STRING_LENGTH: BUFFER_MAX_STRING_LENGTH,
-        buffer: BUFFER_CONSTANTS,
-      },
-      crypto: {},
-      string_decoder: {},
-      os: {},
-    };
-    return stubs[name] || {};
+  binding(_name: string): never {
+    throw new Error("process.binding is not supported in sandbox");
   },
 
-  _linkedBinding(name: string): Record<string, unknown> {
-    return (process as unknown as { binding: (name: string) => Record<string, unknown> }).binding(name);
+  _linkedBinding(_name: string): never {
+    throw new Error("process._linkedBinding is not supported in sandbox");
   },
 
   dlopen(): void {
@@ -990,7 +1026,8 @@ export function setInterval(
   const handle = new TimerHandle(id);
   _intervals.set(id, handle);
 
-  const actualDelay = delay ?? 0;
+  // Enforce minimum 1ms delay to prevent microtask CPU spin
+  const actualDelay = Math.max(1, delay ?? 0);
 
   // Schedule interval execution
   const scheduleNext = () => {
@@ -1075,6 +1112,12 @@ export const cryptoPolyfill = {
   getRandomValues<T extends ArrayBufferView>(array: T): T {
     if (typeof _cryptoRandomFill === "undefined") {
       throwUnsupportedCryptoApi("getRandomValues");
+    }
+    // Web Crypto API spec caps getRandomValues at 65536 bytes.
+    if (array.byteLength > 65536) {
+      throw new RangeError(
+        `The ArrayBufferView's byte length (${array.byteLength}) exceeds the number of bytes of entropy available via this API (65536)`
+      );
     }
     const bytes = new Uint8Array(
       array.buffer,

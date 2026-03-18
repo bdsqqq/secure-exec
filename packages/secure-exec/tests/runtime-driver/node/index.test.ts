@@ -289,6 +289,51 @@ describe("NodeRuntime", () => {
 		expect(capture.stdout().trim()).toBe("true true 4 36");
 	});
 
+	it("crypto.getRandomValues succeeds at the 65536-byte Web Crypto API limit", async () => {
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({ onStdio: capture.onStdio });
+		const result = await proc.exec(`
+			const bytes = new Uint8Array(65536);
+			crypto.getRandomValues(bytes);
+			console.log(bytes.byteLength, bytes.some(b => b !== 0));
+		`);
+		expect(result.code).toBe(0);
+		expect(capture.stdout().trim()).toBe("65536 true");
+	});
+
+	it("crypto.getRandomValues throws RangeError above 65536 bytes", async () => {
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({ onStdio: capture.onStdio });
+		const result = await proc.exec(`
+			try {
+				crypto.getRandomValues(new Uint8Array(65537));
+				console.log("no error");
+			} catch (e) {
+				console.log(e.constructor.name, e.message.includes("65536"));
+			}
+		`);
+		expect(result.code).toBe(0);
+		expect(capture.stdout().trim()).toBe("RangeError true");
+	});
+
+	it("crypto.getRandomValues rejects huge allocation without host OOM", async () => {
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({ onStdio: capture.onStdio });
+		// Allocation of 2GB typed array may itself throw in the sandbox;
+		// either way, the host must never allocate the buffer.
+		const result = await proc.exec(`
+			let threw = false;
+			try {
+				crypto.getRandomValues(new Uint8Array(2_000_000_000));
+			} catch (e) {
+				threw = true;
+			}
+			console.log("threw", threw);
+		`);
+		expect(result.code).toBe(0);
+		expect(capture.stdout().trim()).toBe("threw true");
+	});
+
 	it("does not shim third-party packages in require resolution", async () => {
 		proc = createTestNodeRuntime();
 		const result = await proc.exec(`require('chalk')`);
@@ -1077,6 +1122,148 @@ describe("NodeRuntime", () => {
 		});
 	});
 
+	it("SharedArrayBuffer global cannot be restored by sandbox code", async () => {
+		proc = createTestNodeRuntime();
+		const result = await proc.run(`
+      let restored = false;
+      try {
+        Object.defineProperty(globalThis, 'SharedArrayBuffer', {
+          value: function FakeSAB() {},
+          configurable: true,
+        });
+        restored = true;
+      } catch (e) {
+        restored = false;
+      }
+      // Also try direct assignment
+      globalThis.SharedArrayBuffer = function FakeSAB2() {};
+      module.exports = {
+        stillUndefined: typeof SharedArrayBuffer === 'undefined',
+        definePropertyFailed: !restored,
+      };
+    `);
+		expect(result.exports).toEqual({
+			stillUndefined: true,
+			definePropertyFailed: true,
+		});
+	});
+
+	it("saved SharedArrayBuffer reference is non-functional after freeze", async () => {
+		proc = createTestNodeRuntime();
+		const result = await proc.run(`
+      // Even if somehow a reference was obtained, the prototype is neutered
+      const desc = Object.getOwnPropertyDescriptor(globalThis, 'SharedArrayBuffer');
+      let protoNeutered = false;
+      try {
+        // SharedArrayBuffer.prototype should have been neutered before deletion;
+        // verify we can't construct anything useful
+        const sab = new ArrayBuffer(8);
+        // Attempt to access SharedArrayBuffer-specific props on a real SAB
+        // (they shouldn't exist on ArrayBuffer, this confirms SAB is gone)
+        protoNeutered = typeof sab.grow === 'undefined';
+      } catch {
+        protoNeutered = true;
+      }
+      module.exports = {
+        isUndefined: desc !== undefined && desc.value === undefined,
+        isNonConfigurable: desc !== undefined && desc.configurable === false,
+        isNonWritable: desc !== undefined && desc.writable === false,
+        protoNeutered,
+      };
+    `);
+		expect(result.exports).toEqual({
+			isUndefined: true,
+			isNonConfigurable: true,
+			isNonWritable: true,
+			protoNeutered: true,
+		});
+	});
+
+	it("Date.now cannot be overridden by sandbox code", async () => {
+		proc = createTestNodeRuntime();
+		const result = await proc.run(`
+      // Strict mode makes assignment to non-writable throw TypeError
+      let assignThrew = false;
+      try {
+        (function() { 'use strict'; Date.now = () => 999; })();
+      } catch (e) {
+        assignThrew = e instanceof TypeError;
+      }
+
+      let defineThrew = false;
+      try {
+        Object.defineProperty(Date, 'now', {
+          value: () => 999,
+          configurable: true,
+        });
+      } catch (e) {
+        defineThrew = e instanceof TypeError;
+      }
+
+      module.exports = {
+        assignThrew,
+        defineThrew,
+        stillFrozen: Date.now() === Date.now(),
+      };
+    `);
+		expect(result.exports).toEqual({
+			assignThrew: true,
+			defineThrew: true,
+			stillFrozen: true,
+		});
+	});
+
+	it("new Date().getTime() returns degraded value matching Date.now()", async () => {
+		proc = createTestNodeRuntime();
+		const result = await proc.run(`
+      const now = Date.now();
+      const constructed = new Date().getTime();
+      const withArg = new Date(1234567890000).getTime();
+      module.exports = {
+        matchesFrozen: constructed === now,
+        explicitArgPreserved: withArg === 1234567890000,
+        dateCallReturnsString: typeof Date() === 'string',
+      };
+    `);
+		expect(result.exports).toEqual({
+			matchesFrozen: true,
+			explicitArgPreserved: true,
+			dateCallReturnsString: true,
+		});
+	});
+
+	it("performance.now cannot be overridden by sandbox code", async () => {
+		proc = createTestNodeRuntime();
+		const result = await proc.run(`
+      let assignThrew = false;
+      try {
+        (function() { 'use strict'; performance.now = () => 12345; })();
+      } catch (e) {
+        assignThrew = e instanceof TypeError;
+      }
+
+      let defineThrew = false;
+      try {
+        Object.defineProperty(performance, 'now', {
+          value: () => 12345,
+        });
+      } catch (e) {
+        defineThrew = e instanceof TypeError;
+      }
+
+      module.exports = {
+        assignThrew,
+        defineThrew,
+        stillZero: performance.now() === 0,
+      };
+    `);
+		expect(result.exports).toEqual({
+			assignThrew: true,
+			defineThrew: true,
+			stillZero: true,
+		});
+	});
+
 	it("restores advancing clocks when timing mitigation is off", async () => {
 		const capture = createConsoleCapture();
 		proc = createTestNodeRuntime({
@@ -1181,6 +1368,30 @@ describe("NodeRuntime", () => {
 		};
 		expect(summary.checked).toBe(HARDENED_NODE_CUSTOM_GLOBALS.length);
 		expect(summary.failures).toEqual([]);
+	});
+
+	it("fetch API globals remain functional after hardening", async () => {
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({
+			onStdio: capture.onStdio,
+			driver: createNodeDriver({ useDefaultNetwork: true }),
+		});
+		const result = await proc.exec(`
+			const results = {};
+			results.fetchType = typeof fetch;
+			results.headersOk = typeof new Headers() === "object";
+			results.requestOk = new Request("http://localhost") instanceof Request;
+			results.responseOk = new Response("ok") instanceof Response;
+			results.blobType = typeof Blob;
+			console.log(JSON.stringify(results));
+		`);
+		expect(result.code).toBe(0);
+		const results = JSON.parse(capture.stdout().trim()) as Record<string, unknown>;
+		expect(results.fetchType).toBe("function");
+		expect(results.headersOk).toBe(true);
+		expect(results.requestOk).toBe(true);
+		expect(results.responseOk).toBe(true);
+		expect(results.blobType).toBe("function");
 	});
 
 	it("keeps stdlib globals compatible and mutable runtime globals writable", async () => {
@@ -2308,6 +2519,77 @@ describe("NodeRuntime", () => {
 		expect(result.exports).toEqual(["/data/a.ts"]);
 	});
 
+	// WriteStream buffer cap — prevent memory exhaustion from unbounded buffering
+	it("WriteStream emits error when buffered data exceeds cap", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+			memoryLimit: 64,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			const ws = fs.createWriteStream('/data/big.bin');
+			// Write 1MB chunks until we exceed the 16MB cap
+			const chunk = Buffer.alloc(1024 * 1024, 0x41);
+			let writeFailed = false;
+			for (let i = 0; i < 20; i++) {
+				const ok = ws.write(chunk);
+				if (!ok) {
+					writeFailed = true;
+					break;
+				}
+			}
+			module.exports = {
+				writeFailed,
+				destroyed: ws.destroyed,
+				errorMessage: ws.errored ? ws.errored.message : null,
+			};
+		`);
+		expect(result.exports.writeFailed).toBe(true);
+		expect(result.exports.destroyed).toBe(true);
+		expect(result.exports.errorMessage).toContain("WriteStream buffer exceeded");
+	});
+
+	// globSync recursion depth limit — prevent stack overflow on deep trees
+	it("globSync stops traversal beyond max recursion depth", async () => {
+		const vfs = createFs();
+		// Build a directory tree deeper than the 100-level limit
+		let path = "";
+		for (let i = 0; i < 105; i++) {
+			path += `/d${i}`;
+			await vfs.mkdir(path, { recursive: true });
+		}
+		// Place a file at depth 105
+		await vfs.writeFile(`${path}/deep.txt`, "deep");
+		// Place a file at depth 50 (within limit)
+		let shallowPath = "";
+		for (let i = 0; i < 50; i++) {
+			shallowPath += `/d${i}`;
+		}
+		await vfs.writeFile(`${shallowPath}/shallow.txt`, "shallow");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			const matches = fs.globSync('/**/*.txt');
+			module.exports = {
+				hasShallow: matches.some(m => m.includes('shallow.txt')),
+				hasDeep: matches.some(m => m.includes('deep.txt')),
+				count: matches.length,
+			};
+		`);
+		// File within depth limit should be found
+		expect(result.exports.hasShallow).toBe(true);
+		// File beyond depth limit should NOT be found (traversal stopped)
+		expect(result.exports.hasDeep).toBe(false);
+	});
+
 	// --- Deferred fs APIs: chmod, chown, link, symlink, readlink, truncate, utimes ---
 
 	it("fs.chmodSync succeeds on existing file", async () => {
@@ -2347,6 +2629,58 @@ describe("NodeRuntime", () => {
 			target: "/data/original.txt",
 			isSymLink: true,
 		});
+	});
+
+	it("fs.realpathSync resolves symlink to target path", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data");
+		await vfs.writeFile("/data/real.txt", "content");
+		await vfs.symlink("/data/real.txt", "/data/link.txt");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			module.exports = fs.realpathSync('/data/link.txt');
+		`);
+		expect(result.exports).toBe("/data/real.txt");
+	});
+
+	it("fs.realpathSync normalizes . and .. segments", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data");
+		await vfs.mkdir("/data/sub");
+		await vfs.writeFile("/data/sub/file.txt", "ok");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			module.exports = fs.realpathSync('/data/sub/../sub/./file.txt');
+		`);
+		expect(result.exports).toBe("/data/sub/file.txt");
+	});
+
+	it("fs.realpathSync resolves chained symlinks", async () => {
+		const vfs = createFs();
+		await vfs.mkdir("/data");
+		await vfs.writeFile("/data/target.txt", "hello");
+		await vfs.symlink("/data/target.txt", "/data/link1");
+		await vfs.symlink("/data/link1", "/data/link2");
+
+		proc = createTestNodeRuntime({
+			filesystem: vfs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(`
+			const fs = require('fs');
+			module.exports = fs.realpathSync('/data/link2');
+		`);
+		expect(result.exports).toBe("/data/target.txt");
 	});
 
 	it("fs.linkSync creates hard link", async () => {

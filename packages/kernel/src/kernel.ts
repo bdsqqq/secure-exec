@@ -18,6 +18,7 @@ import type {
 	ProcessContext,
 	ProcessInfo,
 	FDStat,
+	FDEntry,
 	OpenShellOptions,
 	ShellHandle,
 	ConnectTerminalOptions,
@@ -58,6 +59,7 @@ class KernelImpl implements Kernel {
 	private commandRegistry = new CommandRegistry();
 	private userManager: UserManager;
 	private drivers: RuntimeDriver[] = [];
+	private driverPids = new Map<string, Set<number>>();
 	private permissions?: import("./types.js").Permissions;
 	private maxProcesses?: number;
 	private env: Record<string, string>;
@@ -80,8 +82,10 @@ class KernelImpl implements Kernel {
 		this.cwd = options.cwd ?? "/home/user";
 		this.userManager = new UserManager();
 
-		// Clean up FD table when a process exits
+		// Clean up FD table and driver PID ownership when a process exits
 		this.processTable.onProcessExit = (pid) => {
+			const entry = this.processTable.get(pid);
+			if (entry) this.driverPids.get(entry.driver)?.delete(pid);
 			this.cleanupProcessFDs(pid);
 		};
 	}
@@ -93,8 +97,13 @@ class KernelImpl implements Kernel {
 	async mount(driver: RuntimeDriver): Promise<void> {
 		this.assertNotDisposed();
 
-		// Initialize the driver with the kernel interface
-		await driver.init(this.createKernelInterface());
+		// Track PIDs owned by this driver
+		if (!this.driverPids.has(driver.name)) {
+			this.driverPids.set(driver.name, new Set());
+		}
+
+		// Initialize the driver with a scoped kernel interface
+		await driver.init(this.createKernelInterface(driver.name));
 
 		// Register commands
 		this.commandRegistry.register(driver);
@@ -161,15 +170,27 @@ class KernelImpl implements Kernel {
 		// Wait with optional timeout
 		let exitCode: number;
 		if (options?.timeout) {
-			exitCode = await Promise.race([
-				proc.wait(),
-				new Promise<number>((_, reject) =>
-					setTimeout(
-						() => reject(new KernelError("ETIMEDOUT", "exec timeout")),
-						options.timeout,
-					),
-				),
-			]);
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				exitCode = await Promise.race([
+					proc.wait().then((code) => {
+						clearTimeout(timer);
+						return code;
+					}),
+					new Promise<number>((_, reject) => {
+						timer = setTimeout(() => {
+							// Kill process and detach output callbacks
+							proc.onStdout = null;
+							proc.onStderr = null;
+							proc.kill(SIGTERM);
+							reject(new KernelError("ETIMEDOUT", "exec timeout"));
+						}, options.timeout);
+					}),
+				]);
+			} catch (err) {
+				clearTimeout(timer);
+				throw err;
+			}
 		} else {
 			exitCode = await proc.wait();
 		}
@@ -217,20 +238,47 @@ class KernelImpl implements Kernel {
 		this.processTable.setpgid(proc.pid, proc.pid);
 		this.ptyManager.setForegroundPgid(masterDescId, proc.pid);
 
+		// Close controller's copy of slave FD (child inherited its own copy via fork).
+		// Without this, slave refCount stays >0 after shell exits, preventing EOF on master.
+		const slaveEntry = controllerTable.get(slaveFd);
+		const slaveDescId = slaveEntry!.description.id;
+		controllerTable.close(slaveFd);
+		if (slaveEntry!.description.refCount <= 0) {
+			this.ptyManager.close(slaveDescId);
+		}
+
 		// Start read pump: master reads → onData callback
-		let onDataCallback: ((data: Uint8Array) => void) | null = null;
-		const readPump = async () => {
+		// Use object wrapper so TypeScript doesn't narrow to null in the async closure
+		const pump = { onData: null as ((data: Uint8Array) => void) | null, exited: false };
+
+		const pumpPromise = (async () => {
 			try {
-				while (true) {
+				while (!pump.exited) {
 					const data = await this.ptyManager.read(masterDescId, 4096);
 					if (!data || data.length === 0) break;
-					onDataCallback?.(data);
+					try {
+						pump.onData?.(data);
+					} catch (cbErr) {
+						// Propagate callback errors — don't silently swallow
+						console.error("openShell readPump: onData callback error:", cbErr);
+					}
 				}
-			} catch {
-				// Master closed or PTY gone
+			} catch (err) {
+				// Master closed or PTY gone — expected when shell exits
+				if (pump.exited) return;
+				console.error("openShell readPump: PTY read error:", err);
 			}
-		};
-		readPump();
+		})();
+
+		// wait() resolves after both shell exit AND pump drain
+		const waitPromise = proc.wait().then(async (exitCode) => {
+			pump.exited = true;
+			// Wait for pump to finish delivering remaining data
+			await pumpPromise;
+			// Clean up controller PID's FD table (incl. PTY master)
+			this.cleanupProcessFDs(controllerPid);
+			return exitCode;
+		});
 
 		return {
 			pid: proc.pid,
@@ -240,8 +288,8 @@ class KernelImpl implements Kernel {
 					: data;
 				this.ptyManager.write(masterDescId, bytes);
 			},
-			get onData() { return onDataCallback; },
-			set onData(fn) { onDataCallback = fn; },
+			get onData() { return pump.onData; },
+			set onData(fn) { pump.onData = fn; },
 			resize: (_cols, _rows) => {
 				const fgPgid = this.ptyManager.getForegroundPgid(masterDescId);
 				if (fgPgid > 0) {
@@ -251,51 +299,54 @@ class KernelImpl implements Kernel {
 			kill: (signal) => {
 				proc.kill(signal ?? SIGTERM);
 			},
-			wait: () => proc.wait(),
+			wait: () => waitPromise,
 		};
 	}
 
 	async connectTerminal(options?: ConnectTerminalOptions): Promise<number> {
 		this.assertNotDisposed();
 
-		const shell = this.openShell(options);
-
 		const stdin = process.stdin;
 		const stdout = process.stdout;
 		const isTTY = stdin.isTTY;
 
-		// Set raw mode so keypresses pass through directly
-		if (isTTY) stdin.setRawMode(true);
-
-		// Forward stdin to shell
-		const onStdinData = (data: Buffer) => shell.write(data);
-		stdin.on("data", onStdinData);
-		stdin.resume();
-
-		// Forward shell output to stdout or custom handler
-		const outputHandler = options?.onData
-			?? ((data: Uint8Array) => { stdout.write(data); });
-		shell.onData = outputHandler;
-
-		// Handle terminal resize
-		const onResize = () => {
-			shell.resize(stdout.columns || 80, stdout.rows || 24);
-		};
-		if (stdout.isTTY) stdout.on("resize", onResize);
-
-		// Set initial terminal size
-		if (stdout.isTTY) {
-			shell.resize(stdout.columns || 80, stdout.rows || 24);
-		}
+		let onStdinData: ((data: Buffer) => void) | undefined;
+		let onResize: (() => void) | undefined;
 
 		try {
+			const shell = this.openShell(options);
+
+			// Set raw mode so keypresses pass through directly
+			if (isTTY) stdin.setRawMode(true);
+
+			// Forward stdin to shell
+			onStdinData = (data: Buffer) => shell.write(data);
+			stdin.on("data", onStdinData);
+			stdin.resume();
+
+			// Forward shell output to stdout or custom handler
+			const outputHandler = options?.onData
+				?? ((data: Uint8Array) => { stdout.write(data); });
+			shell.onData = outputHandler;
+
+			// Handle terminal resize
+			onResize = () => {
+				shell.resize(stdout.columns || 80, stdout.rows || 24);
+			};
+			if (stdout.isTTY) stdout.on("resize", onResize);
+
+			// Set initial terminal size
+			if (stdout.isTTY) {
+				shell.resize(stdout.columns || 80, stdout.rows || 24);
+			}
+
 			return await shell.wait();
 		} finally {
-			// Restore terminal
-			stdin.removeListener("data", onStdinData);
+			// Restore terminal — guard each cleanup since setup may have partially completed
+			if (onStdinData) stdin.removeListener("data", onStdinData);
 			stdin.pause();
 			if (isTTY) stdin.setRawMode(false);
-			if (stdout.isTTY) stdout.removeListener("resize", onResize);
+			if (onResize && stdout.isTTY) stdout.removeListener("resize", onResize);
 		}
 	}
 
@@ -346,6 +397,20 @@ class KernelImpl implements Kernel {
 		// Allocate PID atomically
 		const pid = this.processTable.allocatePid();
 
+		// Register PID ownership before driver.spawn() so the driver can use it
+		this.driverPids.get(driver.name)?.add(pid);
+
+		// Cross-runtime spawn: parent driver must also track child PID so
+		// it can waitpid/kill/interact with the child process
+		if (callerPid !== undefined) {
+			for (const [name, pids] of this.driverPids) {
+				if (name !== driver.name && pids.has(callerPid)) {
+					pids.add(pid);
+					break;
+				}
+			}
+		}
+
 		// Create FD table — wire pipe FDs when overrides are provided
 		const table = this.createChildFDTable(pid, options, callerPid);
 
@@ -357,6 +422,34 @@ class KernelImpl implements Kernel {
 		const stdoutBuf: Uint8Array[] = [];
 		const stderrBuf: Uint8Array[] = [];
 
+		// Resolve output callbacks: when a child inherits non-piped stdio from
+		// a parent, forward output to the parent's DriverProcess callbacks so
+		// cross-runtime child output reaches the top-level collector.
+		let stdoutCb: ((data: Uint8Array) => void) | undefined;
+		let stderrCb: ((data: Uint8Array) => void) | undefined;
+		if (!stdoutPiped) {
+			if (options?.onStdout) {
+				stdoutCb = options.onStdout;
+			} else if (callerPid !== undefined) {
+				const parent = this.processTable.get(callerPid);
+				if (parent?.driverProcess.onStdout) {
+					stdoutCb = parent.driverProcess.onStdout;
+				}
+			}
+			if (!stdoutCb) stdoutCb = (data) => stdoutBuf.push(data);
+		}
+		if (!stderrPiped) {
+			if (options?.onStderr) {
+				stderrCb = options.onStderr;
+			} else if (callerPid !== undefined) {
+				const parent = this.processTable.get(callerPid);
+				if (parent?.driverProcess.onStderr) {
+					stderrCb = parent.driverProcess.onStderr;
+				}
+			}
+			if (!stderrCb) stderrCb = (data) => stderrBuf.push(data);
+		}
+
 		// Build process context with pre-wired callbacks
 		const ctx: ProcessContext = {
 			pid,
@@ -364,8 +457,8 @@ class KernelImpl implements Kernel {
 			env: { ...this.env, ...options?.env },
 			cwd: options?.cwd ?? this.cwd,
 			fds: { stdin: 0, stdout: 1, stderr: 2 },
-			onStdout: stdoutPiped ? undefined : (data) => stdoutBuf.push(data),
-			onStderr: stderrPiped ? undefined : (data) => stderrBuf.push(data),
+			onStdout: stdoutCb,
+			onStderr: stderrCb,
 		};
 
 		// Spawn via driver
@@ -448,16 +541,31 @@ class KernelImpl implements Kernel {
 	// Kernel interface (exposed to drivers)
 	// -----------------------------------------------------------------------
 
-	private createKernelInterface(): KernelInterface {
+	private createKernelInterface(driverName: string): KernelInterface {
+		// Validate that the calling driver owns the target PID
+		const assertOwns = (pid: number) => {
+			if (this.driverPids.get(driverName)?.has(pid)) return;
+
+			// Check if any driver owns this PID — if not, the PID doesn't exist
+			for (const pids of this.driverPids.values()) {
+				if (pids.has(pid)) {
+					throw new KernelError("EPERM", `driver "${driverName}" does not own PID ${pid}`);
+				}
+			}
+			throw new KernelError("ESRCH", `no such process ${pid}`);
+		};
+
 		return {
 			vfs: this.vfs,
 
 			// FD operations
 			fdOpen: (pid, path, flags, mode) => {
+				assertOwns(pid);
 				// /dev/fd/N → dup(N): equivalent to open() on the underlying FD
 				if (path.startsWith("/dev/fd/")) {
-					const n = parseInt(path.slice(8), 10);
-					if (isNaN(n)) throw new KernelError("EBADF", `bad file descriptor: ${path}`);
+					const raw = path.slice(8);
+					const n = parseInt(raw, 10);
+					if (isNaN(n) || n < 0 || String(n) !== raw) throw new KernelError("EBADF", `bad file descriptor: ${path}`);
 					const table = this.getTable(pid);
 					const entry = table.get(n);
 					if (!entry) throw new KernelError("EBADF", `bad file descriptor ${n}`);
@@ -468,6 +576,7 @@ class KernelImpl implements Kernel {
 				return table.open(path, flags, filetype);
 			},
 			fdRead: async (pid, fd, length) => {
+				assertOwns(pid);
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) throw new KernelError("EBADF", `bad file descriptor ${fd}`);
@@ -484,16 +593,14 @@ class KernelImpl implements Kernel {
 					return data ?? new Uint8Array(0);
 				}
 
-				// Read from VFS at cursor position
-				const content = await this.vfs.readFile(entry.description.path);
+				// Positional read from VFS — avoids loading entire file
 				const cursor = Number(entry.description.cursor);
-				if (cursor >= content.length) return new Uint8Array(0);
-				const end = Math.min(cursor + length, content.length);
-				const slice = content.slice(cursor, end);
-				entry.description.cursor = BigInt(end);
+				const slice = await this.vfs.pread(entry.description.path, cursor, length);
+				entry.description.cursor += BigInt(slice.length);
 				return slice;
 			},
 			fdWrite: (pid, fd, data) => {
+				assertOwns(pid);
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) throw new KernelError("EBADF", `bad file descriptor ${fd}`);
@@ -506,9 +613,11 @@ class KernelImpl implements Kernel {
 					return this.ptyManager.write(entry.description.id, data);
 				}
 
-				return data.length;
+				// Write to VFS at cursor position (async — returns Promise)
+				return this.vfsWrite(entry, data);
 			},
 			fdClose: (pid, fd) => {
+				assertOwns(pid);
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) return;
@@ -529,6 +638,7 @@ class KernelImpl implements Kernel {
 				}
 			},
 			fdSeek: async (pid, fd, offset, whence) => {
+				assertOwns(pid);
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) throw new KernelError("EBADF", `bad file descriptor ${fd}`);
@@ -561,6 +671,7 @@ class KernelImpl implements Kernel {
 				return newCursor;
 			},
 			fdPread: async (pid, fd, length, offset) => {
+				assertOwns(pid);
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) throw new KernelError("EBADF", `bad file descriptor ${fd}`);
@@ -578,6 +689,7 @@ class KernelImpl implements Kernel {
 				return content.slice(pos, end);
 			},
 			fdPwrite: async (pid, fd, data, offset) => {
+				assertOwns(pid);
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) throw new KernelError("EBADF", `bad file descriptor ${fd}`);
@@ -598,17 +710,21 @@ class KernelImpl implements Kernel {
 				return data.length;
 			},
 			fdDup: (pid, fd) => {
+				assertOwns(pid);
 				return this.getTable(pid).dup(fd);
 			},
 			fdDup2: (pid, oldFd, newFd) => {
+				assertOwns(pid);
 				this.getTable(pid).dup2(oldFd, newFd);
 			},
 			fdStat: (pid, fd) => {
+				assertOwns(pid);
 				return this.getTable(pid).stat(fd);
 			},
 
 			// Process operations
 			spawn: (command, args, ctx) => {
+				if (ctx.ppid) assertOwns(ctx.ppid);
 				return this.spawnManaged(command, args, {
 					env: ctx.env,
 					cwd: ctx.cwd,
@@ -620,55 +736,70 @@ class KernelImpl implements Kernel {
 				}, ctx.ppid);
 			},
 			waitpid: (pid) => {
+				try { assertOwns(pid); } catch (e) { return Promise.reject(e); }
 				return this.processTable.waitpid(pid);
 			},
 			kill: (pid, signal) => {
+				// Negative PID = process group kill, handled by kernel directly
+				if (pid >= 0) assertOwns(pid);
 				this.processTable.kill(pid, signal);
 			},
-			getpid: (pid) => pid,
+			getpid: (pid) => {
+				assertOwns(pid);
+				return pid;
+			},
 			getppid: (pid) => {
+				assertOwns(pid);
 				return this.processTable.getppid(pid);
 			},
 
 			// Process group / session
 			setpgid: (pid, pgid) => {
+				assertOwns(pid);
 				this.processTable.setpgid(pid, pgid);
 			},
 			getpgid: (pid) => {
+				assertOwns(pid);
 				return this.processTable.getpgid(pid);
 			},
 			setsid: (pid) => {
+				assertOwns(pid);
 				return this.processTable.setsid(pid);
 			},
 			getsid: (pid) => {
+				assertOwns(pid);
 				return this.processTable.getsid(pid);
 			},
 
 			// Pipe operations
 			pipe: (pid) => {
-				// Create pipe and install both ends in the process's FD table
+				assertOwns(pid);
 				const table = this.getTable(pid);
 				return this.pipeManager.createPipeFDs(table);
 			},
 
 			// PTY operations
 			openpty: (pid) => {
+				assertOwns(pid);
 				const table = this.getTable(pid);
 				return this.ptyManager.createPtyFDs(table);
 			},
 			isatty: (pid, fd) => {
+				assertOwns(pid);
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) return false;
 				return this.ptyManager.isSlave(entry.description.id);
 			},
 			ptySetDiscipline: (pid, fd, config) => {
+				assertOwns(pid);
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) throw new KernelError("EBADF", `bad file descriptor ${fd}`);
 				this.ptyManager.setDiscipline(entry.description.id, config);
 			},
 			ptySetForegroundPgid: (pid, fd, pgid) => {
+				assertOwns(pid);
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) throw new KernelError("EBADF", `bad file descriptor ${fd}`);
@@ -677,24 +808,32 @@ class KernelImpl implements Kernel {
 
 			// Termios operations
 			tcgetattr: (pid, fd) => {
+				assertOwns(pid);
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) throw new KernelError("EBADF", `bad file descriptor ${fd}`);
 				return this.ptyManager.getTermios(entry.description.id);
 			},
 			tcsetattr: (pid, fd, termios) => {
+				assertOwns(pid);
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) throw new KernelError("EBADF", `bad file descriptor ${fd}`);
 				this.ptyManager.setTermios(entry.description.id, termios);
 			},
 			tcsetpgrp: (pid, fd, pgid) => {
+				assertOwns(pid);
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) throw new KernelError("EBADF", `bad file descriptor ${fd}`);
+				// Validate target PGID refers to an existing process group
+				if (!this.processTable.hasProcessGroup(pgid)) {
+					throw new KernelError("ESRCH", `no such process group ${pgid}`);
+				}
 				this.ptyManager.setForegroundPgid(entry.description.id, pgid);
 			},
 			tcgetpgrp: (pid, fd) => {
+				assertOwns(pid);
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) throw new KernelError("EBADF", `bad file descriptor ${fd}`);
@@ -703,6 +842,7 @@ class KernelImpl implements Kernel {
 
 			// /dev/fd operations
 			devFdReadDir: (pid) => {
+				assertOwns(pid);
 				const table = this.fdTableManager.get(pid);
 				if (!table) return [];
 				const fds: number[] = [];
@@ -710,6 +850,7 @@ class KernelImpl implements Kernel {
 				return fds.sort((a, b) => a - b).map(String);
 			},
 			devFdStat: async (pid, fd) => {
+				assertOwns(pid);
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) throw new KernelError("EBADF", `bad file descriptor ${fd}`);
@@ -739,10 +880,12 @@ class KernelImpl implements Kernel {
 
 			// Environment
 			getenv: (pid) => {
+				assertOwns(pid);
 				const entry = this.processTable.get(pid);
 				return entry?.env ?? { ...this.env };
 			},
 			getcwd: (pid) => {
+				assertOwns(pid);
 				const entry = this.processTable.get(pid);
 				return entry?.cwd ?? this.cwd;
 			},
@@ -776,6 +919,35 @@ class KernelImpl implements Kernel {
 				this.applyStdioOverride(table, callerTable, 0, options!.stdinFd);
 				this.applyStdioOverride(table, callerTable, 1, options!.stdoutFd);
 				this.applyStdioOverride(table, callerTable, 2, options!.stderrFd);
+			}
+
+			// Close inherited pipe FDs above stdio that share a pipe with an
+			// overridden stdio FD — prevents pipe deadlocks (close-on-exec for
+			// counterpart pipe ends only, so tests that intentionally inherit pipe
+			// FDs without overrides are not affected).
+			if (hasFdOverrides) {
+				const overridePipeIds = new Set<number>();
+				for (const fd of [0, 1, 2]) {
+					const e = table.get(fd);
+					if (e && this.pipeManager.isPipe(e.description.id)) {
+						const pipeId = this.pipeManager.pipeIdFor(e.description.id);
+						if (pipeId !== undefined) overridePipeIds.add(pipeId);
+					}
+				}
+				if (overridePipeIds.size > 0) {
+					const toClose: number[] = [];
+					for (const entry of table) {
+						if (entry.fd > 2 && this.pipeManager.isPipe(entry.description.id)) {
+							const pid2 = this.pipeManager.pipeIdFor(entry.description.id);
+							if (pid2 !== undefined && overridePipeIds.has(pid2)) {
+								toClose.push(entry.fd);
+							}
+						}
+					}
+					for (const fd of toClose) {
+						table.close(fd);
+					}
+				}
 			}
 
 			return table;
@@ -834,6 +1006,23 @@ class KernelImpl implements Kernel {
 				else this.ptyManager.close(id);
 			}
 		}
+	}
+
+	private async vfsWrite(entry: FDEntry, data: Uint8Array): Promise<number> {
+		let content: Uint8Array;
+		try {
+			content = await this.vfs.readFile(entry.description.path);
+		} catch {
+			content = new Uint8Array(0);
+		}
+		const cursor = Number(entry.description.cursor);
+		const endPos = cursor + data.length;
+		const newContent = new Uint8Array(Math.max(content.length, endPos));
+		newContent.set(content);
+		newContent.set(data, cursor);
+		await this.vfs.writeFile(entry.description.path, newContent);
+		entry.description.cursor = BigInt(endPos);
+		return data.length;
 	}
 
 	private getTable(pid: number): ProcessFDTable {

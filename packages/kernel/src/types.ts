@@ -226,7 +226,7 @@ export interface KernelInterface {
 	// FD operations (per-PID)
 	fdOpen(pid: number, path: string, flags: number, mode?: number): number;
 	fdRead(pid: number, fd: number, length: number): Promise<Uint8Array>;
-	fdWrite(pid: number, fd: number, data: Uint8Array): number;
+	fdWrite(pid: number, fd: number, data: Uint8Array): number | Promise<number>;
 	fdClose(pid: number, fd: number): void;
 	fdSeek(
 		pid: number,
@@ -428,6 +428,10 @@ export class KernelError extends Error {
 
 /** Terminal attributes — controls line discipline behavior on a PTY. */
 export interface Termios {
+	/** Post-process output (master for ONLCR, etc.). */
+	opost: boolean;
+	/** Map NL to CR-NL on output (requires opost). */
+	onlcr: boolean;
 	/** Canonical mode: buffer input until newline, handle backspace. */
 	icanon: boolean;
 	/** Echo input bytes back through output (master reads them). */
@@ -446,9 +450,11 @@ export interface TermiosCC {
 	verase: number;  // Default DEL (0x7F) → erase
 }
 
-/** Returns the POSIX-standard default termios: canonical on, echo on, isig on. */
+/** Returns the POSIX-standard default termios: canonical on, echo on, isig on, opost+onlcr on. */
 export function defaultTermios(): Termios {
 	return {
+		opost: true,
+		onlcr: true,
 		icanon: true,
 		echo: true,
 		isig: true,

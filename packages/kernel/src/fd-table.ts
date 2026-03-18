@@ -22,20 +22,8 @@ import {
 /** Maximum open FDs per process before allocations are rejected (EMFILE). */
 export const MAX_FDS_PER_PROCESS = 256;
 
-let nextDescriptionId = 1;
-
-function createFileDescription(
-	path: string,
-	flags: number,
-): FileDescription {
-	return {
-		id: nextDescriptionId++,
-		path,
-		cursor: 0n,
-		flags,
-		refCount: 1,
-	};
-}
+/** Allocator function that creates a FileDescription with a unique ID. */
+export type DescriptionAllocator = (path: string, flags: number) => FileDescription;
 
 /**
  * FD table for a single process.
@@ -45,6 +33,11 @@ function createFileDescription(
 export class ProcessFDTable {
 	private entries: Map<number, FDEntry> = new Map();
 	private nextFd = 3; // 0, 1, 2 reserved
+	private allocDesc: DescriptionAllocator;
+
+	constructor(allocDesc: DescriptionAllocator) {
+		this.allocDesc = allocDesc;
+	}
 
 	/** Pre-allocate stdin, stdout, stderr */
 	initStdio(
@@ -93,7 +86,7 @@ export class ProcessFDTable {
 	/** Open a new FD for the given path and flags */
 	open(path: string, flags: number, filetype?: number): number {
 		const fd = this.allocateFd();
-		const description = createFileDescription(path, flags);
+		const description = this.allocDesc(path, flags);
 		this.entries.set(fd, {
 			fd,
 			description,
@@ -180,7 +173,7 @@ export class ProcessFDTable {
 
 	/** Create a copy of this table for a child process (FD inheritance). */
 	fork(): ProcessFDTable {
-		const child = new ProcessFDTable();
+		const child = new ProcessFDTable(this.allocDesc);
 		child.nextFd = this.nextFd;
 		for (const [fd, entry] of this.entries) {
 			entry.description.refCount++;
@@ -225,14 +218,24 @@ export class ProcessFDTable {
  */
 export class FDTableManager {
 	private tables: Map<number, ProcessFDTable> = new Map();
+	private nextDescriptionId = 1;
+
+	/** Per-instance allocator bound to this manager's ID counter. */
+	private allocDesc: DescriptionAllocator = (path, flags) => ({
+		id: this.nextDescriptionId++,
+		path,
+		cursor: 0n,
+		flags,
+		refCount: 1,
+	});
 
 	/** Create a new FD table for a process with standard FDs. */
 	create(pid: number): ProcessFDTable {
-		const table = new ProcessFDTable();
+		const table = new ProcessFDTable(this.allocDesc);
 		table.initStdio(
-			createFileDescription("/dev/stdin", O_RDONLY),
-			createFileDescription("/dev/stdout", O_WRONLY),
-			createFileDescription("/dev/stderr", O_WRONLY),
+			this.allocDesc("/dev/stdin", O_RDONLY),
+			this.allocDesc("/dev/stdout", O_WRONLY),
+			this.allocDesc("/dev/stderr", O_WRONLY),
 		);
 		this.tables.set(pid, table);
 		return table;
@@ -249,18 +252,18 @@ export class FDTableManager {
 		stdoutOverride: { description: FileDescription; filetype: number } | null,
 		stderrOverride: { description: FileDescription; filetype: number } | null,
 	): ProcessFDTable {
-		const table = new ProcessFDTable();
+		const table = new ProcessFDTable(this.allocDesc);
 		const stdinDesc = stdinOverride
 			? stdinOverride.description
-			: createFileDescription("/dev/stdin", O_RDONLY);
+			: this.allocDesc("/dev/stdin", O_RDONLY);
 		const stdinType = stdinOverride?.filetype ?? FILETYPE_CHARACTER_DEVICE;
 		const stdoutDesc = stdoutOverride
 			? stdoutOverride.description
-			: createFileDescription("/dev/stdout", O_WRONLY);
+			: this.allocDesc("/dev/stdout", O_WRONLY);
 		const stdoutType = stdoutOverride?.filetype ?? FILETYPE_CHARACTER_DEVICE;
 		const stderrDesc = stderrOverride
 			? stderrOverride.description
-			: createFileDescription("/dev/stderr", O_WRONLY);
+			: this.allocDesc("/dev/stderr", O_WRONLY);
 		const stderrType = stderrOverride?.filetype ?? FILETYPE_CHARACTER_DEVICE;
 
 		table.initStdioWithTypes(stdinDesc, stdinType, stdoutDesc, stdoutType, stderrDesc, stderrType);
