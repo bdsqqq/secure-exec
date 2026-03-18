@@ -50,7 +50,7 @@ const faqs: { question: string; answer: React.ReactNode }[] = [
         AI tool calls, code evaluation, user-submitted scripts — without provisioning infrastructure.
         Use a <strong className="text-white">sandbox</strong> (e2b, Modal, Daytona) when you need a full
         operating-system environment with persistent disk, root access, or GPU passthrough.{" "}
-        <a href="/docs/sandbox-vs-secure-exec" className="text-red-400 hover:text-red-300">
+        <a href="/docs/comparison/sandbox" className="text-red-400 hover:text-red-300">
           Full comparison →
         </a>
       </>

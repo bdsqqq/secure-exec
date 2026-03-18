@@ -21,7 +21,7 @@ We compare the **cost per execution-second**: the cost of running one isolated e
 - **Sandbox providers**: minimum allocatable memory × provider's per-GiB-second rate. We use the cheapest provider (Cloudflare Containers) as the baseline.
 - **Secure Exec**: EC2/Hetzner instance cost ÷ number of concurrent executions that fit in RAM, with 30% empty capacity overhead to account for bin-packing inefficiency.
 
-Secure Exec baseline memory per execution: **~3.4 MB** (converged at-scale average, p95). See [benchmarks](/docs/benchmarks) for measurement details.
+Secure Exec baseline memory per execution: **~3.4 MB** (converged at-scale average, p95). See [benchmarks](/benchmarks) for measurement details.
 
 ## Results
 
@@ -73,4 +73,4 @@ Memory overhead matters less when dev servers use 512 MB+ regardless.
 | Heavy (dev servers)   | Hardware choice, no vendor lock-in         |
 | High concurrency      | Bin-packing, no per-sandbox minimums       |
 
-See also: [Sandbox vs. Secure Exec](/docs/sandbox-vs-secure-exec) for a feature-level comparison.
+See also: [Sandbox vs. Secure Exec](/comparison/sandbox) for a feature-level comparison.

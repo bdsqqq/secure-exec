@@ -1,0 +1,116 @@
+---
+import "../../styles/global.css";
+---
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="robots" content="noindex" />
+    <title>Benchmarks Screenshot</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body class="bg-[#09090b] text-white antialiased flex items-center justify-center min-h-screen p-12" style="font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;">
+    <div class="rounded-xl bg-white/[0.02] p-10 chrome-gradient-border" style="--chrome-angle: 75deg; --chrome-brightness: 1;">
+      <div class="grid grid-cols-3 gap-10">
+        <!-- Cold start -->
+        <div class="space-y-5">
+          <div class="text-center space-y-1">
+            <div class="flex items-baseline justify-center gap-1">
+              <span class="text-6xl font-bold tracking-tight" style="font-family: 'Inter', sans-serif; color: #FF3333;">176</span>
+              <span class="text-6xl font-bold tracking-tight text-white/15" style="font-family: 'Inter', sans-serif;">x</span>
+            </div>
+            <p class="text-sm font-medium text-white">faster cold start</p>
+          </div>
+          <div class="space-y-1.5">
+            <div class="flex items-center gap-3">
+              <span class="text-[11px] text-zinc-500 w-32 shrink-0 font-mono">Secure Exec</span>
+              <div class="flex-1 relative h-6 bg-white/5 rounded-sm overflow-hidden">
+                <div class="absolute inset-y-0 left-0 rounded-sm" style="width: 0.6%; background: linear-gradient(90deg, #CC0000, #FF3333);"></div>
+                <span class="absolute inset-y-0 flex items-center text-[11px] font-mono font-medium text-zinc-400" style="left: calc(0.6% + 6px);">
+                  17.9 ms
+                </span>
+              </div>
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="text-[11px] text-zinc-500 w-32 shrink-0 font-mono">Fastest sandbox</span>
+              <div class="flex-1 relative h-6 bg-white/5 rounded-sm overflow-hidden">
+                <div class="absolute inset-y-0 left-0 rounded-sm bg-zinc-600" style="width: 100%;"></div>
+                <span class="absolute inset-y-0 left-1.5 flex items-center text-[11px] font-mono text-zinc-300 z-10">
+                  3,150 ms
+                </span>
+              </div>
+            </div>
+          </div>
+          <p class="text-[10px] text-zinc-600 text-center italic">p99 · Lower is better</p>
+        </div>
+
+        <!-- Memory -->
+        <div class="space-y-5">
+          <div class="text-center space-y-1">
+            <div class="flex items-baseline justify-center gap-1">
+              <span class="text-6xl font-bold tracking-tight" style="font-family: 'Inter', sans-serif; color: #FF3333;">75</span>
+              <span class="text-6xl font-bold tracking-tight text-white/15" style="font-family: 'Inter', sans-serif;">x</span>
+            </div>
+            <p class="text-sm font-medium text-white">smaller memory</p>
+          </div>
+          <div class="space-y-1.5">
+            <div class="flex items-center gap-3">
+              <span class="text-[11px] text-zinc-500 w-32 shrink-0 font-mono">Secure Exec</span>
+              <div class="flex-1 relative h-6 bg-white/5 rounded-sm overflow-hidden">
+                <div class="absolute inset-y-0 left-0 rounded-sm" style="width: 2%; background: linear-gradient(90deg, #CC0000, #FF3333);"></div>
+                <span class="absolute inset-y-0 flex items-center text-[11px] font-mono font-medium text-zinc-400" style="left: calc(2% + 6px);">
+                  ~3.4 MB
+                </span>
+              </div>
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="text-[11px] text-zinc-500 w-32 shrink-0 font-mono">Sandbox minimum</span>
+              <div class="flex-1 relative h-6 bg-white/5 rounded-sm overflow-hidden">
+                <div class="absolute inset-y-0 left-0 rounded-sm bg-zinc-600" style="width: 100%;"></div>
+                <span class="absolute inset-y-0 left-1.5 flex items-center text-[11px] font-mono text-zinc-300 z-10">
+                  ~256 MB
+                </span>
+              </div>
+            </div>
+          </div>
+          <p class="text-[10px] text-zinc-600 text-center italic">Per instance · Lower is better</p>
+        </div>
+
+        <!-- Cost -->
+        <div class="space-y-5">
+          <div class="text-center space-y-1">
+            <div class="flex items-baseline justify-center gap-1">
+              <span class="text-6xl font-bold tracking-tight" style="font-family: 'Inter', sans-serif; color: #FF3333;">56</span>
+              <span class="text-6xl font-bold tracking-tight text-white/15" style="font-family: 'Inter', sans-serif;">x</span>
+            </div>
+            <p class="text-sm font-medium text-white">cheaper per second</p>
+          </div>
+          <div class="space-y-1.5">
+            <div class="flex items-center gap-3">
+              <span class="text-[11px] text-zinc-500 w-32 shrink-0 font-mono">Secure Exec</span>
+              <div class="flex-1 relative h-6 bg-white/5 rounded-sm overflow-hidden">
+                <div class="absolute inset-y-0 left-0 rounded-sm" style="width: 2%; background: linear-gradient(90deg, #CC0000, #FF3333);"></div>
+                <span class="absolute inset-y-0 flex items-center text-[11px] font-mono font-medium text-zinc-400" style="left: calc(2% + 6px);">
+                  $0.000011/s
+                </span>
+              </div>
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="text-[11px] text-zinc-500 w-32 shrink-0 font-mono">Cheapest sandbox</span>
+              <div class="flex-1 relative h-6 bg-white/5 rounded-sm overflow-hidden">
+                <div class="absolute inset-y-0 left-0 rounded-sm bg-zinc-600" style="width: 100%;"></div>
+                <span class="absolute inset-y-0 left-1.5 flex items-center text-[11px] font-mono text-zinc-300 z-10">
+                  $0.000625/s
+                </span>
+              </div>
+            </div>
+          </div>
+          <p class="text-[10px] text-zinc-600 text-center italic">AWS ARM · Lower is better</p>
+        </div>
+      </div>
+      <p class="text-center text-xs text-zinc-500 mt-8">Compared to best-in-class sandbox provider</p>
+    </div>
+  </body>
+</html>

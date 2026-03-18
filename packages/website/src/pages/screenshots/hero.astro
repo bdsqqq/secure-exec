@@ -1,0 +1,21 @@
+---
+import "../../styles/global.css";
+import { HeroLogo, NewPill } from "../../components/HeroLogo";
+---
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="robots" content="noindex" />
+    <title>Hero Screenshot</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body class="bg-[#09090b] text-white antialiased flex flex-col items-center justify-center min-h-screen p-12" style="font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;">
+    <NewPill client:only="react" />
+    <div class="mt-6">
+      <HeroLogo client:only="react" className="h-96" />
+    </div>
+  </body>
+</html>

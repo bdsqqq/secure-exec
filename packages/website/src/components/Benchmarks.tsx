@@ -3,8 +3,8 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 
-const ACCENT = "#CC0000";
-const ACCENT_LIGHT = "#FF3333";
+const ACCENT = "#38BDF8";
+const ACCENT_LIGHT = "#7DD3FC";
 
 function InfoTooltip({ children }: { children: React.ReactNode }) {
   return (
@@ -309,12 +309,22 @@ export function Benchmarks() {
           </motion.p>
         </div>
 
+        <div className="relative">
+          <motion.img
+            src="/grim-reaper.png"
+            alt=""
+            initial={{ opacity: 0 }}
+            whileInView={{ opacity: 1 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.4, delay: 0.5 }}
+            className="pointer-events-none absolute -top-[118px] sm:-top-[134px] md:-top-[166px] -right-[48px] sm:-right-[80px] md:-right-[112px] w-48 sm:w-56 md:w-72 z-0 drop-shadow-[0_0_30px_rgba(0,0,0,0.8)]"
+          />
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
           transition={{ duration: 0.5 }}
-          className="rounded-xl bg-white/[0.02] p-8 chrome-gradient-border"
+          className="relative z-10 rounded-xl bg-[#0c0c0e] p-8 chrome-gradient-border"
           style={{ "--chrome-angle": "75deg" } as React.CSSProperties}
         >
           {/* Cold start charts */}
@@ -350,6 +360,16 @@ export function Benchmarks() {
           {/* Cost */}
           <CostChart />
         </motion.div>
+          <motion.img
+            src="/grim-hand.png"
+            alt=""
+            initial={{ opacity: 0 }}
+            whileInView={{ opacity: 1 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.4, delay: 0.5 }}
+            className="pointer-events-none absolute -top-[118px] sm:-top-[134px] md:-top-[166px] -right-[48px] sm:-right-[80px] md:-right-[112px] w-48 sm:w-56 md:w-72 z-20"
+          />
+        </div>
 
       </div>
     </section>

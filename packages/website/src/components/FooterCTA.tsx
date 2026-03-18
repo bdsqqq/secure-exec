@@ -55,11 +55,6 @@ export function FooterCTA() {
     <section className="py-32">
       <div className="mx-auto max-w-7xl px-6">
         <div className="relative mx-auto max-w-3xl">
-          <img
-            src="/grim-reaper.png"
-            alt=""
-            className="pointer-events-none absolute -top-[118px] sm:-top-[134px] md:-top-[166px] -right-[48px] sm:-right-[80px] md:-right-[112px] w-48 sm:w-56 md:w-72 z-0 drop-shadow-[0_0_30px_rgba(0,0,0,0.8)]"
-          />
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
@@ -97,11 +92,6 @@ export function FooterCTA() {
             </a>
           </div>
         </motion.div>
-          <img
-            src="/grim-hand.png"
-            alt=""
-            className="pointer-events-none absolute -top-[118px] sm:-top-[134px] md:-top-[166px] -right-[48px] sm:-right-[80px] md:-right-[112px] w-48 sm:w-56 md:w-72 z-20"
-          />
         </div>
       </div>
     </section>

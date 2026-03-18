@@ -102,7 +102,7 @@ export function FeatureGrid() {
               </div>
               <p className="text-zinc-500 text-sm leading-relaxed">{feature.description}</p>
               {feature.link && (
-                <a href={feature.link.href} className="text-sm text-accent hover:text-orange-300 transition-colors">
+                <a href={feature.link.href} className="text-sm text-[#38BDF8] hover:text-[#7DD3FC] transition-colors">
                   {feature.link.label} &rarr;
                 </a>
               )}

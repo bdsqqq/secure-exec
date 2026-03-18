@@ -1,6 +1,7 @@
 ## Brand
 
-- accent color: #CC0000 (red), light variant: #FF3333
+- primary accent color: #38BDF8 (bright sky blue), light variant: #7DD3FC
+- secondary accent color: #CC0000 (red), light variant: #FF3333
 - website: https://secureexec.dev
 - docs: https://secureexec.dev/docs
 - GitHub: https://github.com/rivet-dev/secure-exec
@@ -24,6 +25,8 @@
 
 ## WASM Binary
 
+- WasmVM and Python are experimental surfaces in this repo
+- all docs for WasmVM, Python, or other experimental runtime features must live under the `Experimental` section of the docs navigation, not the main getting-started/reference sections
 - the WasmVM runtime requires a WASM binary at `wasmvm/target/wasm32-wasip1/release/multicall.wasm`
 - build it locally: `cd wasmvm && make wasm` (requires Rust nightly + wasm32-wasip1 target + rust-src component + wasm-opt/binaryen)
 - the Rust toolchain is pinned in `wasmvm/rust-toolchain.toml` — rustup will auto-install it
@@ -84,6 +87,7 @@ Follow the style in `packages/secure-exec/src/index.ts`.
 
 ## Documentation
 
+- WasmVM and Python docs are experimental docs and must stay grouped under the `Experimental` section in `docs/docs.json`
 - docs pages that must stay current with API changes:
   - `docs/quickstart.mdx` — update when core setup flow changes
   - `docs/api-reference.mdx` — update when any public export signature changes

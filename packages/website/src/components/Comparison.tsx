@@ -103,7 +103,7 @@ export function Comparison() {
           transition={{ duration: 0.5, delay: 0.2 }}
           className="mt-4 text-xs text-zinc-600"
         >
-          <a href="/docs/sandbox-vs-secure-exec" className="underline underline-offset-2 hover:text-zinc-500">
+          <a href="/docs/comparison/sandbox" className="underline underline-offset-2 hover:text-zinc-500">
             Full comparison →
           </a>
         </motion.p>

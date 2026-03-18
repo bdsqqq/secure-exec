@@ -1,16 +1,26 @@
-# Secure Exec
+<p align="center">
+  <img src=".github/media/secure-exec-logo.png" alt="Secure Exec" height="200" />
+</p>
 
-**Secure Node.js Execution Without a Sandbox**
+<h3 align="center">Secure Node.js Execution Without a Sandbox</h3>
 
-A lightweight library for secure Node.js execution. No containers, no VMs — just npm-compatible sandboxing out of the box. Powered by the same tech as Cloudflare Workers.
+<p align="center">
+  A lightweight library for secure Node.js execution.<br />
+  No containers, no VMs — just npm-compatible sandboxing out of the box.<br />
+  Powered by the same tech as Cloudflare Workers.
+</p>
+
+<p align="center">
+  <a href="https://secureexec.dev/docs">Documentation</a> — <a href="https://secureexec.dev/docs/api-reference">API Reference</a> — <a href="https://rivet.dev/discord">Discord</a>
+</p>
 
 ```
 npm install secure-exec
 ```
 
-## Give your AI agent secure code execution
+## Example: AI agent with secure code execution
 
-Expose secure-exec as a tool with the Vercel AI SDK. Your agent can execute arbitrary code without risking your infrastructure.
+Give your agent the ability to write and run code safely. This example uses the Vercel AI SDK, but secure-exec works with any tool-use framework.
 
 ```typescript
 import { generateText, stepCountIs, tool } from "ai";
@@ -51,7 +61,7 @@ console.log(text);
 Give your AI agent the ability to write and run code safely.
 
 - **No infrastructure required** — No Docker daemon, no hypervisor, no orchestrator. Runs anywhere Node.js, Bun, or an HTML5 browser runs. Deploy to Lambda, a VPS, or a static site — your existing deployment works.
-- **Node.js & npm compatibility** — fs, child_process, http, dns, process, os — bridged to real host capabilities, not stubbed. Run Express, Hono, Next.js, and any npm package. [Compatibility matrix →](https://secure-exec.dev/docs/node-compatability)
+- **Node.js & npm compatibility** — fs, child_process, http, dns, process, os — bridged to real host capabilities, not stubbed. Run Express, Hono, Next.js, and any npm package. [Compatibility matrix →](https://secureexec.dev/docs/node-compatability)
 - **Built for AI agents** — Give your AI agent the ability to write and run code safely. Works with the Vercel AI SDK, LangChain, and any tool-use framework.
 - **Deny-by-default permissions** — Filesystem, network, child processes, and env vars are all blocked unless explicitly allowed. Permissions are composable functions — grant read but not write, allow fetch but block spawn.
 - **Configurable resource limits** — CPU time budgets and memory caps. Runaway code is terminated deterministically with exit code 124 — no OOM crashes, no infinite loops, no host exhaustion.
@@ -69,7 +79,19 @@ V8 isolates vs. sandboxes.
 | p95        | 17.9 ms     | 950 ms          |
 | p99        | 17.9 ms     | 3,150 ms        |
 
-**What's measured:** Time from requesting an execution to first code running. Secure Exec spins up a V8 isolate inside the host process — no container, no VM, no network hop. Sandbox baseline: [e2b](https://www.computesdk.com/benchmarks/), the fastest provider on ComputeSDK as of March 18, 2026. Secure Exec numbers: median of 10,000 runs (100 iterations × 100 samples) on Intel i7-12700KF.
+<details>
+<summary>Methodology</summary>
+
+**What's measured:** Time from requesting an execution to first code running.
+
+**Why the gap:** Secure Exec spins up a V8 isolate inside the host process. No container, no VM, no network hop. Sandboxes must boot an entire container or microVM, allocate memory, and establish a network connection before code can run.
+
+**Sandbox baseline:** [e2b](https://www.computesdk.com/benchmarks/), the fastest provider on ComputeSDK as of March 18, 2026.
+
+**Secure Exec:** Median of 10,000 runs (100 iterations × 100 samples) on Intel i7-12700KF.
+
+[Our benchmarks →](https://secureexec.dev/docs/benchmarks)
+</details>
 
 ### Memory per instance
 
@@ -78,7 +100,21 @@ V8 isolates vs. sandboxes.
 | Secure Exec              | ~3.4 MB   |
 | Sandbox provider minimum | ~256 MB   |
 
-**75x smaller.** V8 isolates share the host process and its V8 engine. Each additional execution only adds its own heap and stack. On a 1 GB server, you can run ~210 concurrent Secure Exec executions vs. ~4 sandboxes.
+<details>
+<summary>Methodology</summary>
+
+**What's measured:** Memory footprint added per concurrent execution.
+
+**Why the gap:** V8 isolates share the host process and its V8 engine. Each additional execution only adds its own heap and stack (~3.4 MB). Sandboxes allocate a dedicated container with a minimum memory reservation, even if the code inside uses far less.
+
+**What this means:** On a 1 GB server, you can run ~210 concurrent Secure Exec executions vs. ~4 sandboxes.
+
+**Sandbox baseline:** 256 MB, the smallest minimum among popular providers (Modal, Cloudflare Containers) as of March 18, 2026.
+
+**Secure Exec:** 3.4 MB, the converged average per execution under sustained load.
+
+[Our benchmarks →](https://secureexec.dev/docs/benchmarks)
+</details>
 
 ### Cost per execution-second
 
@@ -89,36 +125,41 @@ V8 isolates vs. sandboxes.
 | Hetzner ARM  | $0.0000016/s     | 380x cheaper                       |
 | Hetzner x86  | $0.0000027/s     | 232x cheaper                       |
 
-Each execution uses ~3.4 MB instead of a 256 MB container minimum, and you run on your own hardware. Sandbox baseline: Cloudflare Containers, billed at $0.0000025/GiB·s with 256 MB minimum.
+<details>
+<summary>Methodology</summary>
+
+**What's measured:** `server price per second ÷ concurrent executions per server`
+
+**Why it's cheaper:** Each execution uses ~3.4 MB instead of a 256 MB container minimum. And you run on your own hardware, which is significantly cheaper than per-second sandbox billing.
+
+**Sandbox baseline:** Cloudflare Containers, the cheapest sandbox provider benchmarked. Billed at $0.0000025/GiB·s with a 256 MB minimum (March 18, 2026).
+
+**Secure Exec:** 3.4 MB baseline per execution, assuming 70% utilization.
+
+[Our benchmarks →](https://secureexec.dev/docs/benchmarks) · [Full cost breakdown →](https://secureexec.dev/docs/cost-evaluation)
+</details>
 
 ## Secure Exec vs. Sandboxes
 
 Same isolation guarantees, without the infrastructure overhead.
 
-**Secure Exec:**
-- ✓ Native V8 performance
-- ✓ Granular deny-by-default permissions
-- ✓ Just npm install — no vendor account
-- ✓ No API keys to manage
-- ✓ Run on any cloud or hardware
-- ✓ No egress fees
+|                      | Secure Exec                              | Sandbox                      |
+|----------------------|------------------------------------------|------------------------------|
+| **Performance**      | ✅ Native V8                             | ✅ Native container          |
+| **Permissions**      | ✅ Granular deny-by-default              | ❌ Coarse-grained            |
+| **Setup**            | ✅ Just `npm install` — no vendor account | ❌ Vendor account required  |
+| **API keys**         | ✅ None                                  | ❌ Required                  |
+| **Infrastructure**   | ✅ Run on any cloud or hardware          | ❌ Hardware lock-in          |
+| **Egress**           | ✅ No egress fees                        | ❌ Per-GB egress fees        |
 
-**Sandbox:**
-- ✓ Native container performance
-- ✗ Coarse-grained permissions
-- ✗ Vendor account required
-- ✗ API keys to manage
-- ✗ Hardware lock-in
-- ✗ Per-GB egress fees
-
-[Full comparison →](https://secure-exec.dev/docs/sandbox-vs-secure-exec)
+[Full comparison →](https://secureexec.dev/docs/comparison/sandbox)
 
 ## FAQ
 
 <details>
 <summary>How does it work?</summary>
 
-Secure Exec runs untrusted code inside [V8 isolates](https://v8.dev/docs/embed) — the same isolation primitive that powers every Chromium tab and Cloudflare Workers. Each execution gets its own heap, its own globals, and a deny-by-default permission boundary. There is no container, no VM, and no Docker daemon — just fast, lightweight isolation using battle-tested web technology. [Architecture →](https://secure-exec.dev/docs/sdk-overview)
+Secure Exec runs untrusted code inside [V8 isolates](https://v8.dev/docs/embed) — the same isolation primitive that powers every Chromium tab and Cloudflare Workers. Each execution gets its own heap, its own globals, and a deny-by-default permission boundary. There is no container, no VM, and no Docker daemon — just fast, lightweight isolation using battle-tested web technology. [Architecture →](https://secureexec.dev/docs/sdk-overview)
 </details>
 
 <details>
@@ -136,7 +177,7 @@ We are actively validating serverless platforms, but Secure Exec should work eve
 <details>
 <summary>When should I use a sandbox vs. Secure Exec?</summary>
 
-Use **Secure Exec** when you need fast, lightweight code execution — AI tool calls, code evaluation, user-submitted scripts — without provisioning infrastructure. Use a **sandbox** (e2b, Modal, Daytona) when you need a full operating-system environment with persistent disk, root access, or GPU passthrough. [Full comparison →](https://secure-exec.dev/docs/sandbox-vs-secure-exec)
+Use **Secure Exec** when you need fast, lightweight code execution — AI tool calls, code evaluation, user-submitted scripts — without provisioning infrastructure. Use a **sandbox** (e2b, Modal, Daytona) when you need a full operating-system environment with persistent disk, root access, or GPU passthrough. [Full comparison →](https://secureexec.dev/docs/comparison/sandbox)
 </details>
 
 <details>
@@ -170,7 +211,7 @@ Yes. For orchestrating stateful, long-running processes efficiently, we recommen
 <details>
 <summary>Does this have Node.js compatibility?</summary>
 
-Yes. Most Node.js core modules work — including fs, child_process, http, dns, process, and os. These are bridged to real host capabilities, not stubbed. [Compatibility matrix →](https://secure-exec.dev/docs/node-compatability)
+Yes. Most Node.js core modules work — including fs, child_process, http, dns, process, and os. These are bridged to real host capabilities, not stubbed. [Compatibility matrix →](https://secureexec.dev/docs/node-compatability)
 </details>
 
 <details>
@@ -187,7 +228,7 @@ WASM-based runtimes like [QuickJS](https://bellard.org/quickjs/) (via quickjs-em
 
 ## Links
 
-- [Documentation](https://secure-exec.dev/docs)
+- [Documentation](https://secureexec.dev/docs)
 - [Changelog](https://github.com/rivet-dev/secure-exec/releases)
 - [Discord](https://rivet.dev/discord)
 - [GitHub](https://github.com/rivet-dev/secure-exec)

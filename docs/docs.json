@@ -23,22 +23,17 @@
     }
   },
   "colors": {
-    "primary": "#CC0000",
-    "light": "#FF3333",
-    "dark": "#CC0000"
+    "primary": "#38BDF8",
+    "light": "#7DD3FC",
+    "dark": "#38BDF8"
   },
   "navigation": {
     "groups": [
       {
         "group": "Getting Started",
-        "pages": ["quickstart", "sdk-overview"]
-      },
-      {
-        "group": "Runtimes",
         "pages": [
-          "runtimes/overview",
-          "runtimes/node",
-          "runtimes/python"
+          "quickstart",
+          "sdk-overview"
         ]
       },
       {
@@ -52,39 +47,68 @@
       {
         "group": "Features",
         "pages": [
+          "features/typescript",
           "features/permissions",
           "features/filesystem",
           "features/networking",
           "features/module-loading",
+          "features/output-capture",
           "features/resource-limits",
-          "features/typescript",
-          "features/child-processes",
-          "features/output-capture"
-        ]
-      },
-      {
-        "group": "Kernel",
-        "pages": [
-          "kernel/quickstart",
-          "kernel/api-reference",
-          "kernel/cross-runtime",
-          "kernel/custom-runtime",
-          "kernel/interactive-shell"
+          "features/child-processes"
         ]
       },
       {
         "group": "Reference",
         "pages": [
           "api-reference",
-          "architecture",
-          "security-model",
-
-          "cost-evaluation",
-          "sandbox-vs-secure-exec",
           "nodejs-compatibility",
-          "python-compatibility",
-          "cloudflare-workers-comparison",
-          "benchmarks"
+          "benchmarks",
+		  {
+			"group": "Comparison",
+			"pages": [
+			  "comparison/sandbox",
+			  "comparison/cloudflare-workers"
+			]
+		  },
+		  {
+			"group": "Advanced",
+			"pages": [
+			  "cost-evaluation",
+			  "architecture",
+			  "security-model"
+			]
+		  }
+        ]
+      }
+    ],
+    "__soon": [
+      {
+        "group": "Experimental",
+        "pages": [
+          {
+            "group": "Runtimes",
+            "pages": [
+              "runtimes/overview",
+              "runtimes/node",
+              "runtimes/python"
+            ]
+          },
+          {
+            "group": "Kernel",
+            "pages": [
+              "kernel/quickstart",
+              "kernel/api-reference",
+              "kernel/cross-runtime",
+              "kernel/custom-runtime",
+              "kernel/interactive-shell"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "python-compatibility"
+            ]
+          }
         ]
       }
     ]

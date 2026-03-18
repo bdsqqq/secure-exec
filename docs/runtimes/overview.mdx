@@ -4,6 +4,8 @@ description: Sandboxed execution environments for running untrusted code.
 icon: "microchip"
 ---
 
+<Warning>This page documents experimental functionality. APIs, behavior, and docs may change without notice.</Warning>
+
 A **runtime** is a sandboxed execution environment. You give it code, it runs that code in isolation, and returns the result. Runtimes enforce resource limits (CPU time, memory) and prevent untrusted code from accessing the host system directly.
 
 Every runtime exposes two methods for executing code:

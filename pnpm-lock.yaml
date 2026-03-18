@@ -94,6 +94,22 @@ importers:
         specifier: ^4.19.2
         version: 4.21.0
 
+  examples/quickstart:
+    dependencies:
+      hono:
+        specifier: ^4.7.2
+        version: 4.12.2
+      secure-exec:
+        specifier: workspace:*
+        version: link:../../packages/secure-exec
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.19.3
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
   packages/kernel:
     devDependencies:
       '@types/node':

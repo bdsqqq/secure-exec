@@ -6,23 +6,23 @@ icon: "compass"
 
 ## Install
 
-<Tabs>
-  <Tab title="pnpm">
-    ```bash
-    pnpm add secure-exec
-    ```
-  </Tab>
-  <Tab title="npm">
-    ```bash
-    npm install secure-exec
-    ```
-  </Tab>
-  <Tab title="bun">
-    ```bash
-    bun add secure-exec
-    ```
-  </Tab>
-</Tabs>
+<CodeGroup>
+  ```bash npm
+  npm install secure-exec
+  ```
+
+  ```bash bun
+  bun add secure-exec
+  ```
+
+  ```bash pnpm
+  pnpm add secure-exec
+  ```
+
+  ```bash yarn
+  yarn add secure-exec
+  ```
+</CodeGroup>
 
 ## Core concepts
 
@@ -108,6 +108,71 @@ const runtime = new NodeRuntime({
 
 See [Output Capture](/features/output-capture) for more patterns.
 
+## TypeScript
+
+Optional companion package for sandboxed type checking and compilation:
+
+```bash
+pnpm add @secure-exec/typescript
+```
+
+```ts
+import { createTypeScriptTools } from "@secure-exec/typescript";
+
+const ts = createTypeScriptTools({
+  systemDriver: createNodeDriver(),
+  runtimeDriverFactory: createNodeRuntimeDriverFactory(),
+});
+```
+
+<Tabs>
+  <Tab title="Type-check Source">
+    ```ts
+    const result = await ts.typecheckSource({
+      sourceText: "const x: number = 'hello';",
+    });
+
+    console.log(result.success); // false
+    console.log(result.diagnostics[0].message);
+    // "Type 'string' is not assignable to type 'number'."
+    ```
+  </Tab>
+  <Tab title="Type-check Project">
+    ```ts
+    const result = await ts.typecheckProject({
+      cwd: "/app",
+      configFilePath: "/app/tsconfig.json",
+    });
+
+    for (const d of result.diagnostics) {
+      console.log(`${d.filePath}:${d.line} ${d.message}`);
+    }
+    ```
+  </Tab>
+  <Tab title="Compile Source">
+    ```ts
+    const result = await ts.compileSource({
+      sourceText: "const x: number = 42; export default x;",
+    });
+
+    console.log(result.outputText);
+    // "const x = 42; export default x;"
+    ```
+  </Tab>
+  <Tab title="Compile Project">
+    ```ts
+    const result = await ts.compileProject({
+      cwd: "/app",
+    });
+
+    console.log(result.emittedFiles); // ["/app/dist/index.js", ...]
+    console.log(result.success); // true
+    ```
+  </Tab>
+</Tabs>
+
+See [TypeScript](/features/typescript).
+
 ## Permissions
 
 All capabilities are blocked unless you opt in:
@@ -171,29 +236,6 @@ const driver = createNodeDriver({
 
 See [Networking](/features/networking).
 
-## TypeScript
-
-Optional companion package for sandboxed type checking and compilation:
-
-```bash
-pnpm add @secure-exec/typescript
-```
-
-```ts
-import { createTypeScriptTools } from "@secure-exec/typescript";
-
-const ts = createTypeScriptTools({
-  systemDriver: createNodeDriver(),
-  runtimeDriverFactory: createNodeRuntimeDriverFactory(),
-});
-
-const result = await ts.typecheckSource({
-  sourceText: "const x: number = 'hello';",
-});
-console.log(result.diagnostics);
-```
-
-See [TypeScript](/features/typescript).
 
 ## Clean up
 

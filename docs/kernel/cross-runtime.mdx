@@ -4,6 +4,8 @@ description: Pipes, VFS sharing, and npm scripts across WasmVM, Node, and Python
 icon: "arrows-split-up-and-left"
 ---
 
+<Warning>This page documents experimental functionality. APIs, behavior, and docs may change without notice.</Warning>
+
 The kernel lets multiple runtimes share a single OS. Processes in WasmVM can pipe data to Node, Node can call shell commands via `child_process`, and all runtimes see the same files.
 
 ## Command routing

@@ -4,6 +4,8 @@ description: Open interactive shells, configure terminal behavior, and use proce
 icon: "rectangle-terminal"
 ---
 
+<Warning>This page documents experimental functionality. APIs, behavior, and docs may change without notice.</Warning>
+
 The kernel includes a full PTY device layer, line discipline, and termios support. This enables interactive shells where programs can detect `isatty()`, handle control characters (^C, ^D, ^Z), and use raw/canonical terminal modes — all inside the sandbox.
 
 ## Quick start — `openShell()`
