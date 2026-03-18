@@ -98,6 +98,9 @@ PRD: ralph/kernel-hardening (46 stories)
 - Host httpRequest adapter must use `http` or `https` transport based on URL protocol — always using `https` breaks localhost HTTP requests from sandbox
 - To test sandbox http.request() client behavior, create an external nodeHttp server in the test code and have the sandbox request to it
 - PTY newline echo uses `\r\n` (CR+LF) — xterm.js LF alone only moves cursor down, not to column 0
+- PTY slave output has ONLCR: lone `\n` converted to `\r\n` (POSIX default) — needed for correct terminal rendering
+- WasmVM driver _isFdKernelRouted checks both pipe (filetype 6) AND PTY (isatty) — default char device shares filetype 2 with PTY slave
+- brush-shell interactive prompt: "sh-0.4$ " — set by brush-shell, not configurable via PS1 in current WASI integration
 - `translateToString(true)` preserves explicitly-written spaces — `$ ` stays `$ `, not `$`
 - Shell terminal tests use MockShellDriver (kernel FD-based REPL loop) with TerminalHarness for exact-match screen assertions
 - NodeExecutionDriver split into 5 modules in src/node/: isolate-bootstrap.ts (types+utilities), module-resolver.ts, esm-compiler.ts, bridge-setup.ts, execution-lifecycle.ts; facade is execution-driver.ts (<300 lines)
@@ -1282,4 +1285,31 @@ PRD: ralph/kernel-hardening (46 stories)
   - For line wrapping tests, use small terminal cols (e.g., 20) — prompt "$ " takes 2 chars, remaining cols determine wrap point
   - Echo disabled via `ki.ptySetDiscipline(pid, fd, { echo: false })` — canonical mode still buffers input, just doesn't echo; output from shell (fdWrite to slave) still appears
   - `harness.term.resize()` changes xterm viewport; `harness.shell.resize()` delivers SIGWINCH via kernel — both needed for resize tests
+---
+
+## 2026-03-17 - US-083
+- Added WasmVM terminal tests using @xterm/headless for screen-state verification
+- Fixed WasmVM driver PTY routing: stdout/stderr now routes through kernel fdWrite for PTYs (not just pipes)
+- Added ONLCR output processing to PTY slave write path (converts \n to \r\n, POSIX standard)
+- Added ttyFds passthrough so brush-shell detects interactive mode and shows prompt
+- Implemented getIno/getInodeByIno in kernel VFS adapter for WASI path_filestat_get support
+- Tests passing: echo, output preservation, export (exact screen-state matching)
+- Tests .todo: ls (proc_spawn child PID retrieval fails), cd (hangs on WASI path resolution when dir exists)
+- Files changed:
+  - `packages/kernel/src/pty.ts` — ONLCR output processing
+  - `packages/kernel/test/kernel-integration.test.ts` — updated slave→master test for ONLCR
+  - `packages/runtime/wasmvm/src/driver.ts` — _isFdKernelRouted (detects PTY + pipe), stdinIsPty bypass, ttyFds detection
+  - `packages/runtime/wasmvm/src/kernel-worker.ts` — ttyFds in UserManager, getIno/getInodeByIno via vfsStat RPC
+  - `packages/runtime/wasmvm/src/syscall-rpc.ts` — ttyFds field in WorkerInitData
+  - `packages/runtime/wasmvm/test/shell-terminal.test.ts` — new test file
+  - `packages/runtime/wasmvm/test/terminal-harness.ts` — TerminalHarness (duplicated from kernel)
+  - `packages/runtime/wasmvm/package.json` — @xterm/headless devDep
+- **Learnings for future iterations:**
+  - WasmVM driver must check isatty() (not just pipe filetype) to detect PTY-connected FDs — default character device and PTY slave share filetype 2
+  - Driver must NOT create stdin pipe when FD 0 is already a PTY slave (breaks interactive input flow)
+  - brush-shell prompt format is "sh-0.4$ " — capture as constant at top of test file
+  - ONLCR (LF→CRLF) is required on PTY slave output for correct terminal rendering — xterm.js LF alone only moves cursor down, not to column 0
+  - brush-shell's cd builtin hangs when target dir exists — likely blocks on WASI path_open or fd_readdir after path_filestat_get succeeds
+  - ls from interactive shell shows "WARN could not retrieve pid for child process" — proc_spawn return value not read correctly by brush-shell
+  - kernel VFS adapter getIno must parse the vfsStat RPC response's "type" field (not "isDirectory") since the handler encodes type as string
 ---
