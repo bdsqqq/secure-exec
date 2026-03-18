@@ -241,4 +241,122 @@ describe.skipIf(!hasWasmBinary)("wasmvm-shell-terminal", () => {
 			].join("\n"),
 		);
 	});
+
+	it("cat reads VFS file — write file, cat it, content appears on screen", async () => {
+		const { kernel, vfs } = await createShellKernel();
+		await vfs.writeFile("/tmp/hello.txt", "hello world\n");
+		harness = new TerminalHarness(kernel);
+
+		await harness.waitFor(PROMPT);
+		await harness.type("cat /tmp/hello.txt\n");
+		await harness.waitFor(PROMPT, 2);
+
+		expect(harness.screenshotTrimmed()).toBe(
+			[
+				`${PROMPT}cat /tmp/hello.txt`,
+				" WARN could not retrieve pid for child process",
+				"hello world",
+				PROMPT,
+			].join("\n"),
+		);
+	});
+
+	it("pipe data via redirect — 'echo foo > file' then 'cat file' → 'foo' on screen", async () => {
+		const { kernel, vfs } = await createShellKernel();
+		await vfs.createDir("/tmp");
+		harness = new TerminalHarness(kernel);
+
+		await harness.waitFor(PROMPT);
+		await harness.type("echo foo > /tmp/pipe.out\n");
+		await harness.waitFor(PROMPT, 2);
+		await harness.type("cat /tmp/pipe.out\n");
+		await harness.waitFor(PROMPT, 3);
+
+		expect(harness.screenshotTrimmed()).toBe(
+			[
+				`${PROMPT}echo foo > /tmp/pipe.out`,
+				`${PROMPT}cat /tmp/pipe.out`,
+				" WARN could not retrieve pid for child process",
+				"foo",
+				PROMPT,
+			].join("\n"),
+		);
+	});
+
+	it("bad command — 'nonexistent_cmd' → error message on screen", async () => {
+		const { kernel } = await createShellKernel();
+		harness = new TerminalHarness(kernel);
+
+		await harness.waitFor(PROMPT);
+		await harness.type("nonexistent_cmd\n");
+		await harness.waitFor(PROMPT, 2);
+
+		expect(harness.screenshotTrimmed()).toBe(
+			[
+				`${PROMPT}nonexistent_cmd`,
+				"error: command not found: nonexistent_cmd",
+				PROMPT,
+			].join("\n"),
+		);
+	});
+
+	it("stderr output appears on screen — 'echo error >&2' shows error text", async () => {
+		const { kernel } = await createShellKernel();
+		harness = new TerminalHarness(kernel);
+
+		await harness.waitFor(PROMPT);
+		await harness.type("echo error >&2\n");
+		await harness.waitFor(PROMPT, 2);
+
+		expect(harness.screenshotTrimmed()).toBe(
+			[
+				`${PROMPT}echo error >&2`,
+				"error",
+				PROMPT,
+			].join("\n"),
+		);
+	});
+
+	it("redirection — 'echo hello > /tmp/out' then 'cat /tmp/out' → 'hello' on screen", async () => {
+		const { kernel, vfs } = await createShellKernel();
+		await vfs.createDir("/tmp");
+		harness = new TerminalHarness(kernel);
+
+		await harness.waitFor(PROMPT);
+		await harness.type("echo hello > /tmp/out\n");
+		await harness.waitFor(PROMPT, 2);
+		await harness.type("cat /tmp/out\n");
+		await harness.waitFor(PROMPT, 3);
+
+		expect(harness.screenshotTrimmed()).toBe(
+			[
+				`${PROMPT}echo hello > /tmp/out`,
+				`${PROMPT}cat /tmp/out`,
+				" WARN could not retrieve pid for child process",
+				"hello",
+				PROMPT,
+			].join("\n"),
+		);
+	});
+
+	it("multi-line input — quoted string continuation across lines", async () => {
+		const { kernel } = await createShellKernel();
+		harness = new TerminalHarness(kernel);
+
+		await harness.waitFor(PROMPT);
+		await harness.type('echo "hello\n');
+		// brush-shell buffers until closing quote — no continuation prompt
+		await harness.type('world"\n');
+		await harness.waitFor(PROMPT, 2);
+
+		expect(harness.screenshotTrimmed()).toBe(
+			[
+				`${PROMPT}echo "hello`,
+				'world"',
+				"hello",
+				"world",
+				PROMPT,
+			].join("\n"),
+		);
+	});
 });

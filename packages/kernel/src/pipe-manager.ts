@@ -159,6 +159,11 @@ export class PipeManager {
 		return this.descToPipe.has(descriptionId);
 	}
 
+	/** Get the pipe ID for a description, or undefined if not a pipe */
+	pipeIdFor(descriptionId: number): number | undefined {
+		return this.descToPipe.get(descriptionId)?.pipeId;
+	}
+
 	/**
 	 * Create pipe FDs in the given FD table.
 	 * Returns the FD numbers for {read, write}.

@@ -18,6 +18,7 @@ import type {
 	ProcessContext,
 	ProcessInfo,
 	FDStat,
+	FDEntry,
 	OpenShellOptions,
 	ShellHandle,
 	ConnectTerminalOptions,
@@ -506,7 +507,8 @@ class KernelImpl implements Kernel {
 					return this.ptyManager.write(entry.description.id, data);
 				}
 
-				return data.length;
+				// Write to VFS at cursor position (async — returns Promise)
+				return this.vfsWrite(entry, data);
 			},
 			fdClose: (pid, fd) => {
 				const table = this.getTable(pid);
@@ -778,6 +780,35 @@ class KernelImpl implements Kernel {
 				this.applyStdioOverride(table, callerTable, 2, options!.stderrFd);
 			}
 
+			// Close inherited pipe FDs above stdio that share a pipe with an
+			// overridden stdio FD — prevents pipe deadlocks (close-on-exec for
+			// counterpart pipe ends only, so tests that intentionally inherit pipe
+			// FDs without overrides are not affected).
+			if (hasFdOverrides) {
+				const overridePipeIds = new Set<number>();
+				for (const fd of [0, 1, 2]) {
+					const e = table.get(fd);
+					if (e && this.pipeManager.isPipe(e.description.id)) {
+						const pipeId = this.pipeManager.pipeIdFor(e.description.id);
+						if (pipeId !== undefined) overridePipeIds.add(pipeId);
+					}
+				}
+				if (overridePipeIds.size > 0) {
+					const toClose: number[] = [];
+					for (const entry of table) {
+						if (entry.fd > 2 && this.pipeManager.isPipe(entry.description.id)) {
+							const pid2 = this.pipeManager.pipeIdFor(entry.description.id);
+							if (pid2 !== undefined && overridePipeIds.has(pid2)) {
+								toClose.push(entry.fd);
+							}
+						}
+					}
+					for (const fd of toClose) {
+						table.close(fd);
+					}
+				}
+			}
+
 			return table;
 		}
 
@@ -834,6 +865,23 @@ class KernelImpl implements Kernel {
 				else this.ptyManager.close(id);
 			}
 		}
+	}
+
+	private async vfsWrite(entry: FDEntry, data: Uint8Array): Promise<number> {
+		let content: Uint8Array;
+		try {
+			content = await this.vfs.readFile(entry.description.path);
+		} catch {
+			content = new Uint8Array(0);
+		}
+		const cursor = Number(entry.description.cursor);
+		const endPos = cursor + data.length;
+		const newContent = new Uint8Array(Math.max(content.length, endPos));
+		newContent.set(content);
+		newContent.set(data, cursor);
+		await this.vfs.writeFile(entry.description.path, newContent);
+		entry.description.cursor = BigInt(endPos);
+		return data.length;
 	}
 
 	private getTable(pid: number): ProcessFDTable {

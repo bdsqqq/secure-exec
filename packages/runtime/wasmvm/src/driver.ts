@@ -336,7 +336,7 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
           break;
         }
         case 'fdWrite': {
-          intResult = kernel.fdWrite(pid, msg.args.fd as number, new Uint8Array(msg.args.data as ArrayBuffer));
+          intResult = await kernel.fdWrite(pid, msg.args.fd as number, new Uint8Array(msg.args.data as ArrayBuffer));
           break;
         }
         case 'fdPread': {

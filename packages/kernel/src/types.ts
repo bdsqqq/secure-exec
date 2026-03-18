@@ -226,7 +226,7 @@ export interface KernelInterface {
 	// FD operations (per-PID)
 	fdOpen(pid: number, path: string, flags: number, mode?: number): number;
 	fdRead(pid: number, fd: number, length: number): Promise<Uint8Array>;
-	fdWrite(pid: number, fd: number, data: Uint8Array): number;
+	fdWrite(pid: number, fd: number, data: Uint8Array): number | Promise<number>;
 	fdClose(pid: number, fd: number): void;
 	fdSeek(
 		pid: number,
