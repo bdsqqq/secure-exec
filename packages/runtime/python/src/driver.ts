@@ -152,6 +152,28 @@ async function ensurePyodide(payload) {
       callHost("kernelSpawn", { command, args: JSON.parse(argsJson), env: JSON.parse(envJson), cwd }),
   });
 
+  // Block import js / pyodide_js — prevents sandbox escape via host JS runtime
+  await pyodide.runPythonAsync([
+    "import sys",
+    "import importlib.abc",
+    "import importlib.machinery",
+    "class _BlockHostJsImporter(importlib.abc.MetaPathFinder):",
+    "    _BLOCKED = frozenset(('js', 'pyodide_js'))",
+    "    def find_spec(self, fullname, path, target=None):",
+    "        if fullname in self._BLOCKED or fullname.startswith('js.') or fullname.startswith('pyodide_js.'):",
+    "            raise ImportError('module ' + repr(fullname) + ' is blocked in sandbox')",
+    "        return None",
+    "    def find_module(self, fullname, path=None):",
+    "        if fullname in self._BLOCKED or fullname.startswith('js.') or fullname.startswith('pyodide_js.'):",
+    "            raise ImportError('module ' + repr(fullname) + ' is blocked in sandbox')",
+    "        return None",
+    "sys.meta_path.insert(0, _BlockHostJsImporter())",
+    "for _m in list(sys.modules):",
+    "    if _m == 'js' or _m == 'pyodide_js' or _m.startswith('js.') or _m.startswith('pyodide_js.'):",
+    "        del sys.modules[_m]",
+    "del _m, _BlockHostJsImporter",
+  ].join("\n"));
+
   return pyodide;
 }
 

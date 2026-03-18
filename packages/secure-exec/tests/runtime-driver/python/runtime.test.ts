@@ -256,4 +256,52 @@ describe("runtime driver specific: python", () => {
 		expect(recovered.code).toBe(0);
 		expect(recovered.value).toBe(7);
 	});
+
+	// -----------------------------------------------------------------------
+	// Host JS escape prevention
+	// -----------------------------------------------------------------------
+
+	it("blocks import js — prevents access to host JS runtime", async () => {
+		const runtime = createRuntime();
+		const result = await runtime.exec("import js\nprint(js.globalThis)");
+		expect(result.code).toBe(1);
+		expect(result.errorMessage).toContain("blocked in sandbox");
+	});
+
+	it("blocks import pyodide_js — prevents access to Pyodide JS internals", async () => {
+		const runtime = createRuntime();
+		const result = await runtime.exec("import pyodide_js");
+		expect(result.code).toBe(1);
+		expect(result.errorMessage).toContain("blocked in sandbox");
+	});
+
+	it("blocks from js import globalThis — attribute-level import bypass", async () => {
+		const runtime = createRuntime();
+		const result = await runtime.exec("from js import globalThis");
+		expect(result.code).toBe(1);
+		expect(result.errorMessage).toContain("blocked in sandbox");
+	});
+
+	it("blocks getattr-based js access", async () => {
+		const runtime = createRuntime();
+		const result = await runtime.exec(
+			"import importlib\nm = importlib.import_module('js')\nprint(m.globalThis)",
+		);
+		expect(result.code).toBe(1);
+		expect(result.errorMessage).toContain("blocked in sandbox");
+	});
+
+	it("normal Python stdlib still works after js blocking", async () => {
+		const runtime = createRuntime();
+		const events: string[] = [];
+		const result = await runtime.exec(
+			"import math\nimport json\nimport re\nimport collections\nprint(json.dumps({'pi': round(math.pi, 4), 'match': bool(re.match('abc', 'abc')), 'counter': dict(collections.Counter('hello'))}))",
+			{ onStdio: (event) => events.push(event.message) },
+		);
+		expect(result.code).toBe(0);
+		const parsed = JSON.parse(events.join(""));
+		expect(parsed.pi).toBeCloseTo(3.1416, 3);
+		expect(parsed.match).toBe(true);
+		expect(parsed.counter).toHaveProperty("l");
+	});
 });
