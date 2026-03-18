@@ -1415,3 +1415,11 @@ PRD: ralph/kernel-hardening (46 stories)
 - **Learnings for future iterations:**
   - None new — patterns already documented
 ---
+
+## 2026-03-18 - US-135
+- Already implemented: command registry override warnings, /dev/zero write no-op, device realpath, /dev/fd/N parsing validation
+- Tests already exist in command-registry.test.ts, device-layer.test.ts, kernel-integration.test.ts
+- Marked passes: true in prd.json
+- **Learnings for future iterations:**
+  - None new — patterns already documented
+---
