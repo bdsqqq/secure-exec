@@ -1457,3 +1457,20 @@ PRD: ralph/kernel-hardening (46 stories)
   - Validation belongs in kernel.ts (not pty.ts) since process groups are kernel-level concepts; PtyManager shouldn't need to know about ProcessTable
   - All 158 kernel integration tests pass, including all existing tcsetpgrp tests
 ---
+
+## 2026-03-18 - US-108
+- Added adversarial PTY stress tests to packages/kernel/test/resource-exhaustion.test.ts
+- 7 new tests in "PTY adversarial stress" describe block:
+  - Rapid sequential master writes (100+ chunks, 1KB each) with no slave reader — verifies EAGAIN and bounded memory
+  - Single large master write (1MB) — verifies immediate EAGAIN, no partial buffering
+  - Single large slave write (1MB) — same for output direction
+  - Multiple PTY pairs (5) simultaneously filled — verifies isolation (drain one, others stay full)
+  - Canonical mode line buffer under sustained input without newline — verifies MAX_CANON cap
+  - Canonical mode with echo — verifies echo output stays bounded under sustained input
+  - Rapid sequential slave writes (100+ chunks) with no master reader — verifies EAGAIN and bounded memory
+- Files changed: packages/kernel/test/resource-exhaustion.test.ts
+- **Learnings for future iterations:**
+  - PtyManager.close() removes descToPty entries immediately — async drain loops must catch EBADF after close
+  - In canonical mode, chars beyond MAX_CANON are silently dropped (no EAGAIN) — only buffer-level EAGAIN applies to input/output buffers
+  - Echo with canonical mode: echo output is bounded by MAX_CANON (only accepted chars get echoed) + 2 bytes for CR+LF on newline flush
+---

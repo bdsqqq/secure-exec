@@ -1930,7 +1930,7 @@
         "Tests pass"
       ],
       "priority": 114,
-      "passes": false,
+      "passes": true,
       "notes": "MEDIUM \u2014 test-audit.md M11 flags this as HIGH priority. Current tests only fill buffer to exact limit and check one extra byte. No realistic adversarial patterns."
     },
     {
