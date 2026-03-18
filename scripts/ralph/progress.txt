@@ -1717,3 +1717,16 @@ PRD: ralph/kernel-hardening (46 stories)
   - Berry lockfiles use `__metadata:` header and `resolution: "pkg@npm:version"` format (vs v1's `# yarn lockfile v1`)
   - `nodeLinker: node-modules` in `.yarnrc.yml` makes berry create a traditional node_modules/ layout while using berry's resolution engine
 ---
+
+## 2026-03-18 - US-090
+- Added workspace/monorepo layout fixture at packages/secure-exec/tests/projects/workspace-layout-pass/
+- Structure: root package.json with `"workspaces": ["packages/*"]`, packages/lib (exports add/multiply), packages/app (requires lib, prints JSON output)
+- Uses npm as package manager — npm install creates workspace symlinks in node_modules
+- Fixture passes project-matrix parity test — host Node and sandbox produce identical output
+- Files created: fixture.json, package.json (root), packages/lib/package.json, packages/lib/src/index.js, packages/app/package.json, packages/app/src/index.js
+- **Learnings for future iterations:**
+  - npm workspaces use `"workspaces": ["packages/*"]` in root package.json — npm install automatically symlinks workspace members into root node_modules
+  - Workspace dependencies use `"*"` version spec (e.g., `"@workspace-test/lib": "*"`) so npm resolves to the local package
+  - The fixture entry can be in a nested workspace package (e.g., `packages/app/src/index.js`) — the test runner handles this correctly
+  - express-pass and fastify-pass fixtures have pre-existing failures — not related to workspace fixture
+---

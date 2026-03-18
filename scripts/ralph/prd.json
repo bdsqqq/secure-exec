@@ -2105,7 +2105,7 @@
         "Typecheck passes",
         "Tests pass"
       ],
-      "passes": false,
+      "passes": true,
       "notes": "Workspace layouts use symlinks between workspace members. Increasingly common (turborepo, nx, etc). Use pnpm or npm workspaces.",
       "id": "US-090",
       "priority": 125
