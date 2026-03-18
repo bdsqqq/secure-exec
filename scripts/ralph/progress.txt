@@ -1373,3 +1373,14 @@ PRD: ralph/kernel-hardening (46 stories)
 - **Learnings for future iterations:**
   - Multiple stories were implemented but PRD wasn't updated — batch-verify before starting new work
 ---
+
+## 2026-03-18 - US-132
+- Added module cache clearing to `__unsafeCreateContext` in execution-driver.ts — clears all 10 caches (esmModuleCache, esmModuleReverseCache, dynamicImportCache, dynamicImportPending, 4 resolutionCache maps, moduleFormatCache, packageTypeCache)
+- Added test verifying module cache isolation: first context requires module v1, VFS updated to v2, second context correctly sees v2
+- Files changed:
+  - packages/secure-exec-node/src/execution-driver.ts — added cache clearing to `__unsafeCreateContext`
+  - packages/secure-exec/tests/runtime-driver/node/bridge-hardening.test.ts — added module cache isolation test
+- **Learnings for future iterations:**
+  - `__unsafeCreateContext` requires absolute paths for require() — relative paths fail because filename is synthetic
+  - Module caches on `deps` must be cleared in BOTH `executeWithRuntime` and `__unsafeCreateContext`
+---
