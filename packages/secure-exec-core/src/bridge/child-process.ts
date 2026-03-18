@@ -101,12 +101,30 @@ interface OutputStreamStub {
   readable: boolean;
   _listeners: Record<string, EventListener[]>;
   _onceListeners: Record<string, EventListener[]>;
+  _maxListeners: number;
+  _maxListenersWarned: Set<string>;
   on(event: string, listener: EventListener): OutputStreamStub;
   once(event: string, listener: EventListener): OutputStreamStub;
   emit(event: string, ...args: unknown[]): boolean;
   read(): null;
   setEncoding(): OutputStreamStub;
+  setMaxListeners(n: number): OutputStreamStub;
+  getMaxListeners(): number;
   pipe<T extends NodeJS.WritableStream>(dest: T): T;
+}
+
+/** Warn when listener count exceeds max (Node.js: warn, don't crash) */
+function checkStreamMaxListeners(stream: OutputStreamStub, event: string): void {
+  if (stream._maxListeners > 0 && !stream._maxListenersWarned.has(event)) {
+    const total = (stream._listeners[event]?.length ?? 0) + (stream._onceListeners[event]?.length ?? 0);
+    if (total > stream._maxListeners) {
+      stream._maxListenersWarned.add(event);
+      const warning = `MaxListenersExceededWarning: Possible EventEmitter memory leak detected. ${total} ${event} listeners added. MaxListeners is ${stream._maxListeners}. Use emitter.setMaxListeners() to increase limit`;
+      if (typeof console !== "undefined" && console.error) {
+        console.error(warning);
+      }
+    }
+  }
 }
 
 /**
@@ -117,6 +135,8 @@ interface OutputStreamStub {
 class ChildProcess {
   private _listeners: Record<string, EventListener[]> = {};
   private _onceListeners: Record<string, EventListener[]> = {};
+  private _maxListeners = 10;
+  private _maxListenersWarned = new Set<string>();
 
   pid: number = Math.floor(Math.random() * 10000) + 1000;
   killed = false;
@@ -157,14 +177,18 @@ class ChildProcess {
       readable: true,
       _listeners: {},
       _onceListeners: {},
+      _maxListeners: 10,
+      _maxListenersWarned: new Set(),
       on(event: string, listener: EventListener): OutputStreamStub {
         if (!this._listeners[event]) this._listeners[event] = [];
         this._listeners[event].push(listener);
+        checkStreamMaxListeners(this, event);
         return this;
       },
       once(event: string, listener: EventListener): OutputStreamStub {
         if (!this._onceListeners[event]) this._onceListeners[event] = [];
         this._onceListeners[event].push(listener);
+        checkStreamMaxListeners(this, event);
         return this;
       },
       emit(event: string, ...args: unknown[]): boolean {
@@ -182,6 +206,13 @@ class ChildProcess {
       },
       setEncoding(): OutputStreamStub {
         return this;
+      },
+      setMaxListeners(n: number): OutputStreamStub {
+        this._maxListeners = n;
+        return this;
+      },
+      getMaxListeners(): number {
+        return this._maxListeners;
       },
       pipe<T extends NodeJS.WritableStream>(dest: T): T {
         return dest;
@@ -193,14 +224,18 @@ class ChildProcess {
       readable: true,
       _listeners: {},
       _onceListeners: {},
+      _maxListeners: 10,
+      _maxListenersWarned: new Set(),
       on(event: string, listener: EventListener): OutputStreamStub {
         if (!this._listeners[event]) this._listeners[event] = [];
         this._listeners[event].push(listener);
+        checkStreamMaxListeners(this, event);
         return this;
       },
       once(event: string, listener: EventListener): OutputStreamStub {
         if (!this._onceListeners[event]) this._onceListeners[event] = [];
         this._onceListeners[event].push(listener);
+        checkStreamMaxListeners(this, event);
         return this;
       },
       emit(event: string, ...args: unknown[]): boolean {
@@ -218,6 +253,13 @@ class ChildProcess {
       },
       setEncoding(): OutputStreamStub {
         return this;
+      },
+      setMaxListeners(n: number): OutputStreamStub {
+        this._maxListeners = n;
+        return this;
+      },
+      getMaxListeners(): number {
+        return this._maxListeners;
       },
       pipe<T extends NodeJS.WritableStream>(dest: T): T {
         return dest;
@@ -230,12 +272,14 @@ class ChildProcess {
   on(event: string, listener: EventListener): this {
     if (!this._listeners[event]) this._listeners[event] = [];
     this._listeners[event].push(listener);
+    this._checkMaxListeners(event);
     return this;
   }
 
   once(event: string, listener: EventListener): this {
     if (!this._onceListeners[event]) this._onceListeners[event] = [];
     this._onceListeners[event].push(listener);
+    this._checkMaxListeners(event);
     return this;
   }
 
@@ -249,6 +293,28 @@ class ChildProcess {
 
   removeListener(event: string, listener: EventListener): this {
     return this.off(event, listener);
+  }
+
+  setMaxListeners(n: number): this {
+    this._maxListeners = n;
+    return this;
+  }
+
+  getMaxListeners(): number {
+    return this._maxListeners;
+  }
+
+  private _checkMaxListeners(event: string): void {
+    if (this._maxListeners > 0 && !this._maxListenersWarned.has(event)) {
+      const total = (this._listeners[event]?.length ?? 0) + (this._onceListeners[event]?.length ?? 0);
+      if (total > this._maxListeners) {
+        this._maxListenersWarned.add(event);
+        const warning = `MaxListenersExceededWarning: Possible EventEmitter memory leak detected. ${total} ${event} listeners added to [ChildProcess]. MaxListeners is ${this._maxListeners}. Use emitter.setMaxListeners() to increase limit`;
+        if (typeof console !== "undefined" && console.error) {
+          console.error(warning);
+        }
+      }
+    }
   }
 
   emit(event: string, ...args: unknown[]): boolean {

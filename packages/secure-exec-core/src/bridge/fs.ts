@@ -9,7 +9,8 @@ import type { FsFacadeBridge } from "../shared/bridge-contract.js";
 // Declare globals that are set up by the host environment
 declare const _fs: FsFacadeBridge;
 
-// File descriptor table
+// File descriptor table — capped to prevent resource exhaustion
+const MAX_BRIDGE_FDS = 1024;
 const fdTable = new Map<number, { path: string; flags: number; position: number }>();
 let nextFd = 3;
 
@@ -776,7 +777,7 @@ function createFsError(
     path?: string;
   };
   err.code = code;
-  err.errno = code === "ENOENT" ? -2 : code === "EACCES" ? -13 : code === "EBADF" ? -9 : -1;
+  err.errno = code === "ENOENT" ? -2 : code === "EACCES" ? -13 : code === "EBADF" ? -9 : code === "EMFILE" ? -24 : -1;
   err.syscall = syscall;
   if (path) err.path = path;
   return err;
@@ -1308,6 +1309,10 @@ const fs = {
   // File descriptor methods
 
   openSync(path: PathLike, flags: OpenMode, _mode?: Mode | null): number {
+    // Enforce bridge-side FD limit
+    if (fdTable.size >= MAX_BRIDGE_FDS) {
+      throw createFsError("EMFILE", "EMFILE: too many open files, open '" + toPathString(path) + "'", "open", toPathString(path));
+    }
     const rawPath = toPathString(path);
     const pathStr = rawPath;
     const numFlags = parseFlags(flags);

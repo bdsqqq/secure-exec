@@ -167,6 +167,8 @@ exposeCustomGlobal("ProcessExitError", ProcessExitError);
 type EventListener = (...args: unknown[]) => void;
 const _processListeners: Record<string, EventListener[]> = {};
 const _processOnceListeners: Record<string, EventListener[]> = {};
+let _processMaxListeners = 10;
+const _processMaxListenersWarned = new Set<string>();
 
 function _addListener(
   event: string,
@@ -178,6 +180,20 @@ function _addListener(
     target[event] = [];
   }
   target[event].push(listener);
+
+  // Warn when exceeding maxListeners (Node.js behavior: warn, don't crash)
+  if (_processMaxListeners > 0 && !_processMaxListenersWarned.has(event)) {
+    const total = (_processListeners[event]?.length ?? 0) + (_processOnceListeners[event]?.length ?? 0);
+    if (total > _processMaxListeners) {
+      _processMaxListenersWarned.add(event);
+      const warning = `MaxListenersExceededWarning: Possible EventEmitter memory leak detected. ${total} ${event} listeners added to [process]. MaxListeners is ${_processMaxListeners}. Use emitter.setMaxListeners() to increase limit`;
+      // Use console.error to emit warning without recursion risk
+      if (typeof _error !== "undefined") {
+        _error.applySync(undefined, [warning]);
+      }
+    }
+  }
+
   return process;
 }
 
@@ -765,11 +781,12 @@ const process: Record<string, unknown> & {
     ];
   },
 
-  setMaxListeners() {
+  setMaxListeners(n: number) {
+    _processMaxListeners = n;
     return process;
   },
   getMaxListeners(): number {
-    return 10;
+    return _processMaxListeners;
   },
   rawListeners(event: string): EventListener[] {
     return (process as unknown as { listeners: (event: string) => EventListener[] }).listeners(event);
