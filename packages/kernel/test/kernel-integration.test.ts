@@ -2282,6 +2282,51 @@ describe("kernel + MockRuntimeDriver integration", () => {
 			proc.kill();
 		});
 
+		it("disabling ONLCR passes raw \\n without CR insertion", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("proc", []);
+			const { masterFd, slaveFd } = ki.openpty(proc.pid);
+
+			// Disable ONLCR via termios
+			ki.tcsetattr(proc.pid, slaveFd, { onlcr: false });
+
+			const msg = new TextEncoder().encode("hello\n");
+			ki.fdWrite(proc.pid, slaveFd, msg);
+
+			const data = await ki.fdRead(proc.pid, masterFd, 1024);
+			// Raw \n without \r insertion
+			expect(new TextDecoder().decode(data)).toBe("hello\n");
+
+			proc.kill();
+		});
+
+		it("disabling opost also skips ONLCR", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("proc", []);
+			const { masterFd, slaveFd } = ki.openpty(proc.pid);
+
+			// Disable opost (ONLCR still true, but opost gate prevents it)
+			ki.tcsetattr(proc.pid, slaveFd, { opost: false });
+
+			const msg = new TextEncoder().encode("line\n");
+			ki.fdWrite(proc.pid, slaveFd, msg);
+
+			const data = await ki.fdRead(proc.pid, masterFd, 1024);
+			expect(new TextDecoder().decode(data)).toBe("line\n");
+
+			proc.kill();
+		});
+
 		it("isatty returns true for slave FD, false for pipe FD", async () => {
 			const driver = new MockRuntimeDriver(["proc"], {
 				proc: { neverExit: true },

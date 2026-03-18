@@ -142,6 +142,11 @@ export class ProcessTable {
 	 * If pid < 0, signal all processes in process group abs(pid).
 	 */
 	kill(pid: number, signal: number): void {
+		// Validate signal range (POSIX: 0 = existence check, 1-64 = real signals)
+		if (signal < 0 || signal > 64) {
+			throw new KernelError("EINVAL", `invalid signal ${signal}`);
+		}
+
 		if (pid < 0) {
 			// Process group kill
 			const pgid = -pid;
@@ -149,7 +154,7 @@ export class ProcessTable {
 			for (const entry of this.entries.values()) {
 				if (entry.pgid === pgid && entry.status === "running") {
 					found = true;
-					entry.driverProcess.kill(signal);
+					if (signal !== 0) entry.driverProcess.kill(signal);
 				}
 			}
 			if (!found) throw new KernelError("ESRCH", `no such process group ${pgid}`);
@@ -158,6 +163,8 @@ export class ProcessTable {
 		const entry = this.entries.get(pid);
 		if (!entry) throw new KernelError("ESRCH", `no such process ${pid}`);
 		if (entry.status === "exited") return;
+		// Signal 0: existence check only — don't deliver
+		if (signal === 0) return;
 		entry.driverProcess.kill(signal);
 	}
 

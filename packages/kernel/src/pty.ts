@@ -144,7 +144,7 @@ export class PtyManager {
 			if (state.closed.slave) throw new KernelError("EIO", "slave closed");
 			if (state.closed.master) throw new KernelError("EIO", "master closed");
 
-			const processed = this.processOutput(data);
+			const processed = this.processOutput(state, data);
 			if (state.outputWaiters.length > 0) {
 				const waiter = state.outputWaiters.shift()!;
 				waiter(processed);
@@ -296,6 +296,8 @@ export class PtyManager {
 		const state = this.ptys.get(ptyId);
 		if (!state) throw new KernelError("EBADF", "PTY not found");
 		return {
+			opost: state.termios.opost,
+			onlcr: state.termios.onlcr,
 			icanon: state.termios.icanon,
 			echo: state.termios.echo,
 			isig: state.termios.isig,
@@ -309,6 +311,8 @@ export class PtyManager {
 		const state = this.ptys.get(ptyId);
 		if (!state) throw new KernelError("EBADF", "PTY not found");
 
+		if (termios.opost !== undefined) state.termios.opost = termios.opost;
+		if (termios.onlcr !== undefined) state.termios.onlcr = termios.onlcr;
 		if (termios.icanon !== undefined) state.termios.icanon = termios.icanon;
 		if (termios.echo !== undefined) state.termios.echo = termios.echo;
 		if (termios.isig !== undefined) state.termios.isig = termios.isig;
@@ -334,8 +338,11 @@ export class PtyManager {
 	// Output processing (ONLCR)
 	// -------------------------------------------------------------------
 
-	/** Convert lone \n to \r\n in output data (POSIX ONLCR). */
-	private processOutput(data: Uint8Array): Uint8Array {
+	/** Convert lone \n to \r\n in output data (POSIX ONLCR). Skipped when opost/onlcr disabled. */
+	private processOutput(state: PtyState, data: Uint8Array): Uint8Array {
+		// Skip output processing when opost or onlcr is off
+		if (!state.termios.opost || !state.termios.onlcr) return data;
+
 		// Fast path: no newlines → return as-is
 		if (!data.includes(0x0a)) return data;
 

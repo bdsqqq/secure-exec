@@ -99,6 +99,35 @@ describe("ProcessTable", () => {
 		expect(() => table.kill(999, 15)).toThrow("ESRCH");
 	});
 
+	it("kill(pid, 0) is an existence check — no signal delivered", () => {
+		const table = new ProcessTable();
+		let killedWith = -1;
+		const proc = createMockDriverProcess();
+		proc.kill = (signal) => { killedWith = signal; };
+
+		table.register(table.allocatePid(), "wasmvm", "sleep", ["1"], createCtx(), proc);
+		// Signal 0: should succeed without calling driverProcess.kill
+		table.kill(1, 0);
+		expect(killedWith).toBe(-1); // kill was NOT called
+	});
+
+	it("kill(pid, 0) throws ESRCH for non-existent process", () => {
+		const table = new ProcessTable();
+		expect(() => table.kill(999, 0)).toThrow("ESRCH");
+	});
+
+	it("kill throws EINVAL for negative signal", () => {
+		const table = new ProcessTable();
+		table.register(table.allocatePid(), "wasmvm", "sleep", [], createCtx(), createMockDriverProcess());
+		expect(() => table.kill(1, -1)).toThrow("EINVAL");
+	});
+
+	it("kill throws EINVAL for signal > 64", () => {
+		const table = new ProcessTable();
+		table.register(table.allocatePid(), "wasmvm", "sleep", [], createCtx(), createMockDriverProcess());
+		expect(() => table.kill(1, 100)).toThrow("EINVAL");
+	});
+
 	it("waitpid rejects with ESRCH for non-existent PID", async () => {
 		const table = new ProcessTable();
 		await expect(table.waitpid(9999)).rejects.toThrow(/ESRCH/);
