@@ -1179,6 +1179,91 @@ describe("NodeRuntime", () => {
 		});
 	});
 
+	it("Date.now cannot be overridden by sandbox code", async () => {
+		proc = createTestNodeRuntime();
+		const result = await proc.run(`
+      // Strict mode makes assignment to non-writable throw TypeError
+      let assignThrew = false;
+      try {
+        (function() { 'use strict'; Date.now = () => 999; })();
+      } catch (e) {
+        assignThrew = e instanceof TypeError;
+      }
+
+      let defineThrew = false;
+      try {
+        Object.defineProperty(Date, 'now', {
+          value: () => 999,
+          configurable: true,
+        });
+      } catch (e) {
+        defineThrew = e instanceof TypeError;
+      }
+
+      module.exports = {
+        assignThrew,
+        defineThrew,
+        stillFrozen: Date.now() === Date.now(),
+      };
+    `);
+		expect(result.exports).toEqual({
+			assignThrew: true,
+			defineThrew: true,
+			stillFrozen: true,
+		});
+	});
+
+	it("new Date().getTime() returns degraded value matching Date.now()", async () => {
+		proc = createTestNodeRuntime();
+		const result = await proc.run(`
+      const now = Date.now();
+      const constructed = new Date().getTime();
+      const withArg = new Date(1234567890000).getTime();
+      module.exports = {
+        matchesFrozen: constructed === now,
+        explicitArgPreserved: withArg === 1234567890000,
+        dateCallReturnsString: typeof Date() === 'string',
+      };
+    `);
+		expect(result.exports).toEqual({
+			matchesFrozen: true,
+			explicitArgPreserved: true,
+			dateCallReturnsString: true,
+		});
+	});
+
+	it("performance.now cannot be overridden by sandbox code", async () => {
+		proc = createTestNodeRuntime();
+		const result = await proc.run(`
+      let assignThrew = false;
+      try {
+        (function() { 'use strict'; performance.now = () => 12345; })();
+      } catch (e) {
+        assignThrew = e instanceof TypeError;
+      }
+
+      let defineThrew = false;
+      try {
+        Object.defineProperty(performance, 'now', {
+          value: () => 12345,
+        });
+      } catch (e) {
+        defineThrew = e instanceof TypeError;
+      }
+
+      module.exports = {
+        assignThrew,
+        defineThrew,
+        stillZero: performance.now() === 0,
+      };
+    `);
+		expect(result.exports).toEqual({
+			assignThrew: true,
+			defineThrew: true,
+			stillZero: true,
+		});
+	});
+
 	it("restores advancing clocks when timing mitigation is off", async () => {
 		const capture = createConsoleCapture();
 		proc = createTestNodeRuntime({
