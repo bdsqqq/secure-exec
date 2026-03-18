@@ -99,11 +99,24 @@ for (const sourceFile of sourceFiles) {
 	await fs.writeFile(outputFile, compiledCode, "utf8");
 }
 
-await fs.writeFile(
-	generatedManifestPath,
-	createManifestSource(runtimeSources),
-	"utf8",
+const manifestSource = createManifestSource(runtimeSources);
+await fs.writeFile(generatedManifestPath, manifestSource, "utf8");
+
+// Sync the manifest to @secure-exec/core until US-053 moves the build script.
+const coreManifestPath = path.join(
+	process.cwd(),
+	"..",
+	"secure-exec-core",
+	"src",
+	"generated",
+	"isolate-runtime.ts",
 );
+try {
+	await fs.mkdir(path.dirname(coreManifestPath), { recursive: true });
+	await fs.writeFile(coreManifestPath, manifestSource, "utf8");
+} catch {
+	// Core package may not exist yet during initial setup.
+}
 
 console.log(
 	`Wrote ${Object.keys(runtimeSources).length} isolate runtime sources to ${runtimeDistDir}`,

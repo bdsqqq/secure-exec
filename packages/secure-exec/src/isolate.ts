@@ -1,17 +1,19 @@
 import ivm from "isolated-vm";
 import type { TimingMitigation } from "./shared/api-types.js";
+import {
+	TIMEOUT_ERROR_MESSAGE as _TIMEOUT_ERROR_MESSAGE,
+} from "@secure-exec/core";
 
 /** Default timing side-channel mitigation: freeze Date.now/performance.now inside the isolate. */
 export const DEFAULT_TIMING_MITIGATION: TimingMitigation = "freeze";
 
-/** Matches GNU `timeout` convention where 124 indicates execution timed out. */
-export const TIMEOUT_EXIT_CODE = 124;
-export const TIMEOUT_ERROR_MESSAGE = "CPU time limit exceeded";
+// Re-export from core so existing callers that import from ./isolate.js continue to work.
+export { TIMEOUT_EXIT_CODE, TIMEOUT_ERROR_MESSAGE } from "@secure-exec/core";
 
 /** Thrown when an isolate execution exceeds its CPU time budget. */
 export class ExecutionTimeoutError extends Error {
 	constructor() {
-		super(TIMEOUT_ERROR_MESSAGE);
+		super(_TIMEOUT_ERROR_MESSAGE);
 		this.name = "ExecutionTimeoutError";
 	}
 }
