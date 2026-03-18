@@ -1215,3 +1215,17 @@ PRD: ralph/kernel-hardening (46 stories)
   - TestFileSystem.writeFile auto-creates parent directories, so writing to paths like /dev/stdout won't throw in tests — it succeeds in the backing FS
   - rename() checks both oldPath and newPath for device paths, so test both directions
 ---
+
+## 2026-03-17 - US-079
+- Added 5 new permission tests to kernel-integration.test.ts "permission deny scenarios" block
+- Modified checkPermission() to pass denial reason through to error factory
+- Updated fsError() to include optional reason in EACCES message
+- Updated checkChildProcess() to include reason in EACCES message
+- Tests: writeFile/createDir/removeFile denied when fs checker missing, custom checker reason in error, cwd parameter in childProcess request
+- Files changed: packages/kernel/src/permissions.ts, packages/kernel/test/kernel-integration.test.ts
+- **Learnings for future iterations:**
+  - Kernel interface only exposes writeFile/mkdir/readFile/readdir/stat/exists — no createDir or removeFile; test those via wrapFileSystem directly
+  - wrapFileSystem is exported from permissions.ts and can be imported in tests for direct VFS permission wrapper testing
+  - checkChildProcess has different deny-by-default: no checker = allow (not deny), unlike fs where no checker = deny
+  - PermissionDecision.reason was defined in types but never wired through to errors before this change
+---
