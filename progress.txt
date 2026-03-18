@@ -1264,3 +1264,16 @@ PRD: ralph/kernel-hardening (46 stories)
   - WasmVM copy has 5s default timeout vs kernel's 2s — WasmVM shell commands are slower
   - Shell death detection uses Promise.race with 0ms timeout to non-blockingly check shell.wait()
 ---
+
+## 2026-03-17 - US-081
+- Already implemented in prior iteration — packages/kernel/test/shell-terminal.test.ts (276 lines, 10 tests)
+- MockShellDriver reads PTY slave FDs, implements echo/noecho/^C/^D commands
+- All assertions use exact-match screenshotTrimmed() — no toContain/substring
+- Tests pass: 10/10 in 797ms
+- Typecheck passes
+- Marked passes: true in prd.json
+- **Learnings for future iterations:**
+  - MockShellDriver reads from ctx.fds.stdin/stdout (kernel-assigned FDs), not hardcoded 0/1
+  - PTY line discipline handles echo, backspace, ^C→SIGINT — mock shell just reads cooked lines
+  - \x03 = ^C (SIGINT), \x04 = ^D (EOF), \x7f = backspace in terminal input
+---
