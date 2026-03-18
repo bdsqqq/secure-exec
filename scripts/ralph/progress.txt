@@ -1584,3 +1584,15 @@ PRD: ralph/kernel-hardening (46 stories)
   - Internal require system writes need a captured local reference (`__internalModuleCache`) since the globalThis property gets replaced with a Proxy that rejects writes.
   - `proc.run()` returns `{ code, exports }` not just exports — test assertions must use `result.exports`.
 ---
+
+## 2026-03-18 - US-107
+- What was implemented: Added default concurrent host timer cap (10,000) and missing test coverage
+- Changes:
+  - packages/secure-exec-node/src/isolate-bootstrap.ts — added DEFAULT_MAX_TIMERS = 10_000 constant
+  - packages/secure-exec-node/src/execution-driver.ts — imported constant, applied as default via ?? operator
+  - packages/secure-exec/tests/runtime-driver/node/resource-budgets.test.ts — added "cleared timers free slots for new ones" and "normal code with fewer than 100 timers works fine" tests
+- **Learnings for future iterations:**
+  - Timer budget was already mostly implemented (bridge-side _checkTimerBudget, host injection of _maxTimers, two existing tests) — the gap was only the default value and two specific test scenarios
+  - Budget defaults live in isolate-bootstrap.ts alongside other constants; undefined means unlimited for all budget fields
+  - The "normal code" test intentionally omits resourceBudgets to exercise the default value path
+---
