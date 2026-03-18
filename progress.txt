@@ -5,6 +5,8 @@ PRD: ralph/kernel-hardening (46 stories)
 ## Codebase Patterns
 - Claude binary at ~/.claude/local/claude — not on PATH by default; skip helpers must check this fallback location
 - Claude Code --output-format stream-json requires --verbose flag; uses ANTHROPIC_BASE_URL natively (no fetch interceptor)
+- Python WORKER_SOURCE is String.raw — use array.join("\n") for multiline Python code; f-strings with escaped quotes break
+- @secure-exec/python must be rebuilt (`pnpm run build` in packages/secure-exec-python/) before tests pick up changes
 - openShell() controller must close its slave FD after spawn (close-after-fork) — otherwise slave refCount stays >0 and master reads never get EOF
 - fd_pipe/fd_dup (host_process) return kernel FDs — MUST register in local FDTable + localToKernelFd map for WASI fd_renumber/fd_close to work
 - KernelFDTable.renumber closes kernel FD of overwritten target (POSIX close-on-renumber) — critical for pipe write end closure during stdout restore
@@ -1847,4 +1849,19 @@ PRD: ralph/kernel-hardening (46 stories)
   - Must use real HOME for credentials — temp HOME triggers OAuth login flow
   - Mock server queue must be padded (3+ responses) — Claude may make title/metadata requests
   - /exit command works for clean exit from interactive mode
+---
+
+## 2026-03-18 - US-142
+- What was implemented: Blocked import js and pyodide_js in Python sandbox via MetaPathFinder hook
+- Files changed:
+  - packages/secure-exec-python/src/driver.ts — added _BlockHostJsImporter meta_path finder after Pyodide init
+  - packages/runtime/python/src/driver.ts — same blocking in kernel Python runtime
+  - packages/secure-exec/tests/runtime-driver/python/runtime.test.ts — 5 new tests
+- **Learnings for future iterations:**
+  - WORKER_SOURCE uses String.raw template — f-strings with escaped quotes break; use Python string concatenation instead
+  - Python find_module (old protocol) is NOT sufficient — Pyodide's JsFinder uses find_spec; must implement both find_spec and find_module
+  - find_spec must RAISE ImportError (not return a blocking spec) to prevent fallthrough to later finders
+  - sys.modules cleanup after blocker install is needed to prevent cached access to already-imported js module
+  - @secure-exec/python package must be rebuilt (pnpm run build) before tests pick up changes — vitest resolves from dist/
+  - importlib.abc.MetaPathFinder is the proper base class for meta_path finders
 ---
