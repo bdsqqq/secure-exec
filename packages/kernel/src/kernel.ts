@@ -170,15 +170,27 @@ class KernelImpl implements Kernel {
 		// Wait with optional timeout
 		let exitCode: number;
 		if (options?.timeout) {
-			exitCode = await Promise.race([
-				proc.wait(),
-				new Promise<number>((_, reject) =>
-					setTimeout(
-						() => reject(new KernelError("ETIMEDOUT", "exec timeout")),
-						options.timeout,
-					),
-				),
-			]);
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				exitCode = await Promise.race([
+					proc.wait().then((code) => {
+						clearTimeout(timer);
+						return code;
+					}),
+					new Promise<number>((_, reject) => {
+						timer = setTimeout(() => {
+							// Kill process and detach output callbacks
+							proc.onStdout = null;
+							proc.onStderr = null;
+							proc.kill(SIGTERM);
+							reject(new KernelError("ETIMEDOUT", "exec timeout"));
+						}, options.timeout);
+					}),
+				]);
+			} catch (err) {
+				clearTimeout(timer);
+				throw err;
+			}
 		} else {
 			exitCode = await proc.wait();
 		}
