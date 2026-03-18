@@ -5,7 +5,7 @@ import { createCommandExecutorStub, createFsStub, createNetworkStub, filterEnv, 
 import { executeWithRuntime } from "./execution.js";
 import type { NetworkAdapter, RuntimeDriver } from "@secure-exec/core";
 import type { StdioHook, ExecOptions, ExecResult, RunResult, TimingMitigation } from "@secure-exec/core/internal/shared/api-types";
-import { type DriverDeps, type NodeExecutionDriverOptions, createBudgetState, normalizePayloadLimit, getExecutionTimeoutMs, getTimingMitigation, DEFAULT_BRIDGE_BASE64_TRANSFER_BYTES, DEFAULT_ISOLATE_JSON_PAYLOAD_BYTES, DEFAULT_SANDBOX_CWD, DEFAULT_SANDBOX_HOME, DEFAULT_SANDBOX_TMPDIR } from "./isolate-bootstrap.js";
+import { type DriverDeps, type NodeExecutionDriverOptions, createBudgetState, clearActiveHostTimers, normalizePayloadLimit, getExecutionTimeoutMs, getTimingMitigation, DEFAULT_BRIDGE_BASE64_TRANSFER_BYTES, DEFAULT_ISOLATE_JSON_PAYLOAD_BYTES, DEFAULT_SANDBOX_CWD, DEFAULT_SANDBOX_HOME, DEFAULT_SANDBOX_TMPDIR } from "./isolate-bootstrap.js";
 import { shouldRunAsESM } from "./module-resolver.js";
 import { precompileDynamicImports, runESM, setupDynamicImport } from "./esm-compiler.js";
 import { setupConsole, setupRequire, setupESMGlobals } from "./bridge-setup.js";
@@ -80,6 +80,7 @@ export class NodeExecutionDriver implements RuntimeDriver {
 			maxChildProcesses: budgets?.maxChildProcesses,
 			budgetState: createBudgetState(),
 			activeHttpServerIds: new Set(),
+			activeHostTimers: new Set(),
 			esmModuleCache: new Map(),
 			esmModuleReverseCache: new Map(),
 			moduleFormatCache: new Map(),
@@ -213,6 +214,7 @@ export class NodeExecutionDriver implements RuntimeDriver {
 		if (this.disposed) {
 			return;
 		}
+		clearActiveHostTimers(this.deps);
 		this.deps.isolate.dispose();
 		this.deps.isolate = this.runtimeCreateIsolate(this.memoryLimit);
 	}
@@ -222,6 +224,7 @@ export class NodeExecutionDriver implements RuntimeDriver {
 			return;
 		}
 		this.disposed = true;
+		clearActiveHostTimers(this.deps);
 		this.deps.isolate.dispose();
 	}
 
@@ -235,6 +238,7 @@ export class NodeExecutionDriver implements RuntimeDriver {
 			await Promise.allSettled(ids.map((id) => adapter.httpServerClose!(id)));
 		}
 		this.deps.activeHttpServerIds.clear();
+		clearActiveHostTimers(this.deps);
 		this.disposed = true;
 		this.deps.isolate.dispose();
 	}

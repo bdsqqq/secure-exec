@@ -60,6 +60,7 @@ type BridgeDeps = Pick<
 	| "bridgeBase64TransferLimitBytes"
 	| "isolateJsonPayloadLimitBytes"
 	| "activeHttpServerIds"
+	| "activeHostTimers"
 	| "resolutionCache"
 >;
 
@@ -202,7 +203,11 @@ export async function setupRequire(
 	const scheduleTimerRef = new ivm.Reference((delayMs: number) => {
 		checkBridgeBudget(deps);
 		return new Promise<void>((resolve) => {
-			globalThis.setTimeout(resolve, delayMs);
+			const id = globalThis.setTimeout(() => {
+				deps.activeHostTimers.delete(id);
+				resolve();
+			}, delayMs);
+			deps.activeHostTimers.add(id);
 		});
 	});
 	await jail.set(HOST_BRIDGE_GLOBAL_KEYS.scheduleTimer, scheduleTimerRef);

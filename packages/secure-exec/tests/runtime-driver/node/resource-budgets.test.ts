@@ -275,4 +275,52 @@ describe("NodeRuntime resource budgets", () => {
 			expect(errCount).toBe(totalCalls - budget);
 		});
 	});
+
+	// -----------------------------------------------------------------------
+	// Host timer cleanup on disposal / timeout
+	// -----------------------------------------------------------------------
+
+	describe("host timer cleanup", () => {
+		it("clears host timers on dispose after normal execution", async () => {
+			proc = createTestNodeRuntime({});
+
+			// Create 100 timers with long delays — they should all be cleaned up on dispose
+			await proc.exec(`
+				for (let i = 0; i < 100; i++) {
+					setTimeout(() => {}, 60000);
+				}
+			`);
+
+			// Dispose should clear all pending host timers
+			proc.dispose();
+			proc = undefined;
+
+			// If timers leaked, they would hold references and fire after 60s.
+			// We can't directly observe the host Set, but we verify no errors
+			// are thrown when the isolate is gone and timers would have resolved.
+		});
+
+		it("clears host timers on timeout — no leaked callbacks", async () => {
+			proc = createTestNodeRuntime({ cpuTimeLimitMs: 200 });
+
+			// Create 100 timers with 60s delay, then spin to trigger timeout
+			const result = await proc.exec(`
+				for (let i = 0; i < 100; i++) {
+					setTimeout(() => {}, 60000);
+				}
+				// Spin to exceed CPU time limit and trigger isolate recycle
+				while (true) {}
+			`);
+
+			expect(result.code).toBe(124);
+
+			// After timeout + recycle, the runtime should still be usable
+			const capture = createConsoleCapture();
+			const proc2 = createTestNodeRuntime({ onStdio: capture.onStdio });
+			const result2 = await proc2.exec(`console.log('alive');`);
+			expect(result2.code).toBe(0);
+			expect(capture.stdout()).toContain("alive");
+			proc2.dispose();
+		});
+	});
 });

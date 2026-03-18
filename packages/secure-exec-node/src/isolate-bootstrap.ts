@@ -47,6 +47,7 @@ export interface DriverDeps {
 	maxChildProcesses?: number;
 	budgetState: BudgetState;
 	activeHttpServerIds: Set<number>;
+	activeHostTimers: Set<ReturnType<typeof setTimeout>>;
 	esmModuleCache: Map<string, ivm.Module>;
 	esmModuleReverseCache: Map<ivm.Module, string>;
 	moduleFormatCache: Map<string, "esm" | "cjs" | "json">;
@@ -130,6 +131,13 @@ export function assertTextPayloadSize(
 
 export function createBudgetState(): BudgetState {
 	return { outputBytes: 0, bridgeCalls: 0, activeTimers: 0, childProcesses: 0 };
+}
+
+export function clearActiveHostTimers(deps: Pick<DriverDeps, "activeHostTimers">): void {
+	for (const id of deps.activeHostTimers) {
+		clearTimeout(id);
+	}
+	deps.activeHostTimers.clear();
 }
 
 export function checkBridgeBudget(deps: Pick<DriverDeps, "maxBridgeCalls" | "budgetState">): void {
