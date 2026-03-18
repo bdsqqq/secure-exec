@@ -19,6 +19,19 @@ function run(cmd: string, opts?: { cwd?: string; stdio?: "pipe" | "inherit" }) {
   return result?.trim() ?? "";
 }
 
+function tryRun(cmd: string, opts?: { cwd?: string; stdio?: "pipe" | "inherit" }): { ok: boolean; output: string } {
+  try {
+    return { ok: true, output: run(cmd, opts) };
+  } catch {
+    return { ok: false, output: "" };
+  }
+}
+
+function isPublished(name: string, version: string): boolean {
+  const { ok } = tryRun(`npm view ${name}@${version} version`);
+  return ok;
+}
+
 function fatal(msg: string): never {
   console.error(`\x1b[31mError:\x1b[0m ${msg}`);
   process.exit(1);
@@ -162,27 +175,54 @@ async function main() {
   for (const pkg of packages) {
     run(`git add ${join(pkg, "package.json")}`);
   }
-  run(`git commit -m "release: v${version}"`);
-  run("git push origin main");
+  const staged = run("git diff --cached --name-only");
+  if (staged) {
+    run(`git commit -m "release: v${version}"`);
+    run("git push origin main");
+  } else {
+    console.log("  No version changes to commit, skipping.");
+  }
 
   // Git tag & GitHub release
   console.log(`\n\x1b[1mCreating git tag v${version}...\x1b[0m`);
-  run(`git tag v${version}`);
-  run(`git push origin v${version}`);
+  const tagExists = tryRun(`git rev-parse v${version}`).ok;
+  if (tagExists) {
+    console.log(`  Tag v${version} already exists, skipping.`);
+  } else {
+    run(`git tag v${version}`);
+    run(`git push origin v${version}`);
+  }
 
   const prerelease = tag === "rc" ? "--prerelease" : "";
-  console.log("\n\x1b[1mCreating GitHub release...\x1b[0m");
-  run(
-    `gh release create v${version} --title "v${version}" --generate-notes ${prerelease}`.trim(),
-    { stdio: "inherit" },
-  );
+  const releaseExists = tryRun(`gh release view v${version}`).ok;
+  if (releaseExists) {
+    console.log(`  GitHub release v${version} already exists, skipping.`);
+  } else {
+    console.log("\n\x1b[1mCreating GitHub release...\x1b[0m");
+    run(
+      `gh release create v${version} --title "v${version}" --generate-notes ${prerelease}`.trim(),
+      { stdio: "inherit" },
+    );
+  }
 
   // Publish
   console.log(`\n\x1b[1mPublishing to npm (tag: ${tag})...\x1b[0m`);
+  const failures: string[] = [];
   for (const pkg of packages) {
     const name = JSON.parse(readFileSync(join(pkg, "package.json"), "utf-8")).name;
+    if (isPublished(name, version)) {
+      console.log(`  \x1b[33m⏭ ${name}@${version} already published, skipping.\x1b[0m`);
+      continue;
+    }
     console.log(`  Publishing ${name}...`);
-    run(`pnpm publish --access public --tag ${tag} --no-git-checks`, { cwd: pkg, stdio: "inherit" });
+    const { ok } = tryRun(`pnpm publish --access public --tag ${tag} --no-git-checks`, { cwd: pkg, stdio: "inherit" });
+    if (!ok) {
+      failures.push(name);
+    }
+  }
+
+  if (failures.length > 0) {
+    fatal(`Failed to publish: ${failures.join(", ")}`);
   }
 
   console.log(`\n\x1b[32m✓ Released v${version}\x1b[0m`);
