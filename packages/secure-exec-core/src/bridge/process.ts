@@ -1076,6 +1076,12 @@ export const cryptoPolyfill = {
     if (typeof _cryptoRandomFill === "undefined") {
       throwUnsupportedCryptoApi("getRandomValues");
     }
+    // Web Crypto API spec caps getRandomValues at 65536 bytes.
+    if (array.byteLength > 65536) {
+      throw new RangeError(
+        `The ArrayBufferView's byte length (${array.byteLength}) exceeds the number of bytes of entropy available via this API (65536)`
+      );
+    }
     const bytes = new Uint8Array(
       array.buffer,
       array.byteOffset,

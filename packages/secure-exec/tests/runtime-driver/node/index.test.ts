@@ -289,6 +289,51 @@ describe("NodeRuntime", () => {
 		expect(capture.stdout().trim()).toBe("true true 4 36");
 	});
 
+	it("crypto.getRandomValues succeeds at the 65536-byte Web Crypto API limit", async () => {
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({ onStdio: capture.onStdio });
+		const result = await proc.exec(`
+			const bytes = new Uint8Array(65536);
+			crypto.getRandomValues(bytes);
+			console.log(bytes.byteLength, bytes.some(b => b !== 0));
+		`);
+		expect(result.code).toBe(0);
+		expect(capture.stdout().trim()).toBe("65536 true");
+	});
+
+	it("crypto.getRandomValues throws RangeError above 65536 bytes", async () => {
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({ onStdio: capture.onStdio });
+		const result = await proc.exec(`
+			try {
+				crypto.getRandomValues(new Uint8Array(65537));
+				console.log("no error");
+			} catch (e) {
+				console.log(e.constructor.name, e.message.includes("65536"));
+			}
+		`);
+		expect(result.code).toBe(0);
+		expect(capture.stdout().trim()).toBe("RangeError true");
+	});
+
+	it("crypto.getRandomValues rejects huge allocation without host OOM", async () => {
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({ onStdio: capture.onStdio });
+		// Allocation of 2GB typed array may itself throw in the sandbox;
+		// either way, the host must never allocate the buffer.
+		const result = await proc.exec(`
+			let threw = false;
+			try {
+				crypto.getRandomValues(new Uint8Array(2_000_000_000));
+			} catch (e) {
+				threw = true;
+			}
+			console.log("threw", threw);
+		`);
+		expect(result.code).toBe(0);
+		expect(capture.stdout().trim()).toBe("threw true");
+	});
+
 	it("does not shim third-party packages in require resolution", async () => {
 		proc = createTestNodeRuntime();
 		const result = await proc.exec(`require('chalk')`);

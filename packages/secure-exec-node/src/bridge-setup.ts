@@ -213,7 +213,13 @@ export async function setupRequire(
 	}
 
 	// Set up host crypto references for secure randomness.
+	// Cap matches Web Crypto API spec (65536 bytes) to prevent host OOM.
 	const cryptoRandomFillRef = new ivm.Reference((byteLength: number) => {
+		if (byteLength > 65536) {
+			throw new RangeError(
+				`The ArrayBufferView's byte length (${byteLength}) exceeds the number of bytes of entropy available via this API (65536)`,
+			);
+		}
 		const buffer = Buffer.allocUnsafe(byteLength);
 		randomFillSync(buffer);
 		return buffer.toString("base64");
