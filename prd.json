@@ -2673,7 +2673,7 @@
         "Tests pass"
       ],
       "priority": 156,
-      "passes": false,
+      "passes": true,
       "notes": "Audit L5 \u2014 LOW. browser/worker.ts:56, python/driver.ts:198-208. Neither worker rate-limits stdout/stderr messages, allowing sandbox code to flood the host message channel."
     },
     {

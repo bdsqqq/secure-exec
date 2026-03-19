@@ -2000,3 +2000,12 @@ PRD: ralph/kernel-hardening (46 stories)
 - Files changed:
   - prd.json — marked US-155 as passes: true
 ---
+
+## 2026-03-18 - US-156
+- What was implemented: Verified stdio rate limiting already in place via maxOutputBytes budget
+- Node: bridge-setup.ts silently drops messages exceeding outputBytes budget (no error, no buffering)
+- Browser: MAX_STDIO_MESSAGE_CHARS (8KB), MAX_STDIO_DEPTH (6), MAX_STDIO_OBJECT_KEYS (60), MAX_STDIO_ARRAY_ITEMS (120)
+- Tests in resource-budgets.test.ts cover: budget enforcement, silent drops, per-execution reset
+- Files changed:
+  - prd.json — marked US-156 as passes: true
+---
