@@ -9,12 +9,12 @@ const __frozenTimeMs =
 		: Date.now();
 const __frozenDateNow = () => __frozenTimeMs;
 
-// Freeze Date.now — non-configurable + non-writable prevents sandbox override
+// Freeze Date.now — getter always returns frozen fn, setter silently ignores
 try {
 	Object.defineProperty(Date, "now", {
-		value: __frozenDateNow,
+		get: () => __frozenDateNow,
+		set: () => {},
 		configurable: false,
-		writable: false,
 	});
 } catch {
 	Date.now = __frozenDateNow;
@@ -45,11 +45,11 @@ Object.defineProperty(__FrozenDate, "prototype", {
 __FrozenDate.now = __frozenDateNow;
 __FrozenDate.parse = __OrigDate.parse;
 __FrozenDate.UTC = __OrigDate.UTC;
-// Lock Date.now on the replacement constructor too
+// Lock Date.now on the replacement constructor — getter/setter silently ignores writes
 Object.defineProperty(__FrozenDate, "now", {
-	value: __frozenDateNow,
+	get: () => __frozenDateNow,
+	set: () => {},
 	configurable: false,
-	writable: false,
 });
 try {
 	Object.defineProperty(globalThis, "Date", {

@@ -1183,7 +1183,9 @@ describe("NodeRuntime", () => {
 	it("Date.now cannot be overridden by sandbox code", async () => {
 		proc = createTestNodeRuntime();
 		const result = await proc.run(`
-      // Strict mode makes assignment to non-writable throw TypeError
+      const frozenBefore = Date.now();
+
+      // Assignment is silently ignored (setter is a no-op for Node.js compat)
       let assignThrew = false;
       try {
         (function() { 'use strict'; Date.now = () => 999; })();
@@ -1204,11 +1206,11 @@ describe("NodeRuntime", () => {
       module.exports = {
         assignThrew,
         defineThrew,
-        stillFrozen: Date.now() === Date.now(),
+        stillFrozen: Date.now() === frozenBefore,
       };
     `);
 		expect(result.exports).toEqual({
-			assignThrew: true,
+			assignThrew: false,
 			defineThrew: true,
 			stillFrozen: true,
 		});
