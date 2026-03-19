@@ -8,6 +8,7 @@
 
 import { execFileSync, execSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import path from "node:path";
 
 /* ------------------------------------------------------------------ */
 /*  Docker availability check                                         */
@@ -73,6 +74,20 @@ export interface Container {
 /* ------------------------------------------------------------------ */
 /*  Core implementation                                               */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Build a Docker image from a Dockerfile and tag it.
+ */
+export function buildImage(dockerfilePath: string, tag: string): void {
+	if (!isDockerAvailable()) {
+		throw new Error("Docker is not available on this host");
+	}
+	execFileSync(
+		"docker",
+		["build", "-t", tag, "-f", dockerfilePath, path.dirname(dockerfilePath)],
+		{ stdio: "ignore", timeout: 120_000 },
+	);
+}
 
 /**
  * Pull an image if it is not already present locally.
