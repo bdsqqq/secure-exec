@@ -1992,3 +1992,11 @@ PRD: ralph/kernel-hardening (46 stories)
 - Files changed:
   - prd.json — marked US-154 as passes: true
 ---
+
+## 2026-03-18 - US-155
+- What was implemented: Verified HTTP body buffering caps already in place
+- MAX_HTTP_BODY_BYTES = 50MB in bridge/network.ts; enforced on ClientRequest._body and ServerResponseBridge._chunks
+- Tests in bridge-hardening.test.ts cover: request body >50MB throws, response body >50MB throws
+- Files changed:
+  - prd.json — marked US-155 as passes: true
+---
