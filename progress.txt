@@ -3,6 +3,8 @@ Started: 2026-03-17
 PRD: ralph/kernel-hardening (46 stories)
 
 ## Codebase Patterns
+- NodeRuntimeDriver must emit result.errorMessage as stderr — V8 isolate errors (ReferenceError, SyntaxError) are returned in ExecResult, not thrown
+- isolated-vm preserves err.name but err.message excludes the class name — format as `${err.name}: ${err.message}` for Node.js-compatible error output
 - Stream polyfill prototype chain is patched in _patchPolyfill (require-setup.ts) — esbuild's circular-dep bundling breaks Readable→Stream inheritance; without patch, `instanceof Stream` fails (breaks node-fetch, undici, etc.)
 - Timing mitigation Date.now/performance.now use getter/setter (not writable:false) — setter is no-op for Node.js compat; configurable:false blocks re-definition
 - Claude binary at ~/.claude/local/claude — not on PATH by default; skip helpers must check this fallback location
@@ -2464,4 +2466,18 @@ PRD: ralph/kernel-hardening (46 stories)
   - mysql2 escape() with nested arrays produces SQL value lists: [[1,2],[3,4]] → "(1, 2), (3, 4)"
   - Date formatting in mysql2.escape/format is timezone-dependent — avoid comparing date string values in project-matrix fixtures
   - createPoolCluster.of("REPLICA*") returns a namespace selector object — exercises pattern matching without TCP
+---
+
+## 2026-03-19 - US-196
+- What was implemented: Fixed node -e stderr/errors not appearing in interactive shell and kernel.exec. Two bugs: (1) NodeRuntimeDriver didn't emit result.errorMessage as stderr — V8 isolate errors (ReferenceError, SyntaxError, throw) were captured in ExecResult.errorMessage but never forwarded to ctx.onStderr/proc.onStderr. (2) execution.ts error formatting didn't include error class name — isolated-vm preserves err.name but execution.ts only used err.message, so "lskdjf is not defined" appeared instead of "ReferenceError: lskdjf is not defined".
+- Files changed:
+  - packages/runtime/node/src/driver.ts — emit result.errorMessage as stderr via ctx.onStderr/proc.onStderr after exec returns
+  - packages/secure-exec-node/src/execution.ts — include err.name prefix in errorMessage for non-generic errors (SyntaxError, ReferenceError, etc.)
+  - packages/secure-exec/tests/kernel/cross-runtime-terminal.test.ts — added 8 new tests: 4 kernel.exec stderr tests (ReferenceError, throw Error, SyntaxError, console.error) + 4 interactive shell PTY stderr tests (ReferenceError, throw Error, SyntaxError, stderr callback chain)
+- **Learnings for future iterations:**
+  - isolated-vm preserves err.name (ReferenceError, SyntaxError) but err.message does NOT include the class name prefix — must format as `${err.name}: ${err.message}` explicitly
+  - ExecResult.errorMessage is set when V8 isolate code throws, but NodeRuntimeDriver only emitted stderr in the catch block (for driver-level errors) — result.errorMessage needed separate emission
+  - process.exit errors use a generic Error (name === "Error") so the name prefix logic correctly skips them
+  - Changing execution.ts requires `pnpm run build` (or turbo build) before tests pick up the change — vitest resolves the compiled output, not TypeScript source
+  - The WARN "could not retrieve pid for child process" appears on stderr for all node -e invocations — tests must tolerate it
 ---

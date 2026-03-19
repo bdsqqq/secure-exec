@@ -3387,8 +3387,8 @@
         "Tests pass"
       ],
       "priority": 196,
-      "passes": false,
-      "notes": "Same root cause as US-195 (stdout/stderr callback wiring) but stderr path. Existing test in error-propagation.test.ts line 39 tests stderr through kernel.exec() — verify it still passes and add interactive shell (PTY) equivalent. NodeRuntimeDriver.ts line 481-496 wraps caught errors as stderr."
+      "passes": true,
+      "notes": "Two bugs fixed: (1) NodeRuntimeDriver didn't emit result.errorMessage as stderr — errors from V8 isolate (ReferenceError, SyntaxError, throw) were returned in ExecResult.errorMessage but never emitted via ctx.onStderr. (2) execution.ts error message didn't include error class name — isolated-vm preserves err.name (ReferenceError, SyntaxError) but execution.ts only used err.message. Fixed by prefixing non-generic error names. Tests added: 4 kernel.exec stderr tests + 4 interactive shell PTY stderr tests."
     },
     {
       "id": "US-197",
