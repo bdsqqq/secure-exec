@@ -2893,7 +2893,7 @@
         "Tests pass"
       ],
       "priority": 168,
-      "passes": false,
+      "passes": true,
       "notes": "Foundation for jsonwebtoken, bcryptjs, and many other packages. Bridge call sends data to host, host computes hash."
     },
     {
@@ -3256,6 +3256,104 @@
       "priority": 189,
       "passes": false,
       "notes": "mysql2 exercises crypto (sha256_password auth), net/tls, Buffer, streams."
+    },
+    {
+      "id": "US-190",
+      "title": "Add SSE (Server-Sent Events) streaming project-matrix fixture",
+      "description": "As a developer, I need a project-matrix fixture that verifies EventSource / SSE streaming works end-to-end inside the sandbox so AI-agent streaming use cases are validated.",
+      "acceptanceCriteria": [
+        "Create packages/secure-exec/tests/projects/sse-streaming-pass/ with package.json",
+        "Fixture starts an HTTP server on port 0, sends SSE events (data-only, named events, id field, retry field)",
+        "Client reads the SSE stream using http.get and parses the text/event-stream format manually (no EventSource polyfill needed)",
+        "Verifies at least 3 events received with correct data payloads",
+        "Verifies Connection: keep-alive and Content-Type: text/event-stream headers",
+        "Server closes after sending all events; client exits cleanly",
+        "Output matches between host Node and secure-exec",
+        "fixture.json configured correctly",
+        "Typecheck passes",
+        "Tests pass (project-matrix)"
+      ],
+      "priority": 190,
+      "passes": false,
+      "notes": "SSE is critical for AI agent streaming (LLM token streaming, tool-use events). Exercises http.createServer, chunked transfer-encoding, keep-alive, and streaming reads."
+    },
+    {
+      "id": "US-191",
+      "title": "Add WebSocket project-matrix fixture using ws package",
+      "description": "As a developer, I need a project-matrix fixture that verifies the ws (WebSocket) package works inside the sandbox so real-time communication is validated.",
+      "acceptanceCriteria": [
+        "Create packages/secure-exec/tests/projects/ws-pass/ with package.json depending on ws",
+        "Fixture starts a ws.WebSocketServer on port 0, client connects via ws.WebSocket",
+        "Client sends a text message, server echoes it back, client verifies echo",
+        "Client sends a binary message (Buffer), server echoes it, client verifies binary roundtrip",
+        "Verifies open, message, and close events fire on both client and server",
+        "Server and client close cleanly after test",
+        "Output matches between host Node and secure-exec",
+        "fixture.json configured correctly",
+        "Typecheck passes",
+        "Tests pass (project-matrix)"
+      ],
+      "priority": 191,
+      "passes": false,
+      "notes": "ws is the most popular WebSocket library. Exercises HTTP upgrade, net.Socket, crypto (for Sec-WebSocket-Accept), Buffer, EventEmitter, streams. Depends on US-043 HTTP upgrade support."
+    },
+    {
+      "id": "US-192",
+      "title": "Create shared Docker container test utility for integration fixtures",
+      "description": "As a developer, I need a shared utility that spins up Docker containers for integration tests so fixtures that communicate with real databases/services use real backends instead of mocks.",
+      "acceptanceCriteria": [
+        "Create packages/secure-exec/tests/utils/docker.ts with a startContainer(image, opts) helper",
+        "startContainer accepts image name, port mappings, environment variables, and health check command",
+        "Returns { host, port, containerId, stop() } \u2014 stop() removes the container",
+        "Automatically pulls image if not present locally",
+        "Waits for health check to pass before returning (with configurable timeout, default 30s)",
+        "stop() is idempotent and safe to call multiple times",
+        "Helper skips the test (vi.skip or test.skip) if Docker is not available on the host",
+        "Add a simple self-test: start alpine, exec 'echo ok', verify output, stop container",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 192,
+      "passes": false,
+      "notes": "Shared by ioredis, mysql2, and any future DB fixture. Uses child_process.execSync to call docker CLI. Must clean up containers even on test failure (use afterAll/finally)."
+    },
+    {
+      "id": "US-193",
+      "title": "Add ioredis project-matrix fixture with real Redis via Docker",
+      "description": "As a developer, I need an ioredis fixture that connects to a real Redis instance so the Redis client library is validated end-to-end inside the sandbox.",
+      "acceptanceCriteria": [
+        "Create packages/secure-exec/tests/projects/ioredis-pass/ with package.json depending on ioredis",
+        "Fixture uses the shared Docker utility (US-192) to start a redis:7-alpine container",
+        "Connects via ioredis, performs SET/GET, verifies roundtrip",
+        "Tests LPUSH/LRANGE for list operations",
+        "Tests PUBLISH/SUBSCRIBE for pub/sub (subscribe, publish from second connection, verify message received)",
+        "Cleans up: disconnects clients, stops container",
+        "Output matches between host Node and secure-exec",
+        "fixture.json configured correctly",
+        "Typecheck passes",
+        "Tests pass (project-matrix)"
+      ],
+      "priority": 193,
+      "passes": false,
+      "notes": "ioredis exercises net.Socket, Buffer, EventEmitter, streams, DNS resolution. Depends on US-192 Docker utility. Test skips if Docker unavailable."
+    },
+    {
+      "id": "US-194",
+      "title": "Update mysql2 fixture to use real MySQL via Docker",
+      "description": "As a developer, I need the mysql2 fixture (US-189) to connect to a real MySQL instance via Docker so the MySQL client is validated beyond import-only.",
+      "acceptanceCriteria": [
+        "Update packages/secure-exec/tests/projects/mysql2-pass/ to use shared Docker utility (US-192)",
+        "Start mysql:8 container with MYSQL_ROOT_PASSWORD and MYSQL_DATABASE env vars",
+        "Connect via mysql2, run CREATE TABLE, INSERT, SELECT, verify results",
+        "Test prepared statements with parameterized query",
+        "Cleans up: close connection pool, stop container",
+        "Output matches between host Node and secure-exec",
+        "Typecheck passes",
+        "Tests pass (project-matrix)"
+      ],
+      "priority": 194,
+      "passes": false,
+      "notes": "Upgrades US-189 from import-only to real DB integration. Exercises crypto (mysql_native_password/caching_sha2_password), net.Socket, TLS, Buffer, streams. Depends on US-192."
     }
   ]
 }
