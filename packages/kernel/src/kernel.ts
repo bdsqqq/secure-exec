@@ -36,9 +36,11 @@ import {
 	FILETYPE_REGULAR_FILE,
 	FILETYPE_DIRECTORY,
 	FILETYPE_PIPE,
+	FILETYPE_CHARACTER_DEVICE,
 	SEEK_SET,
 	SEEK_CUR,
 	SEEK_END,
+	O_APPEND,
 	SIGTERM,
 	SIGWINCH,
 	KernelError,
@@ -1015,7 +1017,11 @@ class KernelImpl implements Kernel {
 		} catch {
 			content = new Uint8Array(0);
 		}
-		const cursor = Number(entry.description.cursor);
+
+		// O_APPEND: every write seeks to end of file first (POSIX)
+		const cursor = (entry.description.flags & O_APPEND)
+			? content.length
+			: Number(entry.description.cursor);
 		const endPos = cursor + data.length;
 		const newContent = new Uint8Array(Math.max(content.length, endPos));
 		newContent.set(content);

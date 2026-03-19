@@ -20,9 +20,9 @@ const __mutableGlobals = Array.isArray(__globalPolicy.mutableGlobals)
 	: [];
 
 for (const globalName of __hardenedGlobals) {
-	if (hasOwnGlobal(globalName)) {
-		__runtimeExposeCustomGlobal(globalName, getGlobalValue(globalName));
-	}
+	// Lock down even absent globals so sandbox code cannot define them
+	const value = hasOwnGlobal(globalName) ? getGlobalValue(globalName) : undefined;
+	__runtimeExposeCustomGlobal(globalName, value);
 }
 
 for (const globalName of __mutableGlobals) {

@@ -17,6 +17,7 @@ import type {
 	FsFacadeBridge,
 	ProcessErrorBridgeRef,
 	ProcessLogBridgeRef,
+	PtySetRawModeBridgeRef,
 	ScheduleTimerBridgeRef,
 } from "../shared/bridge-contract.js";
 import {
@@ -44,6 +45,9 @@ export interface ProcessConfig {
   stdin?: string;
   timingMitigation?: "off" | "freeze";
   frozenTimeMs?: number;
+  stdinIsTTY?: boolean;
+  stdoutIsTTY?: boolean;
+  stderrIsTTY?: boolean;
 }
 
 // Declare config and host bridge globals
@@ -56,6 +60,8 @@ declare const _cryptoRandomFill: CryptoRandomFillBridgeRef | undefined;
 declare const _cryptoRandomUUID: CryptoRandomUuidBridgeRef | undefined;
 // Filesystem bridge for chdir validation
 declare const _fs: FsFacadeBridge;
+// PTY setRawMode bridge ref (optional — only present when PTY is attached)
+declare const _ptySetRawMode: PtySetRawModeBridgeRef | undefined;
 // Timer budget injected by the host when resourceBudgets.maxTimers is set
 declare const _maxTimers: number | undefined;
 
@@ -270,6 +276,11 @@ interface StdioWriteStream {
   rows: number;
 }
 
+// Resolve isTTY flags from config
+const _stdinIsTTY = (typeof _processConfig !== "undefined" && _processConfig.stdinIsTTY) || false;
+const _stdoutIsTTY = (typeof _processConfig !== "undefined" && _processConfig.stdoutIsTTY) || false;
+const _stderrIsTTY = (typeof _processConfig !== "undefined" && _processConfig.stderrIsTTY) || false;
+
 // Stdout stream
 const _stdout: StdioWriteStream = {
   write(data: unknown): boolean {
@@ -291,7 +302,7 @@ const _stdout: StdioWriteStream = {
     return false;
   },
   writable: true,
-  isTTY: false,
+  isTTY: _stdoutIsTTY,
   columns: 80,
   rows: 24,
 };
@@ -317,7 +328,7 @@ const _stderr: StdioWriteStream = {
     return false;
   },
   writable: true,
-  isTTY: false,
+  isTTY: _stderrIsTTY,
   columns: 80,
   rows: 24,
 };
@@ -393,6 +404,7 @@ interface StdinStream {
   pause(): StdinStream;
   resume(): StdinStream;
   setEncoding(enc: string): StdinStream;
+  setRawMode(mode: boolean): StdinStream;
   isTTY: boolean;
   [Symbol.asyncIterator]: () => AsyncGenerator<string, void, unknown>;
 }
@@ -468,7 +480,17 @@ const _stdin: StdinStream = {
     return this;
   },
 
-  isTTY: false,
+  setRawMode(mode: boolean): StdinStream {
+    if (!_stdinIsTTY) {
+      throw new Error("setRawMode is not supported when stdin is not a TTY");
+    }
+    if (typeof _ptySetRawMode !== "undefined") {
+      _ptySetRawMode.applySync(undefined, [mode]);
+    }
+    return this;
+  },
+
+  isTTY: _stdinIsTTY,
 
   // For readline compatibility
   [Symbol.asyncIterator]: async function* () {

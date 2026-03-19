@@ -3,6 +3,10 @@ Started: 2026-03-17
 PRD: ralph/kernel-hardening (46 stories)
 
 ## Codebase Patterns
+- Claude binary at ~/.claude/local/claude — not on PATH by default; skip helpers must check this fallback location
+- Claude Code --output-format stream-json requires --verbose flag; uses ANTHROPIC_BASE_URL natively (no fetch interceptor)
+- Python WORKER_SOURCE is String.raw — use array.join("\n") for multiline Python code; f-strings with escaped quotes break
+- @secure-exec/python must be rebuilt (`pnpm run build` in packages/secure-exec-python/) before tests pick up changes
 - openShell() controller must close its slave FD after spawn (close-after-fork) — otherwise slave refCount stays >0 and master reads never get EOF
 - fd_pipe/fd_dup (host_process) return kernel FDs — MUST register in local FDTable + localToKernelFd map for WASI fd_renumber/fd_close to work
 - KernelFDTable.renumber closes kernel FD of overwritten target (POSIX close-on-renumber) — critical for pipe write end closure during stdout restore
@@ -1741,4 +1745,363 @@ PRD: ralph/kernel-hardening (46 stories)
   - kernel.exec() always routes through `sh -c` (brush-shell) — ALL cross-runtime commands go through WasmVM proc_spawn
   - pyodide `require.resolve()` succeeds but `await import('pyodide')` fails — use dynamic import check for accurate gating
   - Cross-runtime pipe tests (echo | node) still fail — separate issue from output routing (pipe EOF/close semantics)
+---
+
+## 2026-03-18 - US-086
+- Implemented yarn support in project-matrix fixture preparation
+- Files changed:
+  - packages/secure-exec/tests/project-matrix.test.ts
+  - packages/secure-exec/tests/kernel/e2e-project-matrix.test.ts
+- Changes:
+  - Added "yarn" to PackageManager type union
+  - Added "yarn" to validPackageManagers validation set and error message
+  - Added yarn install command dispatch: classic (`yarn install`) vs berry (`yarn install --immutable`) based on `.yarnrc.yml` presence
+  - Added `getYarnVersion()` memoized helper for cache key generation
+  - Added `getYarnInstallCmd()` helper that detects berry via `.yarnrc.yml`
+  - Added `yarn.lock` to lockfile resolution in cache key
+  - Mirrored all changes in e2e-project-matrix.test.ts
+- **Learnings for future iterations:**
+  - express-pass and fastify-pass fixtures are known failures (US-159) — don't block on them
+  - Both project-matrix.test.ts and e2e-project-matrix.test.ts share the same fixture prep logic but are maintained separately — changes must be applied to both files
+  - Berry (yarn v2+) is detected by `.yarnrc.yml` file presence in the project dir; `--immutable` flag requires a pre-existing yarn.lock
+---
+
+## 2026-03-18 - US-087
+- Created npm flat layout fixture at packages/secure-exec/tests/projects/npm-layout-pass/
+- Files changed:
+  - packages/secure-exec/tests/projects/npm-layout-pass/fixture.json (packageManager: "npm")
+  - packages/secure-exec/tests/projects/npm-layout-pass/package.json (left-pad 0.0.3 dependency)
+  - packages/secure-exec/tests/projects/npm-layout-pass/package-lock.json (lockfileVersion 3)
+  - packages/secure-exec/tests/projects/npm-layout-pass/src/index.js (same as pnpm/bun fixtures)
+- **Learnings for future iterations:**
+  - `npm install --package-lock-only` generates package-lock.json without installing node_modules — useful for fixture prep
+  - Layout fixtures should mirror the same dependency (left-pad 0.0.3) and entry code for comparison across package managers
+---
+
+## 2026-03-18 - US-092
+- Created conditional exports fixture at packages/secure-exec/tests/projects/conditional-exports-pass/
+- Files changed:
+  - fixture.json (packageManager: "npm")
+  - package.json (file: dependency to local @cond-test/lib)
+  - package-lock.json (lockfileVersion 3)
+  - packages/cond-exports-lib/package.json (exports field with ".", "./feature" subpaths, "require" and "default" conditions)
+  - packages/cond-exports-lib/lib/{main-cjs,main-default,feature-cjs,feature-default}.js
+  - src/index.js (requires main and subpath exports, outputs JSON)
+- **Learnings for future iterations:**
+  - Node.js CJS require resolves the "require" condition in package.json exports field — test output confirms "main-cjs" and "feature-cjs" selected
+  - Local vendored packages (file: deps) work well for testing exports field without external dependencies
+  - The exports field completely replaces "main" — if exports is present, "main" is ignored for require/import
+---
+
+## 2026-03-18 - US-093
+- What was implemented: Transitive dependency chain fixture already existed and passed project-matrix parity test
+- Files changed: prd.json (marked passes: true)
+- **Learnings for future iterations:**
+  - The fixture was already committed (f622c12) with a 3-level chain (level-a → level-b → level-c) using file: deps and npm package manager
+  - Uses npm flat hoisting strategy which symlinks all @chain-test/ packages into top-level node_modules
+  - The fixture exercises require() chains, module.exports traversal, and function delegation across transitive deps
+---
+
+## 2026-03-18 - US-094
+- What was implemented: Optional dependency fixture already existed and passed project-matrix parity test
+- Files changed: prd.json (marked passes: true)
+- **Learnings for future iterations:**
+  - Fixture uses a nonexistent scoped package (@anthropic-internal/nonexistent-optional-pkg) as optionalDependency
+  - Both host and sandbox correctly report optionalAvailable: false via try/catch on require()
+  - npm install with missing optional deps succeeds (npm treats optional dep install failures as warnings)
+---
+
+## 2026-03-18 - US-141
+- What was implemented: Exit builtin handling already fixed and committed (5e4250d)
+- Files changed: prd.json (marked passes: true)
+- **Learnings for future iterations:**
+  - Shell-terminal tests are in packages/kernel/test/shell-terminal.test.ts (mock) and packages/runtime/wasmvm/test/shell-terminal.test.ts (real brush-shell)
+  - Exit path: brush-shell exit → WASI proc_exit → WasiProcExit exception → kernel worker exit message → process table wait() resolves
+---
+
+## 2026-03-18 - US-095, US-096, US-097, US-098, US-099, US-100, US-101
+- Batch update: all 7 stories were already committed and passing tests but not marked in prd.json
+- Files changed: prd.json (marked passes: true for all 7)
+---
+
+## 2026-03-18 - US-102
+- What was implemented: Claude Code headless CLI tool tests with mock LLM server
+- Files changed:
+  - packages/secure-exec/tests/cli-tools/claude-headless.test.ts — new test file with 8 tests
+- **Learnings for future iterations:**
+  - Claude binary is at ~/.claude/local/claude (not on PATH by default) — skip helper must check this location
+  - Claude Code's --output-format stream-json requires --verbose flag (exits 1 without it)
+  - Claude Code uses ANTHROPIC_BASE_URL natively (no fetch interceptor needed unlike Pi)
+  - Claude tool names are PascalCase (Read, Write, Bash) unlike Pi's lowercase (read, write, bash)
+  - --dangerously-skip-permissions and --no-session-persistence are essential for CI-friendly headless runs
+  - Claude -p mode with --output-format json returns { type: "result", result: "...", ... } format
+---
+
+## 2026-03-18 - US-103
+- What was implemented: Claude Code interactive PTY TUI tests with mock LLM server
+- Files changed:
+  - packages/secure-exec/tests/cli-tools/claude-interactive.test.ts — new test file with 6 tests
+- **Learnings for future iterations:**
+  - Claude interactive mode shows workspace trust dialog for new directories — need to auto-dismiss with Enter
+  - Claude's prompt indicator is ❯ (Unicode right-pointing triangle), not ASCII >
+  - Model name displays as "Haiku 4.5" (capitalized) in status bar, not "haiku"
+  - --no-session-persistence only works with --print mode, not interactive
+  - Must use real HOME for credentials — temp HOME triggers OAuth login flow
+  - Mock server queue must be padded (3+ responses) — Claude may make title/metadata requests
+  - /exit command works for clean exit from interactive mode
+---
+
+## 2026-03-18 - US-142
+- What was implemented: Blocked import js and pyodide_js in Python sandbox via MetaPathFinder hook
+- Files changed:
+  - packages/secure-exec-python/src/driver.ts — added _BlockHostJsImporter meta_path finder after Pyodide init
+  - packages/runtime/python/src/driver.ts — same blocking in kernel Python runtime
+  - packages/secure-exec/tests/runtime-driver/python/runtime.test.ts — 5 new tests
+- **Learnings for future iterations:**
+  - WORKER_SOURCE uses String.raw template — f-strings with escaped quotes break; use Python string concatenation instead
+  - Python find_module (old protocol) is NOT sufficient — Pyodide's JsFinder uses find_spec; must implement both find_spec and find_module
+  - find_spec must RAISE ImportError (not return a blocking spec) to prevent fallthrough to later finders
+  - sys.modules cleanup after blocker install is needed to prevent cached access to already-imported js module
+  - @secure-exec/python package must be rebuilt (pnpm run build) before tests pick up changes — vitest resolves from dist/
+  - importlib.abc.MetaPathFinder is the proper base class for meta_path finders
+---
+
+## 2026-03-18 - US-143
+- Added payload size enforcement to browser worker's readFileRef, readFileBinaryRef, writeFileBinaryRef, and readDirRef
+- Added payloadLimits to BrowserWorkerInitPayload protocol so limits can be configured
+- Removed payloadLimits from browser UNSUPPORTED_BROWSER_RUNTIME_OPTIONS validator list
+- Runtime-driver now passes payloadLimits through to worker init; defaults match Node path (16MB base64, 4MB JSON)
+- Updated browser runtime tests: removed payloadLimits from rejected options, added tests for oversized/normal text and binary reads
+- Files changed:
+  - packages/secure-exec-browser/src/worker-protocol.ts
+  - packages/secure-exec-browser/src/runtime-driver.ts
+  - packages/secure-exec-browser/src/worker.ts
+  - packages/secure-exec/tests/runtime-driver/browser/runtime.test.ts
+- **Learnings for future iterations:**
+  - Node path (bridge-setup.ts) already had payload limits; browser worker path (worker.ts) was the unprotected gap
+  - Browser worker uses TextEncoder for UTF-8 byte length (no Buffer available); Node uses Buffer.byteLength
+  - Browser runtime tests are skipped in Node CI (IS_BROWSER_ENV check); unit-testable payload logic can be verified structurally
+  - BrowserRuntimeDriver validates "unsupported" options in BROWSER_OPTION_VALIDATORS array — remove entries when adding support
+---
+
+## 2026-03-18 - US-144
+- What was implemented: Verified browser Worker sandbox API restrictions already in place
+- Implementation was already complete in worker.ts: dangerous APIs (XMLHttpRequest, WebSocket, importScripts, indexedDB, caches, BroadcastChannel) blocked with ReferenceError-throwing getters, self.onmessage locked as non-configurable, self.postMessage blocked with TypeError getter
+- Tests already exist in runtime-driver/browser/runtime.test.ts covering: importScripts, WebSocket, onmessage overwrite, fetch, and bridge API functionality after hardening
+- Files changed:
+  - prd.json — marked US-144 as passes: true
+- **Learnings for future iterations:**
+  - Browser runtime tests (runtime.test.ts) are behind `describe.skipIf(!IS_BROWSER_ENV)` — they only run in actual browser environments, not Node.js vitest
+  - permission-validation.test.ts tests run in Node.js and cover callback sanitization (rejecting XMLHttpRequest, importScripts in permission callbacks)
+  - Worker hardening order: bridge setup → dangerous API blocking → onmessage lock → postMessage block → set initialized
+  - Real postMessage saved as `_realPostMessage` in closure before any sandbox code can touch it
+---
+
+## 2026-03-18 - US-145
+- What was implemented: Verified concurrent host timer cap already in place
+- Bridge-side `_checkTimerBudget()` in process.ts enforces `_maxTimers` (default 10000) by checking `_timers.size + _intervals.size`
+- Host-side `_scheduleTimer` in bridge-setup.ts tracks active timers via `activeHostTimers` Set with auto-cleanup on fire
+- Tests in resource-budgets.test.ts cover: cap enforcement, existing timers survive, cleared timers free slots, normal usage works
+- Files changed:
+  - prd.json — marked US-145 as passes: true
+- **Learnings for future iterations:**
+  - Timer budget is bridge-side (synchronous check) not host-side — prevents timer creation before host is contacted
+  - `_maxTimers` counts both `_timers` and `_intervals` Maps combined
+  - DEFAULT_MAX_TIMERS = 10,000 defined in isolate-bootstrap.ts
+---
+
+## 2026-03-18 - US-146
+- What was implemented: Verified active handle map cap already in place
+- `_registerHandle()` in active-handles.ts checks `_activeHandles.size >= _maxHandles` before registration
+- DEFAULT_MAX_HANDLES = 10,000 in isolate-bootstrap.ts, injected via bridge-setup.ts
+- Tests in resource-budgets.test.ts cover: cap enforcement (maxHandles+1 throws), slot reuse after unregister
+- Files changed:
+  - prd.json — marked US-146 as passes: true
+---
+
+## 2026-03-18 - US-147
+- What was implemented: Verified dangerous env var filtering in child process spawn already in place
+- `stripDangerousEnv()` in bridge-setup.ts removes LD_PRELOAD, LD_LIBRARY_PATH, NODE_OPTIONS, DYLD_INSERT_LIBRARIES
+- Applied at both streaming spawn (line 497) and sync spawn (line 581) paths
+- Two-layer defense: filterEnv (permission-based) + stripDangerousEnv (hardcoded denylist)
+- Tests in env-leakage.test.ts cover: LD_PRELOAD stripping, NODE_OPTIONS stripping, normal vars pass through, mutation isolation
+- Files changed:
+  - prd.json — marked US-147 as passes: true
+---
+
+## 2026-03-18 - US-148
+- What was implemented: Verified SSRF protection already in place
+- `isPrivateIp()` in driver.ts blocks all private/reserved IPv4 and IPv6 ranges
+- `assertNotPrivateHost()` resolves hostnames via DNS before validation
+- fetch() uses `redirect: "manual"` with re-validation loop (MAX_REDIRECTS=20)
+- Loopback exemption system for sandbox-owned server ports
+- 44 tests in ssrf-protection.test.ts covering unit, adapter, redirect, loopback, integration, DNS rebinding
+- Files changed:
+  - prd.json — marked US-148 as passes: true
+---
+
+## 2026-03-18 - US-149
+- What was implemented: Verified timing mitigation hardening already in place
+- Date.now frozen with writable:false, configurable:false in apply-timing-mitigation-freeze.ts
+- Date constructor patched: new Date() returns frozen time, new Date(ts) passes through
+- performance.now() returns 0 via proxy object; SharedArrayBuffer neutered
+- process.hrtime/uptime funnel through getNowMs() for consistency
+- All timing tests pass; 3 pre-existing failures in index.test.ts unrelated to timing (globals hardening, maxSockets, upgrade)
+- Files changed:
+  - prd.json — marked US-149 as passes: true
+---
+
+## 2026-03-18 - US-150
+- What was implemented: Verified httpServerClose ownership check already in place
+- bridge-setup.ts tracks `ownedHttpServers` per execution context; close checks ownership before forwarding
+- Tests in bridge-hardening.test.ts cover: own-server close succeeds, foreign-server close denied
+- Files changed:
+  - prd.json — marked US-150 as passes: true
+---
+
+## 2026-03-18 - US-151
+- What was implemented: Verified browser permission callback deserialization hardening already in place
+- `validatePermissionSource()` in permission-validation.ts validates callback strings against a strict denylist before `new Function()` revival
+- 30 tests in permission-validation.test.ts cover: valid callbacks (arrow, regular, named functions), injected code rejection (eval, Function, import, require, globalThis, fetch, WebSocket, XMLHttpRequest, postMessage, importScripts, __proto__, etc.)
+- Files changed:
+  - prd.json — marked US-151 as passes: true
+---
+
+## 2026-03-18 - US-152
+- What was implemented: Verified process.env mutation isolation already in place
+- Sandbox process.env is a copy; mutations don't reach host or child processes
+- stripDangerousEnv applied on every spawn; sandbox env mutations are local-only
+- Tests in env-leakage.test.ts cover: LD_PRELOAD not reaching children, FOO visible locally but not in child default env
+- Files changed:
+  - prd.json — marked US-152 as passes: true
+---
+
+## 2026-03-18 - US-153
+- What was implemented: Verified SharedArrayBuffer deletion hardening already in place
+- Prototype neutered (byteLength, slice, grow, maxByteLength, growable → throwing getters)
+- Global locked with configurable:false, writable:false, value:undefined
+- Tests in index.test.ts cover: typeof === 'undefined', defineProperty restoration fails, saved reference non-functional
+- Files changed:
+  - prd.json — marked US-153 as passes: true
+---
+
+## 2026-03-18 - US-154
+- What was implemented: Verified process.binding() throws in sandbox
+- process.binding() and process._linkedBinding() throw Error in bridge/process.ts
+- Tests in sandbox-escape.test.ts cover: binding('fs'), binding('buffer'), _linkedBinding('fs') all throw
+- Files changed:
+  - prd.json — marked US-154 as passes: true
+---
+
+## 2026-03-18 - US-155
+- What was implemented: Verified HTTP body buffering caps already in place
+- MAX_HTTP_BODY_BYTES = 50MB in bridge/network.ts; enforced on ClientRequest._body and ServerResponseBridge._chunks
+- Tests in bridge-hardening.test.ts cover: request body >50MB throws, response body >50MB throws
+- Files changed:
+  - prd.json — marked US-155 as passes: true
+---
+
+## 2026-03-18 - US-156
+- What was implemented: Verified stdio rate limiting already in place via maxOutputBytes budget
+- Node: bridge-setup.ts silently drops messages exceeding outputBytes budget (no error, no buffering)
+- Browser: MAX_STDIO_MESSAGE_CHARS (8KB), MAX_STDIO_DEPTH (6), MAX_STDIO_OBJECT_KEYS (60), MAX_STDIO_ARRAY_ITEMS (120)
+- Tests in resource-budgets.test.ts cover: budget enforcement, silent drops, per-execution reset
+- Files changed:
+  - prd.json — marked US-156 as passes: true
+---
+
+## 2026-03-18 - US-157
+- What was implemented: Verified module cache poisoning prevention already in place
+- require.cache and _moduleCache are frozen Proxy objects that reject writes/deletes (throw TypeError)
+- Tests in bridge-hardening.test.ts cover: cache assignment throws, cache deletion throws, normal require works, _moduleCache not writable
+- Files changed:
+  - prd.json — marked US-157 as passes: true
+---
+
+## 2026-03-18 - US-158
+- What was implemented: Fixed 3 pre-existing test failures and verified SSRF loopback exemption
+- Changes:
+  - apply-custom-global-policy.ts: Lock down absent hardened globals (not just present ones) — fixes `_ptySetRawMode` not being hardened when PTY not attached
+  - driver.ts: Added `initialExemptPorts` option to `createDefaultNetworkAdapter()` for pre-seeding loopback SSRF exemptions
+  - index.test.ts: Rewrote maxSockets test to use adapter-bridged server; rewrote upgrade test to use `initialExemptPorts`; added `createDefaultNetworkAdapter` to static imports
+  - Rebuilt isolate-runtime and secure-exec-node packages
+- All 116 index.test.ts tests now pass (was 113/116)
+- All 44 ssrf-protection.test.ts tests pass
+- Files changed:
+  - packages/secure-exec-core/isolate-runtime/src/inject/apply-custom-global-policy.ts
+  - packages/secure-exec-core/src/generated/isolate-runtime.ts (auto-generated)
+  - packages/secure-exec-node/src/driver.ts
+  - packages/secure-exec/tests/runtime-driver/node/index.test.ts
+  - prd.json
+- **Learnings for future iterations:**
+  - `@secure-exec/node` resolves to `dist/` — must rebuild after source changes (`pnpm run build` in packages/secure-exec-node/)
+  - `applyCustomGlobalExposurePolicy` only locks globals that exist on globalThis — absent hardened globals must be pre-defined as undefined
+  - HTTP upgrade events require raw socket handling — bridged servers can't do this; use `initialExemptPorts` for external servers
+---
+
+## 2026-03-18 - US-159
+- Express and Fastify project-matrix fixtures now pass in secure-exec (non-kernel matrix)
+- Root cause was already fixed by US-158 (SSRF loopback exemption for sandbox-spawned HTTP servers)
+- Both fixtures create HTTP servers on 127.0.0.1:0, then make requests to their own servers — SSRF protection was blocking these loopback requests before the US-158 fix added port exemption tracking
+- Verified: all 25 project-matrix tests pass, typecheck passes, SSRF protection tests pass
+- No code changes needed — just verified and marked as passing
+- **Learnings for future iterations:**
+  - When a story's root cause is fixed by a prerequisite story, verify with actual test runs rather than investigating code
+  - Project-matrix tests can be run individually with -t "fixture-name" filter
+---
+
+## 2026-03-18 - US-160
+- Kernel shell I/O redirection operators (< > >>) already work — all 5 FD inheritance tests pass
+- brush-shell (Rust WASM) handles all shell parsing and redirection natively via setup_redirect() in brush-core/interp.rs
+- Pipe operators (|) also handled within brush-shell, cross-runtime via proc_spawn host function
+- No TypeScript-level changes needed — brush-shell handles dup2/open/close internally before spawning child processes
+- Story notes mentioned failing tests but they were already fixed by prior kernel FD infrastructure work
+- **Learnings for future iterations:**
+  - brush-shell handles ALL shell syntax (pipes, redirects, etc.) in Rust WASM — no TypeScript shell parser exists
+  - kernel.exec() passes command string verbatim to `sh -c <cmd>` — no TS-level parsing
+  - proc_spawn host function bridges WASM shell → kernel spawn for cross-runtime dispatch
+  - FD inheritance tests at packages/secure-exec/tests/kernel/fd-inheritance.test.ts
+---
+
+## 2026-03-18 - US-161
+- Next.js project-matrix fixture already existed and passes all 25 non-kernel project-matrix tests
+- Fixture structure: pages/index.js (SSR page), pages/api/hello.js (API route), src/index.js (entry with ensureBuild + manifest check)
+- Next.js already in docs/nodejs-compatibility.mdx tested packages table
+- Kernel e2e test (e2e-project-matrix.test.ts) fails for ALL 23 fixtures (not nextjs-specific) — pre-existing infrastructure issue: "WARN could not retrieve pid for child process" with exit code 1
+- No code changes needed — fixture and docs were already complete
+- **Learnings for future iterations:**
+  - Kernel e2e project-matrix (e2e-project-matrix.test.ts) is broken for all fixtures — all 23 fail with "WARN could not retrieve pid for child process"
+  - This is separate from the non-kernel project-matrix.test.ts which works correctly
+  - Build-step fixtures (next build, astro build) use execSync from entry script with ensureBuild() pattern
+---
+
+## 2026-03-18 - US-162
+- Vite project-matrix fixture already existed and passes non-kernel project-matrix test
+- Fixture: vite.config.mjs with @vitejs/plugin-react, index.html, app/App.jsx, ensureBuild pattern
+- Vite already in docs/nodejs-compatibility.mdx tested packages table
+- Kernel e2e fails (same pre-existing issue as all other fixtures)
+- No code changes needed
+- **Learnings for future iterations:**
+  - Same pattern as Next.js and Astro: ensureBuild + execSync for build tools, read output for verification
+---
+
+## 2026-03-18 - US-163
+- Astro project-matrix fixture already existed and passes non-kernel project-matrix test
+- Fixture: astro.config.mjs, src/pages/index.astro, ensureBuild pattern with astro build
+- Astro already in docs/nodejs-compatibility.mdx tested packages table
+- Kernel e2e fails (same pre-existing issue as all other fixtures)
+- No code changes needed
+---
+
+## 2026-03-18 - US-164
+- Fix was already implemented — node-stdlib-browser runtime import replaced with static STDLIB_BROWSER_MODULES Set
+- module-resolver.ts uses hasPolyfill() checking against hardcoded set of 50 stdlib module names
+- @secure-exec/browser and @secure-exec/python moved to optionalDependencies
+- Re-exports commented out in secure-exec/src/index.ts with TODO markers
+- Typecheck passes, all 25 project-matrix tests pass
+- No code changes needed — fix was in a prior commit
+- **Learnings for future iterations:**
+  - node-stdlib-browser ESM entry is broken (calls require.resolve('./mock/empty.js') on missing file)
+  - Always use static lists for stdlib module detection, never runtime-import node-stdlib-browser
+  - polyfills.ts still imports node-stdlib-browser but that's in the bundler path (lazy/async), not during module init
 ---

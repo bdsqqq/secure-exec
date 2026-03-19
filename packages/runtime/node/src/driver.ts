@@ -26,6 +26,7 @@ import {
 } from '@secure-exec/core';
 import type {
   CommandExecutor,
+  Permissions,
   VirtualFileSystem,
 } from '@secure-exec/core';
 
@@ -38,6 +39,11 @@ export interface NodeRuntimeOptions {
    * the host npm location automatically.
    */
   moduleAccessPaths?: string[];
+  /**
+   * Bridge permissions for isolate processes. Defaults to allowAllChildProcess
+   * (fs/network/env deny-by-default). Use allowAll for full sandbox access.
+   */
+  permissions?: Partial<Permissions>;
 }
 
 /**
@@ -311,10 +317,12 @@ class NodeRuntimeDriver implements RuntimeDriver {
 
   private _kernel: KernelInterface | null = null;
   private _memoryLimit: number;
+  private _permissions: Partial<Permissions>;
   private _activeDrivers = new Map<number, NodeExecutionDriver>();
 
   constructor(options?: NodeRuntimeOptions) {
     this._memoryLimit = options?.memoryLimit ?? 128;
+    this._permissions = options?.permissions ?? { ...allowAllChildProcess };
   }
 
   async init(kernel: KernelInterface): Promise<void> {
@@ -430,7 +438,7 @@ class NodeRuntimeDriver implements RuntimeDriver {
       const systemDriver = createNodeDriver({
         filesystem,
         commandExecutor,
-        permissions: { ...allowAllChildProcess },
+        permissions: { ...this._permissions },
         processConfig: {
           cwd: ctx.cwd,
           env: ctx.env,

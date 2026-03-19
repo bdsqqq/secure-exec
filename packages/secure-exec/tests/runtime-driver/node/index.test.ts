@@ -7,6 +7,7 @@ import {
 	NodeFileSystem,
 	NodeRuntime,
 	createInMemoryFileSystem,
+	createDefaultNetworkAdapter,
 	createNodeDriver,
 	createNodeRuntimeDriverFactory,
 } from "../../../src/index.js";
@@ -1719,30 +1720,34 @@ describe("NodeRuntime", () => {
 		expect(result.code).not.toBe(-999);
 	});
 
-	// http.Agent pooling — maxSockets limits concurrency
+	// http.Agent pooling — maxSockets limits concurrency through bridged server
 	it("http.Agent with maxSockets=1 serializes concurrent requests", async () => {
-		// External test server that tracks concurrent requests
+		// Use adapter-bridged server so the port is SSRF-exempt
 		let concurrent = 0;
 		let maxConcurrent = 0;
-		const port = 33230;
-		const testServer = nodeHttp.createServer((_req, res) => {
-			concurrent++;
-			maxConcurrent = Math.max(maxConcurrent, concurrent);
-			setTimeout(() => {
+		const adapter = createDefaultNetworkAdapter();
+		const listenResult = await adapter.httpServerListen!({
+			serverId: 9990,
+			port: 0,
+			hostname: "127.0.0.1",
+			onRequest: async () => {
+				concurrent++;
+				maxConcurrent = Math.max(maxConcurrent, concurrent);
+				await new Promise((r) => setTimeout(r, 100));
 				concurrent--;
-				res.writeHead(200, { "content-type": "text/plain" });
-				res.end(String(maxConcurrent));
-			}, 100);
+				return {
+					status: 200,
+					headers: [["content-type", "text/plain"]],
+					body: String(maxConcurrent),
+				};
+			},
 		});
-
-		await new Promise<void>((resolve) =>
-			testServer.listen(port, "127.0.0.1", resolve),
-		);
+		const port = listenResult.address!.port;
 
 		try {
 			const driver = createNodeDriver({
 				filesystem: new NodeFileSystem(),
-				useDefaultNetwork: true,
+				networkAdapter: adapter,
 				permissions: allowFsNetworkEnv,
 			});
 			const capture = createConsoleCapture();
@@ -1789,15 +1794,13 @@ describe("NodeRuntime", () => {
 			expect(Math.max(...results.map(Number))).toBe(1);
 			expect(maxConcurrent).toBe(1);
 		} finally {
-			await new Promise<void>((resolve) =>
-				testServer.close(() => resolve()),
-			);
+			await adapter.httpServerClose!(9990);
 		}
 	});
 
 	// HTTP upgrade — 101 response fires upgrade event
 	it("upgrade request fires upgrade event with response and socket", async () => {
-		const port = 33231;
+		// Upgrade requires raw socket handling — use external server with SSRF exemption
 		const testServer = nodeHttp.createServer();
 		testServer.on("upgrade", (_req, socket) => {
 			socket.write(
@@ -1810,13 +1813,15 @@ describe("NodeRuntime", () => {
 		});
 
 		await new Promise<void>((resolve) =>
-			testServer.listen(port, "127.0.0.1", resolve),
+			testServer.listen(0, "127.0.0.1", resolve),
 		);
+		const port = (testServer.address() as { port: number }).port;
 
 		try {
+			const adapter = createDefaultNetworkAdapter({ initialExemptPorts: [port] });
 			const driver = createNodeDriver({
 				filesystem: new NodeFileSystem(),
-				useDefaultNetwork: true,
+				networkAdapter: adapter,
 				permissions: allowFsNetworkEnv,
 			});
 			const capture = createConsoleCapture();

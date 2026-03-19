@@ -53,6 +53,7 @@ export const HOST_BRIDGE_GLOBAL_KEYS = {
 	networkHttpRequestRaw: "_networkHttpRequestRaw",
 	networkHttpServerListenRaw: "_networkHttpServerListenRaw",
 	networkHttpServerCloseRaw: "_networkHttpServerCloseRaw",
+	ptySetRawMode: "_ptySetRawMode",
 	processConfig: "_processConfig",
 	osConfig: "_osConfig",
 	log: "_log",
@@ -204,6 +205,9 @@ export type NetworkDnsLookupRawBridgeRef = BridgeApplyRef<[string], string>;
 export type NetworkHttpRequestRawBridgeRef = BridgeApplyRef<[string, string], string>;
 export type NetworkHttpServerListenRawBridgeRef = BridgeApplyRef<[string], string>;
 export type NetworkHttpServerCloseRawBridgeRef = BridgeApplyRef<[number], void>;
+
+// PTY boundary contracts.
+export type PtySetRawModeBridgeRef = BridgeApplySyncRef<[boolean], void>;
 
 // Active-handle lifecycle globals exposed by the bridge.
 export type RegisterHandleBridgeFn = (id: string, description: string) => void;

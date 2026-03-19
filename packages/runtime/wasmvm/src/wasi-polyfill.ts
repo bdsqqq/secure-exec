@@ -941,7 +941,8 @@ export class WasiPolyfill {
 
     const resource = entry.resource;
     if (resource.type === 'vfsFile' || resource.type === 'preopen') {
-      const ino = resource.type === 'vfsFile'
+      // Kernel-opened vfsFile resources have ino=0 (sentinel) — resolve by path
+      const ino = (resource.type === 'vfsFile' && resource.ino !== 0)
         ? resource.ino
         : this.vfs.getIno(resource.path, true);
       if (ino === null) return ERRNO_EBADF;

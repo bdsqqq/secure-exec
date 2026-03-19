@@ -34,6 +34,11 @@
       "types": "./dist/worker-protocol.d.ts",
       "import": "./dist/worker-protocol.js",
       "default": "./dist/worker-protocol.js"
+    },
+    "./internal/permission-validation": {
+      "types": "./dist/permission-validation.d.ts",
+      "import": "./dist/permission-validation.js",
+      "default": "./dist/permission-validation.js"
     }
   },
   "scripts": {

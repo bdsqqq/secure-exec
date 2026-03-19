@@ -27,6 +27,12 @@ export interface ProcessConfig {
 	timingMitigation?: TimingMitigation;
 	/** Internal frozen clock source used when timing mitigation is enabled */
 	frozenTimeMs?: number;
+	/** Whether stdin is a TTY (PTY slave attached) */
+	stdinIsTTY?: boolean;
+	/** Whether stdout is a TTY (PTY slave attached) */
+	stdoutIsTTY?: boolean;
+	/** Whether stderr is a TTY (PTY slave attached) */
+	stderrIsTTY?: boolean;
 }
 
 export interface OSConfig {

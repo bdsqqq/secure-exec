@@ -294,6 +294,11 @@ export const NODE_CUSTOM_GLOBAL_INVENTORY: readonly CustomGlobalInventoryEntry[]
 		rationale: "Host network bridge reference.",
 	},
 	{
+		name: "_ptySetRawMode",
+		classification: "hardened",
+		rationale: "Host PTY bridge reference for stdin.setRawMode().",
+	},
+	{
 		name: "require",
 		classification: "hardened",
 		rationale: "Runtime-owned global require shim entrypoint.",

@@ -10,13 +10,59 @@
  * Everything else falls through to node-stdlib-browser polyfills or node_modules.
  */
 
-import stdLibBrowser from "node-stdlib-browser";
+/**
+ * Static set of Node.js stdlib module names that have browser polyfills
+ * available via node-stdlib-browser. Hardcoded to avoid importing
+ * node-stdlib-browser at runtime (its ESM entry crashes on missing
+ * mock/empty.js in published builds).
+ */
+const STDLIB_BROWSER_MODULES = new Set([
+	"assert",
+	"buffer",
+	"child_process",
+	"cluster",
+	"console",
+	"constants",
+	"crypto",
+	"dgram",
+	"dns",
+	"domain",
+	"events",
+	"fs",
+	"http",
+	"https",
+	"http2",
+	"module",
+	"net",
+	"os",
+	"path",
+	"punycode",
+	"process",
+	"querystring",
+	"readline",
+	"repl",
+	"stream",
+	"_stream_duplex",
+	"_stream_passthrough",
+	"_stream_readable",
+	"_stream_transform",
+	"_stream_writable",
+	"string_decoder",
+	"sys",
+	"timers/promises",
+	"timers",
+	"tls",
+	"tty",
+	"url",
+	"util",
+	"vm",
+	"zlib",
+]);
 
 /** Check if a module has a polyfill available via node-stdlib-browser. */
 function hasPolyfill(moduleName: string): boolean {
 	const name = moduleName.replace(/^node:/, "");
-	const polyfill = stdLibBrowser[name as keyof typeof stdLibBrowser];
-	return polyfill !== undefined && polyfill !== null;
+	return STDLIB_BROWSER_MODULES.has(name);
 }
 
 /** Modules with full bridge implementations injected into the isolate. */

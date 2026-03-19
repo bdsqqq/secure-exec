@@ -428,6 +428,8 @@ export class KernelError extends Error {
 
 /** Terminal attributes — controls line discipline behavior on a PTY. */
 export interface Termios {
+	/** Map CR (0x0d) to NL (0x0a) on input (POSIX ICRNL). */
+	icrnl: boolean;
 	/** Post-process output (master for ONLCR, etc.). */
 	opost: boolean;
 	/** Map NL to CR-NL on output (requires opost). */
@@ -453,6 +455,7 @@ export interface TermiosCC {
 /** Returns the POSIX-standard default termios: canonical on, echo on, isig on, opost+onlcr on. */
 export function defaultTermios(): Termios {
 	return {
+		icrnl: true,
 		opost: true,
 		onlcr: true,
 		icanon: true,

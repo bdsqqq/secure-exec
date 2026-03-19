@@ -207,6 +207,7 @@ export interface NetworkAdapter {
 			method?: string;
 			headers?: Record<string, string>;
 			body?: string | null;
+			rejectUnauthorized?: boolean;
 		},
 	): Promise<{
 		status: number;

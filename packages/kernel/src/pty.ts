@@ -296,6 +296,7 @@ export class PtyManager {
 		const state = this.ptys.get(ptyId);
 		if (!state) throw new KernelError("EBADF", "PTY not found");
 		return {
+			icrnl: state.termios.icrnl,
 			opost: state.termios.opost,
 			onlcr: state.termios.onlcr,
 			icanon: state.termios.icanon,
@@ -311,6 +312,7 @@ export class PtyManager {
 		const state = this.ptys.get(ptyId);
 		if (!state) throw new KernelError("EBADF", "PTY not found");
 
+		if (termios.icrnl !== undefined) state.termios.icrnl = termios.icrnl;
 		if (termios.opost !== undefined) state.termios.opost = termios.opost;
 		if (termios.onlcr !== undefined) state.termios.onlcr = termios.onlcr;
 		if (termios.icanon !== undefined) state.termios.icanon = termios.icanon;
@@ -378,13 +380,15 @@ export class PtyManager {
 		const { termios } = state;
 
 		// Fast path: no discipline processing (raw pass-through)
-		if (!termios.icanon && !termios.echo && !termios.isig) {
+		if (!termios.icanon && !termios.echo && !termios.isig && !termios.icrnl) {
 			this.deliverInput(state, data);
 			return data.length;
 		}
 
 		// Process byte by byte through discipline
-		for (const byte of data) {
+		for (let byte of data) {
+			// ICRNL: convert CR (0x0d) to NL (0x0a) before all other processing
+			if (termios.icrnl && byte === 0x0d) byte = 0x0a;
 			// Signal character handling (requires isig)
 			if (termios.isig) {
 				const signal = this.signalForByte(state, byte);

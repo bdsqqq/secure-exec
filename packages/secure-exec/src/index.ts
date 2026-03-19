@@ -51,14 +51,13 @@ export type {
 	NodeRuntimeDriverFactoryOptions,
 } from "@secure-exec/node";
 
-// TODO: Re-enable once node-stdlib-browser ESM entry is fixed (mock/empty.js missing from published package).
-// Eagerly importing @secure-exec/python and @secure-exec/browser pulls in node-stdlib-browser,
-// which crashes on Node.js. Use "secure-exec/python" or "secure-exec/browser" subpath imports instead.
+// TODO: Re-enable once @secure-exec/python is a reliable optional dependency
 // export {
 // 	createPyodideRuntimeDriverFactory,
 // 	PyodideRuntimeDriver,
 // } from "@secure-exec/python";
-//
+
+// TODO: Re-enable once @secure-exec/browser is a reliable optional dependency
 // export {
 // 	createBrowserDriver,
 // 	createBrowserNetworkAdapter,

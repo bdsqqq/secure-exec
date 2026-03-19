@@ -2832,6 +2832,77 @@ describe("kernel + MockRuntimeDriver integration", () => {
 
 			proc.kill();
 		});
+
+		it("ICRNL — CR (0x0d) converted to NL (0x0a) in canonical mode, delivered as newline", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("proc", []);
+			const { masterFd, slaveFd } = ki.openpty(proc.pid);
+
+			ki.ptySetDiscipline(proc.pid, masterFd, { canonical: true, echo: false });
+
+			// Write 'hello' + CR (0x0d) — ICRNL converts CR to LF, flushes line
+			const input = new Uint8Array([0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x0d]); // 'hello\r'
+			ki.fdWrite(proc.pid, masterFd, input);
+
+			const data = await ki.fdRead(proc.pid, slaveFd, 1024);
+			expect(new TextDecoder().decode(data)).toBe("hello\n");
+
+			proc.kill();
+		});
+
+		it("ICRNL — CR input echoes as CR+LF", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("proc", []);
+			const { masterFd, slaveFd } = ki.openpty(proc.pid);
+
+			ki.ptySetDiscipline(proc.pid, masterFd, { canonical: true, echo: true });
+
+			// Write 'A' + CR — ICRNL converts to LF, echo should produce 'A' then CR+LF
+			ki.fdWrite(proc.pid, masterFd, new Uint8Array([0x41, 0x0d])); // 'A\r'
+
+			// Slave reads the flushed line
+			const slaveData = await ki.fdRead(proc.pid, slaveFd, 1024);
+			expect(new TextDecoder().decode(slaveData)).toBe("A\n");
+
+			// Master reads echoed: 'A' + CR+LF (newline echo)
+			const echoData = await ki.fdRead(proc.pid, masterFd, 1024);
+			expect(new TextDecoder().decode(echoData)).toBe("A\r\n");
+
+			proc.kill();
+		});
+
+		it("ICRNL disabled — CR passes through as-is", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("proc", []);
+			const { masterFd, slaveFd } = ki.openpty(proc.pid);
+
+			// Disable ICRNL via tcsetattr
+			ki.tcsetattr(proc.pid, masterFd, { icrnl: false });
+			ki.ptySetDiscipline(proc.pid, masterFd, { canonical: false, echo: false, isig: false });
+
+			// Write CR — should pass through as 0x0d, not converted to 0x0a
+			ki.fdWrite(proc.pid, masterFd, new Uint8Array([0x0d]));
+
+			const data = await ki.fdRead(proc.pid, slaveFd, 1024);
+			expect(data[0]).toBe(0x0d);
+
+			proc.kill();
+		});
 	});
 
 	// -------------------------------------------------------------------

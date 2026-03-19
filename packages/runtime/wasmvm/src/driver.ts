@@ -130,10 +130,11 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
     });
 
     // Set up stdin pipe for writeStdin/closeStdin — skip if FD 0 is already
-    // a PTY slave (interactive shell: stdin flows through kernel PTY)
+    // a PTY slave, pipe, or file (shell redirect/pipe wiring must be preserved)
     const stdinIsPty = kernel.isatty(ctx.pid, 0);
+    const stdinAlreadyRouted = stdinIsPty || this._isFdKernelRouted(ctx.pid, 0) || this._isFdRegularFile(ctx.pid, 0);
     let stdinWriteFd: number | undefined;
-    if (!stdinIsPty) {
+    if (!stdinAlreadyRouted) {
       const stdinPipe = kernel.pipe(ctx.pid);
       kernel.fdDup2(ctx.pid, stdinPipe.readFd, 0);
       kernel.fdClose(ctx.pid, stdinPipe.readFd);
@@ -188,6 +189,17 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
     }
   }
 
+  /** Check if a process's FD points to a regular file (e.g. shell < redirect). */
+  private _isFdRegularFile(pid: number, fd: number): boolean {
+    if (!this._kernel) return false;
+    try {
+      const stat = this._kernel.fdStat(pid, fd);
+      return stat.filetype === 4; // FILETYPE_REGULAR_FILE
+    } catch {
+      return false;
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Worker lifecycle
   // -------------------------------------------------------------------------
@@ -205,10 +217,13 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
     const signalBuf = new SharedArrayBuffer(SIGNAL_BUFFER_BYTES);
     const dataBuf = new SharedArrayBuffer(DATA_BUFFER_BYTES);
 
-    // Check if stdio FDs are kernel-routed (pipe or PTY)
+    // Check if stdio FDs are kernel-routed (pipe, PTY, or regular file redirect)
     const stdinPiped = this._isFdKernelRouted(ctx.pid, 0);
+    const stdinIsFile = this._isFdRegularFile(ctx.pid, 0);
     const stdoutPiped = this._isFdKernelRouted(ctx.pid, 1);
+    const stdoutIsFile = this._isFdRegularFile(ctx.pid, 1);
     const stderrPiped = this._isFdKernelRouted(ctx.pid, 2);
+    const stderrIsFile = this._isFdRegularFile(ctx.pid, 2);
 
     // Detect which FDs are TTYs (PTY slaves) for brush-shell interactive mode
     const ttyFds: number[] = [];
@@ -226,10 +241,10 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
       cwd: ctx.cwd,
       signalBuf,
       dataBuf,
-      // Tell worker which stdio channels are kernel-routed
-      stdinFd: stdinPiped ? 99 : undefined,
-      stdoutFd: stdoutPiped ? 99 : undefined,
-      stderrFd: stderrPiped ? 99 : undefined,
+      // Tell worker which stdio channels are kernel-routed (pipe, PTY, or file redirect)
+      stdinFd: (stdinPiped || stdinIsFile) ? 99 : undefined,
+      stdoutFd: (stdoutPiped || stdoutIsFile) ? 99 : undefined,
+      stderrFd: (stderrPiped || stderrIsFile) ? 99 : undefined,
       ttyFds: ttyFds.length > 0 ? ttyFds : undefined,
     };
 
@@ -515,13 +530,9 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
       responseData = null;
     }
 
-    // Write response to signal buffer
-    if (responseData && responseData.length > 0) {
-      // Data already written to dataBuf above (for some cases)
-      Atomics.store(signal, SIG_IDX_DATA_LEN, responseData.length);
-    } else if (!responseData) {
-      Atomics.store(signal, SIG_IDX_DATA_LEN, 0);
-    }
+    // Write response to signal buffer — always set DATA_LEN so workers
+    // never read stale lengths from previous calls (e.g. 0-byte EOF reads)
+    Atomics.store(signal, SIG_IDX_DATA_LEN, responseData ? responseData.length : 0);
     Atomics.store(signal, SIG_IDX_ERRNO, errno);
     Atomics.store(signal, SIG_IDX_INT_RESULT, intResult);
     Atomics.store(signal, SIG_IDX_STATE, SIG_STATE_READY);

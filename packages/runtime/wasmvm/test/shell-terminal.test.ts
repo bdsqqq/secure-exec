@@ -119,6 +119,26 @@ class SimpleVFS {
 		return path;
 	}
 	async symlink(_t: string, _l: string) {}
+	async readlink(_path: string): Promise<string> {
+		throw new Error("EINVAL: not a symlink");
+	}
+	async lstat(path: string) {
+		return this.stat(path);
+	}
+	async link(_oldPath: string, _newPath: string) {}
+	async chmod(_path: string, _mode: number) {}
+	async chown(_path: string, _uid: number, _gid: number) {}
+	async utimes(_path: string, _atime: number, _mtime: number) {}
+	async truncate(path: string, length: number) {
+		const d = this.files.get(path);
+		if (!d) throw new Error(`ENOENT: ${path}`);
+		this.files.set(path, d.slice(0, length));
+	}
+	async pread(path: string, offset: number, length: number): Promise<Uint8Array> {
+		const d = this.files.get(path);
+		if (!d) throw new Error(`ENOENT: ${path}`);
+		return d.slice(offset, offset + length);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -178,6 +198,22 @@ describe.skipIf(!hasWasmBinary)("wasmvm-shell-terminal", () => {
 				PROMPT,
 			].join("\n"),
 		);
+	});
+
+	it("ls directory with known contents — mkdir + touch then ls shows expected entries", async () => {
+		const { kernel, vfs } = await createShellKernel();
+		await vfs.createDir("/data");
+		await vfs.writeFile("/data/alpha.txt", "a");
+		await vfs.writeFile("/data/beta.txt", "b");
+		harness = new TerminalHarness(kernel);
+
+		await harness.waitFor(PROMPT);
+		await harness.type("ls /data\n");
+		await harness.waitFor(PROMPT, 2);
+
+		const screen = harness.screenshotTrimmed();
+		expect(screen).toContain("alpha.txt");
+		expect(screen).toContain("beta.txt");
 	});
 
 	it("output preserved across commands — 'echo AAA' then 'echo BBB' — both visible", async () => {
@@ -358,5 +394,36 @@ describe.skipIf(!hasWasmBinary)("wasmvm-shell-terminal", () => {
 				PROMPT,
 			].join("\n"),
 		);
+	});
+
+	it("exit command terminates shell — 'exit' causes wait() to resolve with code 0", async () => {
+		const { kernel } = await createShellKernel();
+		harness = new TerminalHarness(kernel);
+
+		await harness.waitFor(PROMPT);
+		harness.shell.write("exit\n");
+
+		const exitCode = await Promise.race([
+			harness.shell.wait(),
+			new Promise<number>((_, rej) =>
+				setTimeout(() => rej(new Error("wait() hung after 'exit'")), 10_000),
+			),
+		]);
+		expect(exitCode).toBe(0);
+	});
+
+	it("Ctrl+D on empty line exits — ^D causes wait() to resolve with code 0", async () => {
+		const { kernel } = await createShellKernel();
+		harness = new TerminalHarness(kernel);
+
+		await harness.waitFor(PROMPT);
+
+		const exitCode = await Promise.race([
+			harness.exit(),
+			new Promise<number>((_, rej) =>
+				setTimeout(() => rej(new Error("wait() hung after ^D")), 10_000),
+			),
+		]);
+		expect(exitCode).toBe(0);
 	});
 });

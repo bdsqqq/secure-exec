@@ -44,7 +44,7 @@ const WASM_BINARY_PATH = path.resolve(
 // Types (same schema as project-matrix.test.ts)
 // ---------------------------------------------------------------------------
 
-type PackageManager = 'pnpm' | 'npm' | 'bun';
+type PackageManager = 'pnpm' | 'npm' | 'bun' | 'yarn';
 type PassFixtureMetadata = { entry: string; expectation: 'pass'; packageManager?: PackageManager };
 type FailFixtureMetadata = {
   entry: string;
@@ -119,11 +119,14 @@ async function prepareFixtureProject(fixture: FixtureProject): Promise<PreparedF
       ? { cmd: 'npm', args: ['install', '--prefer-offline'] }
       : pm === 'bun'
         ? { cmd: 'bun', args: ['install'] }
-        : { cmd: 'pnpm', args: ['install', '--ignore-workspace', '--prefer-offline'] };
+        : pm === 'yarn'
+          ? await getYarnInstallCmd(staging)
+          : { cmd: 'pnpm', args: ['install', '--ignore-workspace', '--prefer-offline'] };
   await execFileAsync(installCmd.cmd, installCmd.args, {
     cwd: staging,
     timeout: COMMAND_TIMEOUT_MS,
     maxBuffer: 10 * 1024 * 1024,
+    ...(pm === 'yarn' && { env: yarnEnv }),
   });
   await writeFile(path.join(staging, CACHE_READY_MARKER), `${new Date().toISOString()}\n`);
 
@@ -147,14 +150,27 @@ async function createFixtureCacheKey(fixture: FixtureProject): Promise<string> {
   const nodeMajor = process.versions.node.split('.')[0] ?? '0';
   const pm = fixture.metadata.packageManager ?? 'pnpm';
   const pmVersion =
-    pm === 'npm' ? await getNpmVersion() : pm === 'bun' ? await getBunVersion() : await getPnpmVersion();
+    pm === 'npm'
+      ? await getNpmVersion()
+      : pm === 'bun'
+        ? await getBunVersion()
+        : pm === 'yarn'
+          ? await getYarnVersion()
+          : await getPnpmVersion();
   hash.update(`node-major:${nodeMajor}\n`);
   hash.update(`pm:${pm}\n`);
   hash.update(`pm-version:${pmVersion}\n`);
   hash.update(`platform:${process.platform}\n`);
   hash.update(`arch:${process.arch}\n`);
 
-  const lockFile = pm === 'npm' ? 'package-lock.json' : pm === 'bun' ? 'bun.lock' : 'pnpm-lock.yaml';
+  const lockFile =
+    pm === 'npm'
+      ? 'package-lock.json'
+      : pm === 'bun'
+        ? 'bun.lock'
+        : pm === 'yarn'
+          ? 'yarn.lock'
+          : 'pnpm-lock.yaml';
   for (const [label, filePath] of [
     ['workspace-lock', path.join(WORKSPACE_ROOT, 'pnpm-lock.yaml')],
     ['workspace-package', path.join(WORKSPACE_ROOT, 'package.json')],
@@ -207,6 +223,29 @@ function getBunVersion(): Promise<string> {
     }).then((r) => r.stdout.trim());
   }
   return _bunVersionPromise;
+}
+
+let _yarnVersionPromise: Promise<string> | undefined;
+// Bypass corepack packageManager enforcement so yarn runs in a pnpm workspace.
+const yarnEnv = { ...process.env, COREPACK_ENABLE_STRICT: '0' };
+function getYarnVersion(): Promise<string> {
+  if (!_yarnVersionPromise) {
+    _yarnVersionPromise = execFileAsync('yarn', ['--version'], {
+      cwd: WORKSPACE_ROOT,
+      timeout: COMMAND_TIMEOUT_MS,
+      env: yarnEnv,
+    }).then((r) => r.stdout.trim());
+  }
+  return _yarnVersionPromise;
+}
+
+async function getYarnInstallCmd(
+  projectDir: string,
+): Promise<{ cmd: string; args: string[] }> {
+  const isBerry = await pathExists(path.join(projectDir, '.yarnrc.yml'));
+  return isBerry
+    ? { cmd: 'yarn', args: ['install', '--immutable'] }
+    : { cmd: 'yarn', args: ['install'] };
 }
 
 async function listFiles(root: string): Promise<string[]> {

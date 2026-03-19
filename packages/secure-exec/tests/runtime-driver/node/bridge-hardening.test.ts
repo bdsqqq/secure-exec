@@ -33,7 +33,7 @@ describe("bridge-side resource hardening", () => {
 	let proc: NodeRuntime | undefined;
 
 	afterEach(() => {
-		proc?.dispose();
+		try { proc?.dispose(); } catch { /* isolate may already be disposed from termination */ }
 		proc = undefined;
 	});
 
@@ -693,6 +693,154 @@ describe("bridge-side resource hardening", () => {
 
 			// SIGKILL = signal 9, exit code = 128 + 9 = 137
 			expect(result.code).toBe(137);
+		});
+	});
+
+	// -------------------------------------------------------------------
+	// v8.deserialize buffer size check — reject before string allocation
+	// -------------------------------------------------------------------
+
+	// -------------------------------------------------------------------
+	// HTTP body buffering caps — prevent host memory exhaustion
+	// -------------------------------------------------------------------
+
+	describe("HTTP body buffering caps", () => {
+		it("throws when request body exceeds 50MB via repeated write()", async () => {
+			const capture = createConsoleCapture();
+			proc = createTestNodeRuntime({
+				permissions: { ...allowAllNetwork },
+				networkAdapter: {
+					async fetch() { return { ok: true, status: 200, statusText: "OK", headers: {}, body: "", url: "", redirected: false }; },
+					async dnsLookup() { return { address: "127.0.0.1", family: 4 }; },
+					async httpRequest() { return { status: 200, statusText: "OK", headers: {}, body: "", url: "" }; },
+				},
+				onStdio: capture.onStdio,
+			});
+
+			const result = await proc.exec(`
+				const http = require('http');
+				const results = {};
+				try {
+					const req = http.request({ hostname: 'example.test', method: 'POST', port: 80 });
+					const chunk = 'x'.repeat(1024 * 1024); // 1MB
+					for (let i = 0; i < 55; i++) {
+						req.write(chunk);
+					}
+					results.threw = false;
+				} catch (e) {
+					results.threw = true;
+					results.hasCode = e.message.includes('ERR_HTTP_BODY_TOO_LARGE');
+				}
+				console.log(JSON.stringify(results));
+			`);
+
+			expect(result.code).toBe(0);
+			const results = JSON.parse(capture.stdout().trim());
+			expect(results.threw).toBe(true);
+			expect(results.hasCode).toBe(true);
+		});
+
+		it("throws when response body exceeds 50MB via repeated write()", async () => {
+			const capture = createConsoleCapture();
+
+			// Adapter that dispatches a GET request into the handler once the server listens
+			const adapter = {
+				async httpServerListen(opts: { serverId: number; port?: number; hostname?: string; onRequest: (req: { method: string; url: string; headers: Record<string, string>; rawHeaders: string[] }) => Promise<unknown> }) {
+					// Dispatch a request once listen returns to sandbox
+					setTimeout(() => {
+						opts.onRequest({ method: "GET", url: "/", headers: {}, rawHeaders: [] }).catch(() => {});
+					}, 0);
+					return { address: { address: "127.0.0.1", family: "IPv4" as const, port: 9999 } };
+				},
+				async httpServerClose() {},
+				async fetch() { return { ok: true, status: 200, statusText: "OK", headers: {}, body: "", url: "", redirected: false }; },
+				async dnsLookup() { return { address: "127.0.0.1", family: 4 }; },
+				async httpRequest() { return { status: 200, statusText: "OK", headers: {}, body: "", url: "" }; },
+			};
+
+			proc = createTestNodeRuntime({
+				permissions: { ...allowAllNetwork },
+				networkAdapter: adapter,
+				onStdio: capture.onStdio,
+			});
+
+			const result = await proc.exec(`
+				const http = require('http');
+				let requestHandled = false;
+				const server = http.createServer((req, res) => {
+					const chunk = 'x'.repeat(1024 * 1024); // 1MB
+					try {
+						for (let i = 0; i < 55; i++) {
+							res.write(chunk);
+						}
+						res.end();
+						console.log('cap:not-enforced');
+					} catch (e) {
+						console.log('cap:' + e.message);
+						res.statusCode = 500;
+						res.end();
+					}
+					requestHandled = true;
+				});
+
+				(async () => {
+					await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+					// Wait for the adapter-dispatched request to be handled
+					for (let i = 0; i < 100 && !requestHandled; i++) {
+						await new Promise(resolve => setTimeout(resolve, 10));
+					}
+					await new Promise((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
+				})();
+			`);
+
+			expect(capture.stdout()).toContain("ERR_HTTP_BODY_TOO_LARGE");
+			expect(capture.stdout()).not.toContain("cap:not-enforced");
+		});
+
+		it("allows normal-sized request and response bodies", async () => {
+			const capture = createConsoleCapture();
+			proc = createTestNodeRuntime({
+				permissions: { ...allowAllNetwork },
+				networkAdapter: {
+					async fetch() { return { ok: true, status: 200, statusText: "OK", headers: {}, body: "", url: "", redirected: false }; },
+					async dnsLookup() { return { address: "127.0.0.1", family: 4 }; },
+					async httpRequest(_url, options) {
+						return { status: 200, statusText: "OK", headers: {}, body: options.body ?? "", url: _url };
+					},
+				},
+				onStdio: capture.onStdio,
+			});
+
+			const result = await proc.exec(`
+				const http = require('http');
+				const results = {};
+
+				(async () => {
+					// Request body — normal size
+					await new Promise((resolve, reject) => {
+						const req = http.request({ hostname: 'example.test', method: 'POST', port: 80 }, (res) => {
+							let data = '';
+							res.on('data', chunk => data += chunk);
+							res.on('end', () => {
+								results.echoLength = data.length;
+								resolve();
+							});
+						});
+						req.on('error', reject);
+						const body = 'hello'.repeat(100);
+						req.write(body);
+						req.end();
+					});
+
+					results.ok = true;
+					console.log(JSON.stringify(results));
+				})();
+			`);
+
+			expect(result.code).toBe(0);
+			const results = JSON.parse(capture.stdout().trim());
+			expect(results.ok).toBe(true);
+			expect(results.echoLength).toBe(500);
 		});
 	});
 

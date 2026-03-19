@@ -39,6 +39,7 @@ import type {
 	BrowserWorkerResponseMessage,
 	SerializedPermissions,
 } from "./worker-protocol.js";
+import { validatePermissionSource } from "./permission-validation.js";
 
 let filesystem: VirtualFileSystem | null = null;
 let networkAdapter: NetworkAdapter | null = null;
@@ -52,6 +53,46 @@ const MAX_STDIO_MESSAGE_CHARS = 8192;
 const MAX_STDIO_DEPTH = 6;
 const MAX_STDIO_OBJECT_KEYS = 60;
 const MAX_STDIO_ARRAY_ITEMS = 120;
+
+// Payload size defaults matching the Node runtime path
+const DEFAULT_BASE64_TRANSFER_BYTES = 16 * 1024 * 1024;
+const DEFAULT_JSON_PAYLOAD_BYTES = 4 * 1024 * 1024;
+const PAYLOAD_LIMIT_ERROR_CODE = "ERR_SANDBOX_PAYLOAD_TOO_LARGE";
+
+let base64TransferLimitBytes = DEFAULT_BASE64_TRANSFER_BYTES;
+let jsonPayloadLimitBytes = DEFAULT_JSON_PAYLOAD_BYTES;
+
+const encoder = new TextEncoder();
+
+function getUtf8ByteLength(text: string): number {
+	return encoder.encode(text).byteLength;
+}
+
+function getBase64EncodedByteLength(rawByteLength: number): number {
+	return Math.ceil(rawByteLength / 3) * 4;
+}
+
+function assertPayloadByteLength(
+	payloadLabel: string,
+	actualBytes: number,
+	maxBytes: number,
+): void {
+	if (actualBytes <= maxBytes) return;
+	const error = new Error(
+		`[${PAYLOAD_LIMIT_ERROR_CODE}] ${payloadLabel}: payload is ${actualBytes} bytes, limit is ${maxBytes} bytes`,
+	);
+	(error as { code?: string }).code = PAYLOAD_LIMIT_ERROR_CODE;
+	throw error;
+}
+
+function assertTextPayloadSize(
+	payloadLabel: string,
+	text: string,
+	maxBytes: number,
+): void {
+	assertPayloadByteLength(payloadLabel, getUtf8ByteLength(text), maxBytes);
+}
+
 const dynamicImportModule = new Function(
 	"specifier",
 	"return import(specifier);",
@@ -73,6 +114,10 @@ function boundStdioMessage(message: string): string {
 
 function revivePermission(source?: string): ((req: unknown) => { allow: boolean }) | undefined {
 	if (!source) return undefined;
+
+	// Validate source before eval to prevent code injection
+	if (!validatePermissionSource(source)) return undefined;
+
 	try {
 		const fn = new Function(`return (${source});`)();
 		if (typeof fn === "function") return fn;
@@ -127,8 +172,11 @@ function makeApplyPromise<TArgs extends unknown[], TResult>(
 	};
 }
 
+// Save real postMessage before sandbox code can replace it
+const _realPostMessage = self.postMessage.bind(self);
+
 function postResponse(message: BrowserWorkerResponseMessage): void {
-	self.postMessage(message satisfies BrowserWorkerOutboundMessage);
+	_realPostMessage(message satisfies BrowserWorkerOutboundMessage);
 }
 
 function postStdio(
@@ -142,7 +190,7 @@ function postStdio(
 		channel,
 		message,
 	};
-	self.postMessage(payload);
+	_realPostMessage(payload);
 }
 
 function formatConsoleValue(
@@ -234,6 +282,10 @@ async function initRuntime(payload: BrowserWorkerInitPayload): Promise<void> {
 
 	permissions = revivePermissions(payload.permissions);
 
+	// Apply payload limits (use defaults if not configured)
+	base64TransferLimitBytes = payload.payloadLimits?.base64TransferBytes ?? DEFAULT_BASE64_TRANSFER_BYTES;
+	jsonPayloadLimitBytes = payload.payloadLimits?.jsonPayloadBytes ?? DEFAULT_JSON_PAYLOAD_BYTES;
+
 	const baseFs =
 		payload.filesystem === "memory"
 			? createInMemoryFileSystem()
@@ -257,22 +309,32 @@ async function initRuntime(payload: BrowserWorkerInitPayload): Promise<void> {
 
 	// Set up filesystem bridge globals before loading runtime shims.
 	const readFileRef = makeApplySyncPromise(async (path: string) => {
-		return fsOps.readTextFile(path);
+		const text = await fsOps.readTextFile(path);
+		assertTextPayloadSize(`fs.readFile ${path}`, text, jsonPayloadLimitBytes);
+		return text;
 	});
 	const writeFileRef = makeApplySyncPromise(async (path: string, content: string) => {
 		return fsOps.writeFile(path, content);
 	});
 	const readFileBinaryRef = makeApplySyncPromise(async (path: string) => {
 		const data = await fsOps.readFile(path);
+		assertPayloadByteLength(
+			`fs.readFileBinary ${path}`,
+			getBase64EncodedByteLength(data.byteLength),
+			base64TransferLimitBytes,
+		);
 		return btoa(String.fromCharCode(...data));
 	});
 	const writeFileBinaryRef = makeApplySyncPromise(async (path: string, base64: string) => {
+		assertTextPayloadSize(`fs.writeFileBinary ${path}`, base64, base64TransferLimitBytes);
 		const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
 		return fsOps.writeFile(path, bytes);
 	});
 	const readDirRef = makeApplySyncPromise(async (path: string) => {
 		const entries = await fsOps.readDirWithTypes(path);
-		return JSON.stringify(entries);
+		const json = JSON.stringify(entries);
+		assertTextPayloadSize(`fs.readDir ${path}`, json, jsonPayloadLimitBytes);
+		return json;
 	});
 	const mkdirRef = makeApplySyncPromise(async (path: string) => {
 		return mkdir(fsOps, path);
@@ -481,6 +543,45 @@ async function initRuntime(payload: BrowserWorkerInitPayload): Promise<void> {
 	exposeMutableRuntimeStateGlobal("_pendingModules", {});
 	exposeMutableRuntimeStateGlobal("_currentModule", { dirname: "/" });
 	eval(getRequireSetupCode());
+
+	// Block dangerous Web APIs that bypass bridge permission checks
+	const dangerousApis = [
+		"XMLHttpRequest",
+		"WebSocket",
+		"importScripts",
+		"indexedDB",
+		"caches",
+		"BroadcastChannel",
+	];
+	for (const api of dangerousApis) {
+		try {
+			delete (self as unknown as Record<string, unknown>)[api];
+		} catch {
+			// May not exist or may be non-configurable
+		}
+		Object.defineProperty(self, api, {
+			get() {
+				throw new ReferenceError(`${api} is not available in sandbox`);
+			},
+			configurable: false,
+		});
+	}
+
+	// Lock down self.onmessage so sandbox code cannot hijack the control channel
+	const currentHandler = self.onmessage;
+	Object.defineProperty(self, "onmessage", {
+		value: currentHandler,
+		writable: false,
+		configurable: false,
+	});
+
+	// Block self.postMessage so sandbox code cannot forge responses to host
+	Object.defineProperty(self, "postMessage", {
+		get() {
+			throw new TypeError("postMessage is not available in sandbox");
+		},
+		configurable: false,
+	});
 
 	initialized = true;
 }

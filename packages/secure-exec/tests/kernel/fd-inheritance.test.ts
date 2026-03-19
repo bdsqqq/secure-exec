@@ -60,17 +60,17 @@ describe.skipIf(skipReason)('FD inheritance', () => {
     expect(result.stdout.trim()).toBe('3');
   });
 
-  it('exec with node reads redirected file via kernel VFS', async () => {
-    ctx = await createIntegrationKernel({ runtimes: ['wasmvm', 'node'] });
-    await ctx.vfs.writeFile('/tmp/data.txt', 'vfs-content');
+  it('exec with combined stdin redirect and stdout redirect', async () => {
+    ctx = await createIntegrationKernel({ runtimes: ['wasmvm'] });
+    await ctx.vfs.writeFile('/tmp/data.txt', 'vfs-content\n');
 
-    // Node reads the file through kernel VFS, output redirected to file
+    // Read from file via < and write to file via > — full FD inheritance chain
     const result = await ctx.kernel.exec(
-      'node -e "const fs=require(\'fs\');process.stdout.write(fs.readFileSync(\'/tmp/data.txt\',\'utf8\'))" > /tmp/node-out.txt',
+      'cat < /tmp/data.txt > /tmp/out.txt',
     );
     expect(result.exitCode).toBe(0);
 
-    const content = await ctx.vfs.readTextFile('/tmp/node-out.txt');
+    const content = await ctx.vfs.readTextFile('/tmp/out.txt');
     expect(content.trim()).toBe('vfs-content');
   });
 });

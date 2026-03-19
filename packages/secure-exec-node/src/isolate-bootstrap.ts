@@ -57,6 +57,8 @@ export interface DriverDeps {
 	dynamicImportCache: Map<string, ivm.Reference<unknown>>;
 	dynamicImportPending: Map<string, Promise<ivm.Reference<unknown>>>;
 	resolutionCache: ResolutionCache;
+	/** Optional callback for PTY setRawMode — wired by kernel when PTY is attached. */
+	onPtySetRawMode?: (mode: boolean) => void;
 }
 
 // Constants

@@ -60,8 +60,10 @@ function createPythonSuiteContext(): PythonSuiteContext {
 			const {
 				PythonRuntime: PythonRuntimeClass,
 				createNodeDriver,
-				createPyodideRuntimeDriverFactory,
 			} = await import("../../src/index.js");
+			const { createPyodideRuntimeDriverFactory } = await import(
+				"@secure-exec/python"
+			);
 			const runtime = new PythonRuntimeClass({
 				...runtimeOptions,
 				systemDriver:

@@ -216,8 +216,22 @@ export function isPrivateIp(ip: string): boolean {
 	return false;
 }
 
+/** Check whether a hostname is a loopback address (127.x.x.x, ::1, localhost). */
+function isLoopbackHost(hostname: string): boolean {
+	const bare = hostname.startsWith("[") && hostname.endsWith("]")
+		? hostname.slice(1, -1)
+		: hostname;
+	if (bare === "localhost" || bare === "::1") return true;
+	// 127.0.0.0/8
+	if (net.isIPv4(bare) && bare.startsWith("127.")) return true;
+	return false;
+}
+
 /** Resolve hostname to IP and block private/reserved ranges (SSRF protection). */
-async function assertNotPrivateHost(url: string): Promise<void> {
+async function assertNotPrivateHost(
+	url: string,
+	allowedLoopbackPorts?: ReadonlySet<number>,
+): Promise<void> {
 	const parsed = new URL(url);
 	// Non-network schemes don't need SSRF checks
 	if (parsed.protocol === "data:" || parsed.protocol === "blob:") return;
@@ -227,6 +241,14 @@ async function assertNotPrivateHost(url: string): Promise<void> {
 	const bare = hostname.startsWith("[") && hostname.endsWith("]")
 		? hostname.slice(1, -1)
 		: hostname;
+
+	// Allow loopback fetch to sandbox-owned server ports
+	if (allowedLoopbackPorts && allowedLoopbackPorts.size > 0 && isLoopbackHost(hostname)) {
+		const port = parsed.port
+			? Number(parsed.port)
+			: parsed.protocol === "https:" ? 443 : 80;
+		if (allowedLoopbackPorts.has(port)) return;
+	}
 
 	// If hostname is already an IP literal, check directly
 	if (net.isIP(bare)) {
@@ -256,8 +278,13 @@ const MAX_REDIRECTS = 20;
  * and loopback-only HTTP server support. Binary responses are base64-encoded
  * with an `x-body-encoding` header so the bridge can decode them.
  */
-export function createDefaultNetworkAdapter(): NetworkAdapter {
+export function createDefaultNetworkAdapter(options?: {
+	/** Pre-seed loopback ports that should bypass SSRF checks (e.g. host-managed servers). */
+	initialExemptPorts?: Iterable<number>;
+}): NetworkAdapter {
 	const servers = new Map<number, HttpServer>();
+	// Track ports owned by sandbox HTTP servers for loopback SSRF exemption
+	const ownedServerPorts = new Set<number>(options?.initialExemptPorts);
 
 	return {
 		async httpServerListen(options) {
@@ -339,12 +366,19 @@ export function createDefaultNetworkAdapter(): NetworkAdapter {
 			}
 
 			servers.set(options.serverId, server);
+			if (address) ownedServerPorts.add(address.port);
 			return { address };
 		},
 
 		async httpServerClose(serverId) {
 			const server = servers.get(serverId);
 			if (!server) return;
+
+			// Remove owned port before closing
+			const addr = server.address();
+			if (addr && typeof addr !== "string") {
+				ownedServerPorts.delete((addr as AddressInfo).port);
+			}
 
 			await new Promise<void>((resolve, reject) => {
 				server.close((err) => {
@@ -358,11 +392,12 @@ export function createDefaultNetworkAdapter(): NetworkAdapter {
 
 		async fetch(url, options) {
 			// SSRF: validate initial URL and manually follow redirects
+			// Allow loopback fetch to sandbox-owned server ports
 			let currentUrl = url;
 			let redirected = false;
 
 			for (let i = 0; i <= MAX_REDIRECTS; i++) {
-				await assertNotPrivateHost(currentUrl);
+				await assertNotPrivateHost(currentUrl, ownedServerPorts);
 
 				const response = await fetch(currentUrl, {
 					method: options?.method || "GET",
@@ -435,7 +470,8 @@ export function createDefaultNetworkAdapter(): NetworkAdapter {
 
 		async httpRequest(url, options) {
 			// SSRF: block requests to private/reserved IPs
-			await assertNotPrivateHost(url);
+			// Allow loopback requests to sandbox-owned server ports
+			await assertNotPrivateHost(url, ownedServerPorts);
 
 			return new Promise((resolve, reject) => {
 				const urlObj = new URL(url);
@@ -447,6 +483,9 @@ export function createDefaultNetworkAdapter(): NetworkAdapter {
 					path: urlObj.pathname + urlObj.search,
 					method: options?.method || "GET",
 					headers: options?.headers || {},
+					...(isHttps && options?.rejectUnauthorized !== undefined && {
+						rejectUnauthorized: options.rejectUnauthorized,
+					}),
 				};
 
 				const req = transport.request(reqOptions, (res) => {
