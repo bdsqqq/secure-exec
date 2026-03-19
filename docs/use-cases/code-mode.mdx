@@ -8,9 +8,18 @@ icon: "code"
   Full working example with SecureExecExecutor and tool dispatch.
 </Card>
 
-Instead of calling tools one at a time (requiring round-trips through the LLM), Code Mode gives the agent a single "execute code" tool. The LLM writes JavaScript that chains multiple tool calls in one shot, and Secure Exec runs it in an isolated V8 sandbox.
+Instead of calling MCP tools one at a time, Code Mode lets the LLM write JavaScript that orchestrates everything in one go — run safely in a V8 sandbox by Secure Exec.
 
-This pattern, introduced by [Cloudflare's Code Mode](https://blog.cloudflare.com/code-mode/), works because LLMs are better at writing code than calling tools. They have millions of lines of real-world code in their training data but limited exposure to synthetic tool-calling formats.
+<Tip>
+  [MCP Toolkit](https://mcp-toolkit.nuxt.dev/advanced/code-mode) provides a premade Code Mode library powered by Secure Exec: `experimental_codeMode: true`. We recommend trying it first. The rest of this page covers how to implement Code Mode yourself.
+</Tip>
+
+## Why Code Mode
+
+- **[81% less token overhead](https://x.com/hugorcd/status/2034616192225407273)**: With 50 tools, replacing per-call tool descriptions with a single code-execution tool cuts tool description tokens by 81%
+- **Fewer round-trips**: Chain multiple tool calls, conditionals, and data transformations in a single execution
+- **Real control flow**: Loops, branching, `Promise.all` — not a chain of isolated tool calls
+- **Drop-in replacement**: Your existing tools don't change at all. Code Mode wraps them transparently.
 
 ## How it works
 
@@ -72,18 +81,9 @@ Three tool calls, one sandbox execution, zero extra LLM round-trips.
 
 See the [full working example](https://github.com/rivet-dev/secure-exec/tree/main/examples/code-mode) for the complete implementation including the `SecureExecExecutor`.
 
-## Why Code Mode
-
-- **Fewer round-trips**: Chain multiple tool calls, conditionals, and data transformations in a single execution
-- **Lower token usage**: Intermediate results stay in the sandbox instead of passing back through the LLM context
-- **Better tool handling**: LLMs manage more tools and greater complexity when presented as TypeScript APIs vs. raw tool definitions
-
-## Status
-
-Code Mode support in Secure Exec is early. Today you need to copy the [`SecureExecExecutor` adapter](https://github.com/rivet-dev/secure-exec/tree/main/examples/code-mode) from the example into your project. We're planning official first-party support.
-
 ## Further reading
 
+- [Complete Code Mode implementation guide](https://mcp-toolkit.nuxt.dev/advanced/code-mode) — end-to-end Code Mode walkthrough using MCP Toolkit
 - [Cloudflare Code Mode blog post](https://blog.cloudflare.com/code-mode/)
 - [`@cloudflare/codemode` package](https://github.com/cloudflare/agents/tree/main/packages/codemode)
 - [AI Agent Code Exec](/use-cases/ai-agent-code-exec) for simpler single-tool execution patterns
