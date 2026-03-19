@@ -3221,7 +3221,7 @@
         "Tests pass (project-matrix)"
       ],
       "priority": 187,
-      "passes": false,
+      "passes": true,
       "notes": "Pure JS YAML parser. Good baseline test."
     },
     {

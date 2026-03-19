@@ -2355,3 +2355,15 @@ PRD: ralph/kernel-hardening (46 stories)
   - `body instanceof Stream` check in node-fetch v2 was failing because esbuild's bundling of stream-browserify↔readable-stream circular dependency breaks the prototype chain (Readable → EventEmitter instead of Readable → Stream → EventEmitter)
   - Stream polyfill patches go in `_patchPolyfill` in require-setup.ts; the generated file auto-updates on build
 ---
+
+## 2026-03-18 - US-187
+- What was implemented: yaml project-matrix fixture testing YAML parse/stringify/document API
+- Files changed:
+  - packages/secure-exec/tests/projects/yaml-pass/fixture.json — fixture metadata
+  - packages/secure-exec/tests/projects/yaml-pass/package.json — depends on yaml@2.8.0
+  - packages/secure-exec/tests/projects/yaml-pass/src/index.js — parse, stringify, round-trip, parseDocument
+  - docs/nodejs-compatibility.mdx — added yaml to Tested Packages table
+- **Learnings for future iterations:**
+  - yaml package is pure JS, works out of the box in sandbox with no special handling
+  - Fixture tests parse, stringify, round-trip consistency, and document API
+---
