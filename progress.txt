@@ -2105,3 +2105,15 @@ PRD: ralph/kernel-hardening (46 stories)
   - Always use static lists for stdlib module detection, never runtime-import node-stdlib-browser
   - polyfills.ts still imports node-stdlib-browser but that's in the bundler path (lazy/async), not during module init
 ---
+
+## 2026-03-18 - US-166
+- What was implemented: Updated cloudflare-workers-comparison.mdx to reflect current implementation state
+- Files changed:
+  - docs/cloudflare-workers-comparison.mdx — updated fs row (🟡→🟢, added cp/mkdtemp/opendir/glob/statfs/readv/fdatasync/fsync, moved chmod/chown/link/symlink/readlink/truncate/utimes from Deferred to Implemented), updated http row (added Agent pooling, upgrade, trailer support), changed async_hooks from ⚪ TBD to 🔴 Stub, changed diagnostics_channel from ⚪ TBD to 🔴 Stub, added punycode as 🟢 Supported, updated last-updated date to 2026-03-18
+- **Learnings for future iterations:**
+  - chmod/chown/link/symlink/readlink/truncate/utimes are implemented as bridge calls to host, not deferred
+  - http Agent has real connection pooling with per-host maxSockets, plus upgrade (101) and trailer support
+  - async_hooks has functional stubs (AsyncLocalStorage, AsyncResource, createHook) — not just no-ops
+  - diagnostics_channel stubs are sufficient for Fastify compatibility
+  - punycode is provided via node-stdlib-browser polyfill
+---
