@@ -2250,3 +2250,18 @@ PRD: ralph/kernel-hardening (46 stories)
   - hasBrowserEnv check in axios: `typeof window !== 'undefined' && typeof document !== 'undefined'` — sandbox does NOT define window/document (V8 isolate), so this is false
   - fixture uses `adapter: "fetch"` to explicitly select fetch adapter — this is valid sandbox-blind Node.js code (fetch adapter works in Node.js 18+)
 ---
+
+## 2026-03-18 - US-179
+- What was implemented: Added ws (WebSocket) project-matrix fixture testing module loading, API shape, Receiver frame parsing, Sender frame construction, and WebSocketServer noServer mode
+- Files changed:
+  - packages/secure-exec/tests/projects/ws-pass/fixture.json — fixture config
+  - packages/secure-exec/tests/projects/ws-pass/package.json — ws 8.18.0 dependency
+  - packages/secure-exec/tests/projects/ws-pass/src/index.js — tests WebSocket/WebSocketServer exports, prototype methods, constants, Receiver/Sender data processing, noServer mode
+  - docs/nodejs-compatibility.mdx — added ws to Tested Packages table
+- **Learnings for future iterations:**
+  - Sandbox HTTP server does not support WebSocket upgrade (HTTP 101 Switching Protocols) — dispatchServerRequest only handles regular request/response, no bidirectional streaming
+  - ws Receiver defaults to client mode (isServer=false) — expects unmasked frames; use MASK bit only for server-mode receivers
+  - ws Sender requires a socket with cork()/uncork()/write() methods — provide a complete mock when testing standalone
+  - Follow pg-pass/ssh2-pass pattern for packages needing external services: test module loading, API shape, and data-processing features without real connections
+  - ClientRequest in sandbox bridge lacks destroy() method — ws calls req.destroy() on failed upgrades, causing "stream.destroy is not a function" error
+---
