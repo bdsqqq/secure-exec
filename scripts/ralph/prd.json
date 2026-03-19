@@ -3156,7 +3156,7 @@
         "Tests pass (project-matrix)"
       ],
       "priority": 183,
-      "passes": false,
+      "passes": true,
       "notes": "lodash-es has hundreds of ESM modules. Tests ESM resolution at scale."
     },
     {
