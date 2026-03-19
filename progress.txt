@@ -2009,3 +2009,11 @@ PRD: ralph/kernel-hardening (46 stories)
 - Files changed:
   - prd.json — marked US-156 as passes: true
 ---
+
+## 2026-03-18 - US-157
+- What was implemented: Verified module cache poisoning prevention already in place
+- require.cache and _moduleCache are frozen Proxy objects that reject writes/deletes (throw TypeError)
+- Tests in bridge-hardening.test.ts cover: cache assignment throws, cache deletion throws, normal require works, _moduleCache not writable
+- Files changed:
+  - prd.json — marked US-157 as passes: true
+---
