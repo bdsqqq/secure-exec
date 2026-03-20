@@ -2696,3 +2696,13 @@ PRD: ralph/kernel-hardening (46 stories)
   - Raw Redis PING protocol: send "PING\r\n" (inline format), response is "+PONG\r\n"
   - For tunnel fixtures, use REDIS_INTERNAL_HOST/PORT (container bridge IP + internal port), not REDIS_HOST/PORT (host-mapped)
 ---
+
+## 2026-03-19 - US-018
+- Added SFTP directory operations e2e-docker fixture (ssh2-sftp-dirs)
+- Fixture connects via SSH, opens SFTP subsystem, creates directory, lists empty dir with readdir, writes file inside dir, lists dir again to verify file appears, removes file via unlink, removes directory via rmdir
+- Files created: packages/secure-exec/tests/e2e-docker/ssh2-sftp-dirs/{package.json,fixture.json,src/index.js}
+- **Learnings for future iterations:**
+  - e2e-docker fixtures are auto-discovered — just create a directory with fixture.json + package.json + src/index.js
+  - sftp.readdir() returns array of objects with .filename property (not just strings)
+  - SFTP directory ops (mkdir, rmdir, readdir) work through the sandbox net bridge without any additional fixes needed
+---

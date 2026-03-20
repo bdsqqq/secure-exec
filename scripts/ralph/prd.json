@@ -323,8 +323,8 @@
         "Tests pass"
       ],
       "priority": 18,
-      "passes": false,
-      "notes": "The existing ssh2-sftp-transfer fixture only tests file CRUD (createWriteStream, readFile, stat, unlink). Directory listing via SFTP is a core operation for file management tools and is completely untested."
+      "passes": true,
+      "notes": "Completed. Fixture ssh2-sftp-dirs connects via SSH, opens SFTP, creates directory, lists empty dir, writes file inside, lists dir with file, removes file, removes directory. Host and sandbox produce identical output."
     },
     {
       "id": "US-019",
