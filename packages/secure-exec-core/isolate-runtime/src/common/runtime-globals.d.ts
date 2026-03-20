@@ -1,11 +1,9 @@
 export {};
 
 import type {
-	CryptoGenerateKeyPairSyncBridgeRef,
+	BatchResolveModulesBridgeRef,
 	CryptoRandomFillBridgeRef,
 	CryptoRandomUuidBridgeRef,
-	CryptoSignBridgeRef,
-	CryptoVerifyBridgeRef,
 	DynamicImportBridgeRef,
 	FsChmodBridgeRef,
 	FsChownBridgeRef,
@@ -46,9 +44,6 @@ import type {
 	ChildProcessSpawnSyncBridgeRef,
 	ChildProcessStdinCloseBridgeRef,
 	ChildProcessStdinWriteBridgeRef,
-	UpgradeSocketWriteRawBridgeRef,
-	UpgradeSocketEndRawBridgeRef,
-	UpgradeSocketDestroyRawBridgeRef,
 } from "../../../src/shared/bridge-contract.js";
 
 type RuntimeGlobalExposer = (name: string, value: unknown) => void;
@@ -89,22 +84,17 @@ declare global {
 	var _scheduleTimer: ScheduleTimerBridgeRef;
 	var _cryptoRandomFill: CryptoRandomFillBridgeRef;
 	var _cryptoRandomUUID: CryptoRandomUuidBridgeRef;
-	var _cryptoSign: CryptoSignBridgeRef;
-	var _cryptoVerify: CryptoVerifyBridgeRef;
-	var _cryptoGenerateKeyPairSync: CryptoGenerateKeyPairSyncBridgeRef;
 	var _networkFetchRaw: NetworkFetchRawBridgeRef;
 	var _networkDnsLookupRaw: NetworkDnsLookupRawBridgeRef;
 	var _networkHttpRequestRaw: NetworkHttpRequestRawBridgeRef;
 	var _networkHttpServerListenRaw: NetworkHttpServerListenRawBridgeRef;
 	var _networkHttpServerCloseRaw: NetworkHttpServerCloseRawBridgeRef;
-	var _upgradeSocketWriteRaw: UpgradeSocketWriteRawBridgeRef;
-	var _upgradeSocketEndRaw: UpgradeSocketEndRawBridgeRef;
-	var _upgradeSocketDestroyRaw: UpgradeSocketDestroyRawBridgeRef;
 	var _childProcessSpawnStart: ChildProcessSpawnStartBridgeRef;
 	var _childProcessStdinWrite: ChildProcessStdinWriteBridgeRef;
 	var _childProcessStdinClose: ChildProcessStdinCloseBridgeRef;
 	var _childProcessKill: ChildProcessKillBridgeRef;
 	var _childProcessSpawnSync: ChildProcessSpawnSyncBridgeRef;
+	var _batchResolveModules: BatchResolveModulesBridgeRef;
 	var _log: ProcessLogBridgeRef;
 	var _error: ProcessErrorBridgeRef;
 	var _maxHandles: number | undefined;
@@ -116,6 +106,17 @@ declare global {
 	var __runtimeCommonJsFileConfig: RuntimeCommonJsFileConfig | undefined;
 	var __runtimeTimingMitigationConfig: RuntimeTimingMitigationConfig | undefined;
 	var __runtimeCustomGlobalPolicy: RuntimeCustomGlobalPolicy | undefined;
+	var __runtimeJsonPayloadLimitBytes: number | undefined;
+	var __runtimePayloadLimitErrorCode: string | undefined;
+	var __runtimeApplyConfig:
+		| ((config: {
+				timingMitigation?: string;
+				frozenTimeMs?: number;
+				payloadLimitBytes?: number;
+				payloadLimitErrorCode?: string;
+		  }) => void)
+		| undefined;
+	var __runtimeResetProcessState: (() => void) | undefined;
 	var __runtimeProcessCwdOverride: unknown;
 	var __runtimeProcessEnvOverride: unknown;
 	var __runtimeStdinData: unknown;

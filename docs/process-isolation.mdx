@@ -3,6 +3,8 @@ title: Process Isolation
 description: Configure V8 process topology to control crash blast radius and resource partitioning.
 ---
 
+<Warning>Process isolation depends on `@secure-exec/v8`, which is experimental. APIs and behavior may change without notice.</Warning>
+
 By default, all `NodeRuntime` instances share a single V8 child process. Every `exec()` or `run()` call creates a session (separate V8 isolate on a separate OS thread), but all sessions live in the same OS process.
 
 This is efficient — one process, one UDS connection, shared startup cost — but it means a V8 OOM or crash in **any** session kills **all** sessions across **all** runtimes.
@@ -43,7 +45,7 @@ import {
   NodeRuntime,
   createNodeDriver,
   createNodeRuntimeDriverFactory,
-} from "secure-exec";
+} from "@secure-exec/node";
 
 const rt = new NodeRuntime({
   systemDriver: createNodeDriver(),
@@ -62,15 +64,15 @@ NodeRuntime C ──── Tenant 2 Process (sessions: C1)
 ```
 
 ```ts
-import { createNodeV8Runtime } from "secure-exec";
+import { createV8Runtime } from "@secure-exec/v8";
 import {
   NodeRuntime,
   createNodeDriver,
   createNodeRuntimeDriverFactory,
-} from "secure-exec";
+} from "@secure-exec/node";
 
 // Create a dedicated process for this tenant
-const tenantProcess = await createNodeV8Runtime({ maxSessions: 10 });
+const tenantProcess = await createV8Runtime({ maxSessions: 10 });
 
 const rt1 = new NodeRuntime({
   systemDriver: createNodeDriver(),
@@ -95,15 +97,15 @@ NodeRuntime B ──── Process B (session: B1)
 ```
 
 ```ts
-import { createNodeV8Runtime } from "secure-exec";
+import { createV8Runtime } from "@secure-exec/v8";
 import {
   NodeRuntime,
   createNodeDriver,
   createNodeRuntimeDriverFactory,
-} from "secure-exec";
+} from "@secure-exec/node";
 
-const processA = await createNodeV8Runtime();
-const processB = await createNodeV8Runtime();
+const processA = await createV8Runtime();
+const processB = await createV8Runtime();
 
 const rtA = new NodeRuntime({
   systemDriver: createNodeDriver(),
@@ -132,7 +134,7 @@ Choose based on your isolation requirements. The shared topology is the most mem
 
 ```ts
 // This process allows up to 5 concurrent sessions
-const process = await createNodeV8Runtime({ maxSessions: 5 });
+const process = await createV8Runtime({ maxSessions: 5 });
 
 // Both runtimes share the 5-session budget
 const rt1 = new NodeRuntime({
@@ -157,7 +159,7 @@ When a V8 process crashes (OOM, segfault, panic):
 3. **New sessions cannot be created on the crashed process.** Create a new `V8Runtime` to recover.
 
 ```ts
-const process = await createNodeV8Runtime();
+const process = await createV8Runtime();
 const factory = createNodeRuntimeDriverFactory({ v8Runtime: process });
 
 const rt = new NodeRuntime({
@@ -171,35 +173,14 @@ const result = await rt.exec("const a = []; while(true) a.push(new Array(1e6))")
 // Host process is still alive
 ```
 
-Runtimes using the default shared process share crash fate — if the global process dies, all runtimes are affected. Use explicit `createNodeV8Runtime()` handles to control which runtimes share a crash domain.
-
-## Warm pool
-
-Cold-starting a new session costs ~6ms (thread spawn + isolate creation from snapshot). The warm pool eliminates this by pre-creating sessions with isolates already initialized.
-
-```ts
-const process = await createNodeV8Runtime({
-  warmupBridgeCode: bridgeCode,
-  warmPoolSize: 3,           // default: 3 when bridgeCode provided, 0 otherwise
-  defaultWarmHeapLimitMb: 128,
-  waitForWarmPool: true,     // default: true — block until pool is ready
-});
-```
-
-When `createSession()` is called, the runtime checks for a pre-warmed session with matching config. If found, the session is claimed instantly (no thread spawn or isolate creation). A replacement session is spawned in the background to keep the pool full.
-
-If the session's heap/CPU limits don't match the warm pool's defaults, the pool drains, reconfigures with the new limits, and refills. The current call takes the cold path.
-
-Each warm session occupies a concurrency slot. With `maxSessions: 4` and `warmPoolSize: 2`, only 2 slots remain for active sessions.
-
-Set `warmPoolSize: 0` to disable the pool entirely (falls back to the cold path for every session).
+Runtimes using the default shared process share crash fate — if the global process dies, all runtimes are affected. Use explicit `createV8Runtime()` handles to control which runtimes share a crash domain.
 
 ## Lifecycle
 
 The caller owns the `V8Runtime` handle and is responsible for disposing it when done.
 
 ```ts
-const process = await createNodeV8Runtime();
+const process = await createV8Runtime();
 
 // ... use process ...
 

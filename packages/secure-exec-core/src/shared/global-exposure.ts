@@ -99,21 +99,6 @@ export const NODE_CUSTOM_GLOBAL_INVENTORY: readonly CustomGlobalInventoryEntry[]
 		rationale: "Host-to-sandbox HTTP server dispatch entrypoint.",
 	},
 	{
-		name: "_httpServerUpgradeDispatch",
-		classification: "hardened",
-		rationale: "Host-to-sandbox HTTP server upgrade dispatch entrypoint.",
-	},
-	{
-		name: "_upgradeSocketData",
-		classification: "hardened",
-		rationale: "Host-to-sandbox upgrade socket data push entrypoint.",
-	},
-	{
-		name: "_upgradeSocketEnd",
-		classification: "hardened",
-		rationale: "Host-to-sandbox upgrade socket end push entrypoint.",
-	},
-	{
 		name: "ProcessExitError",
 		classification: "hardened",
 		rationale: "Runtime-owned process-exit control-path error class.",
@@ -157,71 +142,6 @@ export const NODE_CUSTOM_GLOBAL_INVENTORY: readonly CustomGlobalInventoryEntry[]
 		name: "_cryptoRandomUUID",
 		classification: "hardened",
 		rationale: "Host entropy bridge reference for crypto.randomUUID.",
-	},
-	{
-		name: "_cryptoHashDigest",
-		classification: "hardened",
-		rationale: "Host crypto bridge reference for createHash digest computation.",
-	},
-	{
-		name: "_cryptoHmacDigest",
-		classification: "hardened",
-		rationale: "Host crypto bridge reference for createHmac digest computation.",
-	},
-	{
-		name: "_cryptoPbkdf2",
-		classification: "hardened",
-		rationale: "Host crypto bridge reference for pbkdf2 key derivation.",
-	},
-	{
-		name: "_cryptoScrypt",
-		classification: "hardened",
-		rationale: "Host crypto bridge reference for scrypt key derivation.",
-	},
-	{
-		name: "_cryptoCipheriv",
-		classification: "hardened",
-		rationale: "Host crypto bridge reference for createCipheriv encryption.",
-	},
-	{
-		name: "_cryptoDecipheriv",
-		classification: "hardened",
-		rationale: "Host crypto bridge reference for createDecipheriv decryption.",
-	},
-	{
-		name: "_cryptoCipherivCreate",
-		classification: "hardened",
-		rationale: "Host crypto bridge reference for stateful cipher/decipher creation.",
-	},
-	{
-		name: "_cryptoCipherivUpdate",
-		classification: "hardened",
-		rationale: "Host crypto bridge reference for stateful cipher/decipher update.",
-	},
-	{
-		name: "_cryptoCipherivFinal",
-		classification: "hardened",
-		rationale: "Host crypto bridge reference for stateful cipher/decipher final.",
-	},
-	{
-		name: "_cryptoSign",
-		classification: "hardened",
-		rationale: "Host crypto bridge reference for sign operations.",
-	},
-	{
-		name: "_cryptoVerify",
-		classification: "hardened",
-		rationale: "Host crypto bridge reference for verify operations.",
-	},
-	{
-		name: "_cryptoGenerateKeyPairSync",
-		classification: "hardened",
-		rationale: "Host crypto bridge reference for generateKeyPairSync.",
-	},
-	{
-		name: "_cryptoSubtle",
-		classification: "hardened",
-		rationale: "Host crypto bridge reference for Web Crypto subtle operations.",
 	},
 	{
 		name: "_fsReadFile",
@@ -374,19 +294,9 @@ export const NODE_CUSTOM_GLOBAL_INVENTORY: readonly CustomGlobalInventoryEntry[]
 		rationale: "Host network bridge reference.",
 	},
 	{
-		name: "_upgradeSocketWriteRaw",
+		name: "_batchResolveModules",
 		classification: "hardened",
-		rationale: "Host upgrade socket write bridge reference.",
-	},
-	{
-		name: "_upgradeSocketEndRaw",
-		classification: "hardened",
-		rationale: "Host upgrade socket end bridge reference.",
-	},
-	{
-		name: "_upgradeSocketDestroyRaw",
-		classification: "hardened",
-		rationale: "Host upgrade socket destroy bridge reference.",
+		rationale: "Host bridge for batched module resolution to reduce IPC round-trips.",
 	},
 	{
 		name: "_ptySetRawMode",

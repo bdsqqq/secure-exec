@@ -1,10 +1,11 @@
 // V8 startup snapshots: fast isolate creation from pre-compiled bridge code
 
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::sync::{Arc, Condvar, Mutex};
 
 use crate::bridge::{external_refs, register_stub_bridge_fns};
 use crate::isolate::init_v8_platform;
-use crate::session::{SYNC_BRIDGE_FNS, ASYNC_BRIDGE_FNS};
+use crate::session::{ASYNC_BRIDGE_FNS, SYNC_BRIDGE_FNS};
 
 /// Maximum allowed snapshot blob size (50MB).
 /// Prevents resource exhaustion from degenerate bridge code.
@@ -120,10 +121,7 @@ fn inject_snapshot_defaults(scope: &mut v8::HandleScope) {
 /// `blob` must be owned or 'static data — `Vec<u8>`, `Box<[u8]>`, or
 /// `v8::StartupData` all work. The data is copied into the isolate during
 /// creation; V8 does not retain a reference after `Isolate::new()` returns.
-pub fn create_isolate_from_snapshot<B>(
-    blob: B,
-    heap_limit_mb: Option<u32>,
-) -> v8::OwnedIsolate
+pub fn create_isolate_from_snapshot<B>(blob: B, heap_limit_mb: Option<u32>) -> v8::OwnedIsolate
 where
     B: std::ops::Deref<Target = [u8]> + std::borrow::Borrow<[u8]> + 'static,
 {
@@ -141,12 +139,20 @@ where
 
 /// Thread-safe snapshot cache keyed by bridge code hash.
 ///
-/// Lazily creates snapshots on first encounter of each bridge code variant.
-/// Concurrent callers for the same variant block on the mutex; only one
-/// creates the snapshot.
+/// Uses two-phase locking with per-key in-flight tracking so concurrent
+/// callers requesting different bridge code variants are not blocked by
+/// each other. Callers requesting the same variant wait on a condvar
+/// instead of creating duplicate snapshots.
 pub struct SnapshotCache {
-    inner: Mutex<Vec<CacheEntry>>,
+    inner: Mutex<CacheInner>,
     max_entries: usize,
+}
+
+struct CacheInner {
+    entries: Vec<CacheEntry>,
+    /// Per-key in-flight tracking: callers for the same hash wait on the
+    /// condvar instead of creating duplicate snapshots.
+    in_flight: HashMap<u64, Arc<InFlightEntry>>,
 }
 
 struct CacheEntry {
@@ -157,44 +163,95 @@ struct CacheEntry {
     blob: Arc<Vec<u8>>,
 }
 
+/// Shared state for an in-flight snapshot creation. The creator thread
+/// populates `result` and notifies all waiters via `done`.
+struct InFlightEntry {
+    result: Mutex<Option<Result<Arc<Vec<u8>>, String>>>,
+    done: Condvar,
+}
+
 impl SnapshotCache {
     pub fn new(max_entries: usize) -> Self {
         SnapshotCache {
-            inner: Mutex::new(Vec::new()),
+            inner: Mutex::new(CacheInner {
+                entries: Vec::new(),
+                in_flight: HashMap::new(),
+            }),
             max_entries,
         }
     }
 
     /// Get or create a snapshot for the given bridge code.
     ///
-    /// Thread-safe: concurrent callers block on mutex; only one creates the
-    /// snapshot for a given bridge code variant.
+    /// Two-phase locking: the cache mutex is held only for lookups and
+    /// inserts, never during snapshot creation. Per-key in-flight tracking
+    /// prevents duplicate snapshot creation for the same bridge code.
     pub fn get_or_create(&self, bridge_code: &str) -> Result<Arc<Vec<u8>>, String> {
-        let mut cache = self.inner.lock().unwrap();
         let hash = siphash(bridge_code);
 
-        // Cache hit — move entry to end (most recently used)
-        if let Some(pos) = cache.iter().position(|e| e.bridge_hash == hash) {
-            let entry = cache.remove(pos);
-            let blob = Arc::clone(&entry.blob);
-            cache.push(entry);
-            return Ok(blob);
+        // Phase 1: short lock — check cache, check in-flight, or claim creation
+        let in_flight = {
+            let mut inner = self.inner.lock().unwrap();
+
+            // Cache hit — move to end (most recently used)
+            if let Some(pos) = inner.entries.iter().position(|e| e.bridge_hash == hash) {
+                let entry = inner.entries.remove(pos);
+                let blob = Arc::clone(&entry.blob);
+                inner.entries.push(entry);
+                return Ok(blob);
+            }
+
+            // Another thread is already creating this snapshot — wait on it
+            if let Some(entry) = inner.in_flight.get(&hash) {
+                Some(Arc::clone(entry))
+            } else {
+                // We're the creator — register in-flight and release the lock
+                let entry = Arc::new(InFlightEntry {
+                    result: Mutex::new(None),
+                    done: Condvar::new(),
+                });
+                inner.in_flight.insert(hash, Arc::clone(&entry));
+                None
+            }
+        };
+
+        // Wait path: another thread is creating this snapshot
+        if let Some(entry) = in_flight {
+            let mut result = entry.result.lock().unwrap();
+            while result.is_none() {
+                result = entry.done.wait(result).unwrap();
+            }
+            return result.as_ref().unwrap().clone();
         }
 
-        // Cache miss — create snapshot (holds lock)
-        let startup_data = create_snapshot(bridge_code)?;
-        let arc = Arc::new(startup_data.to_vec());
+        // Phase 2: create snapshot without holding the cache lock
+        let creation_result =
+            create_snapshot(bridge_code).map(|startup_data| Arc::new(startup_data.to_vec()));
 
-        // LRU eviction: remove oldest (front) entry when at capacity
-        if cache.len() >= self.max_entries {
-            cache.remove(0);
+        // Phase 3: short lock — insert result, notify waiters, clean up
+        {
+            let mut inner = self.inner.lock().unwrap();
+
+            if let Ok(ref arc) = creation_result {
+                // LRU eviction: remove oldest (front) entry when at capacity
+                if inner.entries.len() >= self.max_entries {
+                    inner.entries.remove(0);
+                }
+                inner.entries.push(CacheEntry {
+                    bridge_hash: hash,
+                    blob: Arc::clone(arc),
+                });
+            }
+
+            // Publish result to waiters and remove in-flight entry
+            if let Some(entry) = inner.in_flight.remove(&hash) {
+                let mut result = entry.result.lock().unwrap();
+                *result = Some(creation_result.clone());
+                entry.done.notify_all();
+            }
         }
-        cache.push(CacheEntry {
-            bridge_hash: hash,
-            blob: Arc::clone(&arc),
-        });
 
-        Ok(arc)
+        creation_result
     }
 }
 
@@ -279,11 +336,18 @@ mod tests {
             let cache = SnapshotCache::new(4);
             let bridge_code = "(function() { globalThis.__cached = 1; })();";
 
-            let arc1 = cache.get_or_create(bridge_code).expect("first get_or_create");
-            let arc2 = cache.get_or_create(bridge_code).expect("second get_or_create");
+            let arc1 = cache
+                .get_or_create(bridge_code)
+                .expect("first get_or_create");
+            let arc2 = cache
+                .get_or_create(bridge_code)
+                .expect("second get_or_create");
 
             // Same Arc (same pointer) — cache hit, not a new snapshot
-            assert!(Arc::ptr_eq(&arc1, &arc2), "cache hit should return same Arc");
+            assert!(
+                Arc::ptr_eq(&arc1, &arc2),
+                "cache hit should return same Arc"
+            );
         }
 
         // --- Part 7: Cache miss creates new snapshot ---
@@ -296,7 +360,10 @@ mod tests {
             let arc_b = cache.get_or_create(code_b).expect("create B");
 
             // Different bridge code → different Arc
-            assert!(!Arc::ptr_eq(&arc_a, &arc_b), "different code should produce different Arc");
+            assert!(
+                !Arc::ptr_eq(&arc_a, &arc_b),
+                "different code should produce different Arc"
+            );
 
             // Verify both are usable
             let mut iso_a = create_isolate_from_snapshot((*arc_a).clone(), None);
@@ -429,7 +496,9 @@ mod tests {
                 let context = v8::Context::new(scope, Default::default());
                 let scope = &mut v8::ContextScope::new(scope, context);
 
-                let source = v8::String::new(scope, "globalThis.__session_secret = 'session-a-data';").unwrap();
+                let source =
+                    v8::String::new(scope, "globalThis.__session_secret = 'session-a-data';")
+                        .unwrap();
                 let script = v8::Script::compile(scope, source, None).unwrap();
                 script.run(scope);
 
@@ -462,12 +531,12 @@ mod tests {
         // Verifies that FunctionTemplates registered on a restored isolate
         // correctly dispatch to Rust bridge callbacks via external_refs().
         {
-            use std::cell::RefCell;
             use crate::bridge::{
-                register_sync_bridge_fns, register_async_bridge_fns,
-                SessionBuffers, PendingPromises,
+                register_async_bridge_fns, register_sync_bridge_fns, PendingPromises,
+                SessionBuffers,
             };
             use crate::host_call::BridgeCallContext;
+            use std::cell::RefCell;
 
             let bridge_code = "(function() { globalThis.__ext_ref_test = true; })();";
             let blob = create_snapshot(bridge_code).expect("snapshot creation");
@@ -477,13 +546,14 @@ mod tests {
             // Create minimal BridgeCallContext (sync call will fail but we
             // test that the FunctionTemplate dispatches without crash)
             let (ipc_tx, _ipc_rx) = crossbeam_channel::unbounded::<Vec<u8>>();
-            let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<crate::session::SessionCommand>();
+            let (_cmd_tx, _cmd_rx) =
+                crossbeam_channel::unbounded::<crate::session::SessionCommand>();
             let call_id_router: crate::host_call::CallIdRouter =
                 Arc::new(Mutex::new(std::collections::HashMap::new()));
 
-            let receiver = crate::host_call::ReaderResponseReceiver::new(
-                Box::new(std::io::Cursor::new(Vec::<u8>::new())),
-            );
+            let receiver = crate::host_call::ReaderResponseReceiver::new(Box::new(
+                std::io::Cursor::new(Vec::<u8>::new()),
+            ));
             let sender = crate::host_call::ChannelFrameSender::new(ipc_tx);
             let bridge_ctx = BridgeCallContext::with_receiver(
                 Box::new(sender),
@@ -554,7 +624,9 @@ mod tests {
                 &["_scheduleTimer", "_dynamicImport"],
             );
 
-            let check = v8::String::new(scope, r#"
+            let check = v8::String::new(
+                scope,
+                r#"
                 (function() {
                     var names = ['_log', '_error', '_fsReadFile', '_loadPolyfill',
                                  '_scheduleTimer', '_dynamicImport'];
@@ -565,7 +637,9 @@ mod tests {
                     }
                     return 'OK';
                 })()
-            "#).unwrap();
+            "#,
+            )
+            .unwrap();
             let script = v8::Script::compile(scope, check, None).unwrap();
             let result = script.run(scope).unwrap();
             assert_eq!(
@@ -589,11 +663,7 @@ mod tests {
                 let scope = &mut v8::ContextScope::new(scope, context);
 
                 // Register all 38 bridge functions as stubs (no External data)
-                register_stub_bridge_fns(
-                    scope,
-                    &SYNC_BRIDGE_FNS,
-                    &ASYNC_BRIDGE_FNS,
-                );
+                register_stub_bridge_fns(scope, &SYNC_BRIDGE_FNS, &ASYNC_BRIDGE_FNS);
 
                 // Simulate bridge IIFE: reference all bridge functions, set up
                 // closures and getter facade, but never call any bridge function
@@ -647,7 +717,8 @@ mod tests {
                 );
 
                 // Verify setup completed
-                let check = v8::String::new(scope, "String(globalThis.__bridge_setup_complete)").unwrap();
+                let check =
+                    v8::String::new(scope, "String(globalThis.__bridge_setup_complete)").unwrap();
                 let script = v8::Script::compile(scope, check, None).unwrap();
                 let val = script.run(scope).unwrap();
                 assert_eq!(
@@ -723,7 +794,7 @@ mod tests {
                 })();
             "#;
             let blob = create_snapshot(iife_code).expect(
-                "create_snapshot should succeed with bridge code that checks stubs and defaults"
+                "create_snapshot should succeed with bridge code that checks stubs and defaults",
             );
             assert!(blob.len() > 0, "snapshot blob should be non-empty");
 
@@ -769,9 +840,8 @@ mod tests {
                     globalThis.__part16_setup = true;
                 })();
             "#;
-            let blob = create_snapshot(iife_code).expect(
-                "create_snapshot should succeed with full bridge IIFE pattern"
-            );
+            let blob = create_snapshot(iife_code)
+                .expect("create_snapshot should succeed with full bridge IIFE pattern");
             assert!(blob.len() > 0);
 
             // Restore and verify default context has the bridge infrastructure
@@ -823,7 +893,10 @@ mod tests {
 
             let arc1 = cache.get_or_create(code).expect("first get_or_create");
             let arc2 = cache.get_or_create(code).expect("second get_or_create");
-            assert!(Arc::ptr_eq(&arc1, &arc2), "cache hit should return same Arc");
+            assert!(
+                Arc::ptr_eq(&arc1, &arc2),
+                "cache hit should return same Arc"
+            );
 
             // Verify blob is usable
             let mut isolate = create_isolate_from_snapshot((*arc1).clone(), None);
@@ -835,11 +908,9 @@ mod tests {
         // stubs, restore, replace stubs with real bridge functions, verify the
         // replaced functions dispatch to the real Rust callbacks.
         {
-            use std::cell::RefCell;
-            use crate::bridge::{
-                replace_bridge_fns, SessionBuffers, PendingPromises,
-            };
+            use crate::bridge::{replace_bridge_fns, PendingPromises, SessionBuffers};
             use crate::host_call::BridgeCallContext;
+            use std::cell::RefCell;
 
             // Create snapshot with stubs + simple bridge IIFE
             let bridge_code = r#"
@@ -861,9 +932,9 @@ mod tests {
             let (ipc_tx, _ipc_rx) = crossbeam_channel::unbounded::<Vec<u8>>();
             let call_id_router: crate::host_call::CallIdRouter =
                 Arc::new(Mutex::new(std::collections::HashMap::new()));
-            let receiver = crate::host_call::ReaderResponseReceiver::new(
-                Box::new(std::io::Cursor::new(Vec::<u8>::new())),
-            );
+            let receiver = crate::host_call::ReaderResponseReceiver::new(Box::new(
+                std::io::Cursor::new(Vec::<u8>::new()),
+            ));
             let sender = crate::host_call::ChannelFrameSender::new(ipc_tx);
             let bridge_ctx = BridgeCallContext::with_receiver(
                 Box::new(sender),
@@ -889,7 +960,9 @@ mod tests {
             );
 
             // Verify bridge infrastructure from IIFE survives restore
-            let check = v8::String::new(scope, r#"
+            let check = v8::String::new(
+                scope,
+                r#"
                 (function() {
                     var results = [];
                     results.push('__bridge_ready=' + globalThis.__bridge_ready);
@@ -901,7 +974,9 @@ mod tests {
                     results.push('_scheduleTimer_type=' + typeof _scheduleTimer);
                     return results.join(';');
                 })()
-            "#).unwrap();
+            "#,
+            )
+            .unwrap();
             let script = v8::Script::compile(scope, check, None).unwrap();
             let result = script.run(scope).unwrap();
             assert_eq!(
@@ -944,8 +1019,7 @@ mod tests {
             let payload_source = v8::String::new(scope, payload_code).unwrap();
             let payload_script = v8::Script::compile(scope, payload_source, None).unwrap();
             let payload_val = payload_script.run(scope).unwrap();
-            let payload_bytes = serialize_v8_value(scope, payload_val)
-                .expect("serialize payload");
+            let payload_bytes = serialize_v8_value(scope, payload_val).expect("serialize payload");
 
             // Inject per-session globals (overrides snapshot defaults)
             crate::execution::inject_globals_from_payload(scope, &payload_bytes);
@@ -969,6 +1043,70 @@ mod tests {
                 "arm64",
                 "_osConfig.arch should be overridden to 'arm64'"
             );
+        }
+
+        // --- Part 20a: Concurrent get_or_create with different bridge codes ---
+        // Verifies that concurrent callers requesting different bridge code
+        // variants are not blocked by each other (two-phase locking).
+        {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            use std::time::Instant;
+
+            let cache = Arc::new(SnapshotCache::new(4));
+            let codes: Vec<String> = (0..3)
+                .map(|i| {
+                    format!(
+                        "(function() {{ globalThis.__concurrent_{} = {}; }})();",
+                        i, i
+                    )
+                })
+                .collect();
+
+            let barrier = Arc::new(std::sync::Barrier::new(codes.len()));
+            let all_ok = Arc::new(AtomicBool::new(true));
+
+            let mut handles = vec![];
+            for code in &codes {
+                let cache = Arc::clone(&cache);
+                let barrier = Arc::clone(&barrier);
+                let all_ok = Arc::clone(&all_ok);
+                let code = code.clone();
+
+                handles.push(std::thread::spawn(move || {
+                    barrier.wait();
+                    let start = Instant::now();
+                    match cache.get_or_create(&code) {
+                        Ok(arc) => {
+                            assert!(arc.len() > 0);
+                        }
+                        Err(e) => {
+                            eprintln!("get_or_create failed: {}", e);
+                            all_ok.store(false, Ordering::Relaxed);
+                        }
+                    }
+                    start.elapsed()
+                }));
+            }
+
+            let mut durations = vec![];
+            for h in handles {
+                durations.push(h.join().expect("thread join"));
+            }
+
+            assert!(
+                all_ok.load(Ordering::Relaxed),
+                "all concurrent get_or_create calls should succeed"
+            );
+
+            // Verify all entries are cached (cache hits on second request)
+            for code in &codes {
+                let arc1 = cache.get_or_create(code).unwrap();
+                let arc2 = cache.get_or_create(code).unwrap();
+                assert!(
+                    Arc::ptr_eq(&arc1, &arc2),
+                    "should be cache hit after creation"
+                );
+            }
         }
 
         // --- Part 20: Multiple restores from same snapshot are independent ---

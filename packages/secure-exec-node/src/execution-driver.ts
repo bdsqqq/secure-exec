@@ -1,39 +1,5 @@
-import { createV8Runtime as createV8RuntimeRaw } from "@secure-exec/v8";
-import type { V8Runtime, V8Session, V8ExecutionResult, V8RuntimeOptions, BridgeHandlers } from "@secure-exec/v8";
-
-export type { V8Runtime, V8RuntimeOptions, BridgeHandlers };
-
-/** Options for createNodeV8Runtime — extends V8RuntimeOptions with Node defaults. */
-export interface NodeV8RuntimeOptions {
-	/** Path to the Rust binary. Auto-detected if omitted. */
-	binaryPath?: string;
-	/** Maximum concurrent sessions. */
-	maxSessions?: number;
-	/** Number of pre-warmed sessions. Default 3 (warm claim ~2ms vs ~6ms cold). */
-	warmPoolSize?: number;
-	/** Default heap limit (MB) for warm pool sessions. Default 128. */
-	defaultWarmHeapLimitMb?: number;
-	/** Default CPU time limit (ms) for warm pool sessions. Default 0 (no limit). */
-	defaultWarmCpuTimeLimitMs?: number;
-	/** Whether to wait for warm pool to fill before returning. Default true. */
-	waitForWarmPool?: boolean;
-}
-
-/**
- * Create a V8 runtime with Node bridge code baked in.
- *
- * This is the recommended way to create a V8 runtime — it automatically
- * provides the bridge code for snapshot warmup and configures a warm pool
- * of 3 pre-created isolates (~2ms claim vs ~6ms cold start).
- */
-export async function createNodeV8Runtime(
-	options?: NodeV8RuntimeOptions,
-): Promise<V8Runtime> {
-	return createV8RuntimeRaw({
-		warmupBridgeCode: composeBridgeCodeForWarmup(),
-		...options,
-	});
-}
+import { createV8Runtime } from "@secure-exec/v8";
+import type { V8Runtime, V8Session, V8ExecutionResult } from "@secure-exec/v8";
 
 // Shared V8 runtime — spawns one Rust child process, reused across all drivers.
 // Sessions are isolated (separate V8 isolates in separate threads on the Rust side).
@@ -41,15 +7,52 @@ let sharedV8Runtime: V8Runtime | null = null;
 let sharedV8RuntimePromise: Promise<V8Runtime> | null = null;
 
 async function getSharedV8Runtime(): Promise<V8Runtime> {
+	// If the cached runtime's process has died (e.g. OOM crash), recycle it
+	if (sharedV8Runtime && !sharedV8Runtime.isAlive) {
+		sharedV8Runtime = null;
+		sharedV8RuntimePromise = null;
+	}
 	if (sharedV8Runtime) return sharedV8Runtime;
 	if (!sharedV8RuntimePromise) {
-		sharedV8RuntimePromise = createNodeV8Runtime().then((r) => {
+		sharedV8RuntimePromise = createV8Runtime({
+			warmupBridgeCode: composeBridgeCodeForWarmup(),
+		}).then((r) => {
 			sharedV8Runtime = r;
 			return r;
+		}).catch((err) => {
+			// Reset on failure so next call retries instead of returning cached rejection
+			sharedV8RuntimePromise = null;
+			sharedV8Runtime = null;
+			throw err;
 		});
 	}
 	return sharedV8RuntimePromise;
 }
+
+/** Dispose the shared V8 runtime singleton, killing the Rust child process.
+ *  Next call to getSharedV8Runtime() will spawn a fresh process. */
+export async function disposeSharedV8Runtime(): Promise<void> {
+	const runtime = sharedV8Runtime;
+	const promise = sharedV8RuntimePromise;
+	sharedV8Runtime = null;
+	sharedV8RuntimePromise = null;
+	if (runtime) {
+		await runtime.dispose();
+	} else if (promise) {
+		// Runtime creation in progress — wait for it then dispose
+		try {
+			const rt = await promise;
+			await rt.dispose();
+		} catch {
+			// Creation already failed — nothing to dispose
+		}
+	}
+}
+
+// Clean up shared V8 runtime on process exit to prevent orphan Rust child
+process.on("beforeExit", () => {
+	void disposeSharedV8Runtime();
+});
 import { createResolutionCache, getIsolateRuntimeSource, TIMEOUT_ERROR_MESSAGE, TIMEOUT_EXIT_CODE } from "@secure-exec/core";
 import { getInitialBridgeGlobalsSetupCode } from "@secure-exec/core";
 import { getConsoleSetupCode } from "@secure-exec/core/internal/shared/console-formatter";
@@ -68,17 +71,24 @@ import { createProcessConfigForExecution } from "./bridge-setup.js";
 
 export { NodeExecutionDriverOptions };
 
-// Module-level cache for the static bridge IIFE (identical across all sessions)
-let staticBridgeCodeCache: string | null = null;
+// Per-timingMitigation cache for the bridge IIFE. Currently all timing
+// modes produce the same config-independent code (timing is applied via
+// post-restore script), but keying on the mode prevents serving stale code
+// if the IIFE ever becomes timing-dependent again.
+const staticBridgeCodeCache = new Map<string, string>();
 
 /**
  * Compose the config-independent bridge IIFE. Output is byte-for-byte
  * identical regardless of session options — uses DEFAULT values for all
  * config that gets overridden by the post-restore script.
  * Used for snapshot creation and as the base of every session's bridge code.
+ *
+ * @param timingMitigation Cache key — currently all modes produce the same
+ *   IIFE, but keying prevents stale results if the code ever varies by mode.
  */
-export function composeStaticBridgeCode(): string {
-	if (staticBridgeCodeCache) return staticBridgeCodeCache;
+export function composeStaticBridgeCode(timingMitigation: string = "off"): string {
+	const cached = staticBridgeCodeCache.get(timingMitigation);
+	if (cached) return cached;
 
 	const parts: string[] = [];
 
@@ -112,8 +122,9 @@ export function composeStaticBridgeCode(): string {
 	})};`);
 	parts.push(getIsolateRuntimeSource("applyCustomGlobalPolicy"));
 
-	staticBridgeCodeCache = parts.join("\n");
-	return staticBridgeCodeCache;
+	const result = parts.join("\n");
+	staticBridgeCodeCache.set(timingMitigation, result);
+	return result;
 }
 
 /**
@@ -287,10 +298,21 @@ export class NodeExecutionDriver implements RuntimeDriver {
 	private async ensureV8(): Promise<V8Session> {
 		if (this.v8Session) return this.v8Session;
 		if (!this.v8InitPromise) {
-			this.v8InitPromise = this.initV8();
+			this.v8InitPromise = this.initV8().catch((err) => {
+				// Reset so next call retries (e.g. after process crash)
+				this.v8InitPromise = null;
+				this.v8Session = null;
+				throw err;
+			});
 		}
 		await this.v8InitPromise;
 		return this.v8Session!;
+	}
+
+	/** Reset cached session state so next ensureV8() re-initializes. */
+	private resetV8Session(): void {
+		this.v8Session = null;
+		this.v8InitPromise = null;
 	}
 
 	private async getV8Runtime(): Promise<V8Runtime> {
@@ -305,9 +327,9 @@ export class NodeExecutionDriver implements RuntimeDriver {
 		});
 	}
 
-	/** Compose the static bridge IIFE (no per-session config). */
-	private composeBridgeCode(): string {
-		return composeStaticBridgeCode();
+	/** Compose the static bridge IIFE, keyed on timingMitigation for cache safety. */
+	private composeBridgeCode(timingMitigation: TimingMitigation): string {
+		return composeStaticBridgeCode(timingMitigation);
 	}
 
 	/** Compose the per-execution post-restore script. */
@@ -362,7 +384,7 @@ export class NodeExecutionDriver implements RuntimeDriver {
 		});
 
 		// Compose bridge code and post-restore script (sent separately over IPC)
-		const bridgeCode = this.composeBridgeCode();
+		const bridgeCode = this.composeBridgeCode(timingMitigation);
 		const postRestoreScript = this.composePostRestore(timingMitigation, frozenTimeMs);
 
 		// Transform user code (dynamic import → __dynamicImport)
@@ -431,6 +453,11 @@ export class NodeExecutionDriver implements RuntimeDriver {
 
 			// Map V8ExecutionResult to RunResult
 			if (result.error) {
+				// V8 process crash — reset session so next call re-initializes
+				if (result.error.code === "ERR_V8_PROCESS_CRASH") {
+					this.resetV8Session();
+				}
+
 				// Check for timeout
 				if (result.error.message && /timed out|time limit exceeded/i.test(result.error.message)) {
 					return {
@@ -475,6 +502,8 @@ export class NodeExecutionDriver implements RuntimeDriver {
 				exports,
 			};
 		} catch (err) {
+			// Reset session on fatal errors so next call re-initializes
+			this.resetV8Session();
 			const errMessage = err instanceof Error ? err.message : String(err);
 			return {
 				code: 1,

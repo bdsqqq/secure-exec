@@ -85,7 +85,6 @@
     "@secure-exec/core": "workspace:*",
     "@secure-exec/v8": "workspace:*",
     "esbuild": "^0.27.1",
-    "isolated-vm": "^6.0.0",
     "node-stdlib-browser": "^1.3.1"
   },
   "devDependencies": {

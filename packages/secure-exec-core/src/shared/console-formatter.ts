@@ -188,10 +188,14 @@ export function getConsoleSetupCode(
       const formatConsoleArgs = ${formatConsoleArgs.toString()};
 
       globalThis.console = {
-        log: (...args) => _log.applySync(undefined, [formatConsoleArgs(args, __consoleBudget)]),
-        error: (...args) => _error.applySync(undefined, [formatConsoleArgs(args, __consoleBudget)]),
-        warn: (...args) => _error.applySync(undefined, [formatConsoleArgs(args, __consoleBudget)]),
-        info: (...args) => _log.applySync(undefined, [formatConsoleArgs(args, __consoleBudget)]),
+        log: (...args) => _log(formatConsoleArgs(args, __consoleBudget)),
+        error: (...args) => _error(formatConsoleArgs(args, __consoleBudget)),
+        warn: (...args) => _error(formatConsoleArgs(args, __consoleBudget)),
+        info: (...args) => _log(formatConsoleArgs(args, __consoleBudget)),
+        debug: (...args) => _log(formatConsoleArgs(args, __consoleBudget)),
+        trace: (...args) => _error(formatConsoleArgs(args, __consoleBudget)),
+        dir: (...args) => _log(formatConsoleArgs(args, __consoleBudget)),
+        table: (...args) => _log(formatConsoleArgs(args, __consoleBudget)),
       };
     `;
 }

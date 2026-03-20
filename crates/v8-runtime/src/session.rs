@@ -1,20 +1,20 @@
 // Session management: create/destroy sessions with V8 isolates on dedicated threads
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::host_call::CallIdRouter;
-use crate::ipc_binary::BinaryFrame;
-use crate::snapshot::SnapshotCache;
 #[cfg(not(test))]
 use crate::host_call::{BridgeCallContext, ChannelFrameSender};
+use crate::ipc_binary::BinaryFrame;
 #[cfg(not(test))]
 use crate::ipc_binary::{self, ExecutionErrorBin};
+use crate::snapshot::SnapshotCache;
 #[cfg(not(test))]
-use crate::{bridge, execution, isolate, snapshot, stream};
+use crate::{bridge, execution, isolate, snapshot};
 
 /// Commands sent to a session thread
 pub enum SessionCommand {
@@ -38,28 +38,23 @@ struct SessionEntry {
     join_handle: Option<thread::JoinHandle<()>>,
 }
 
-/// A pre-warmed session sitting in the pool, ready to be claimed
-struct WarmSession {
-    tx: Sender<SessionCommand>,
-    join_handle: Option<thread::JoinHandle<()>>,
-    heap_limit_mb: Option<u32>,
-    cpu_time_limit_ms: Option<u32>,
-}
-
 /// Concurrency slot tracker shared across session threads
 type SlotControl = Arc<(Mutex<usize>, Condvar)>;
 
-/// Shared readiness counter for warm pool fill synchronization
-type WarmReadySignal = Arc<(Mutex<usize>, Condvar)>;
+/// Shared deferred message queue for non-BridgeResponse frames consumed by
+/// sync bridge calls. The event loop drains these before blocking on the channel.
+pub(crate) type DeferredQueue = Arc<Mutex<VecDeque<BinaryFrame>>>;
+
+/// Create a new empty deferred queue.
+pub(crate) fn new_deferred_queue() -> DeferredQueue {
+    Arc::new(Mutex::new(VecDeque::new()))
+}
 
 /// Manages V8 sessions with concurrency limiting and connection binding.
 ///
 /// Sessions are bound to the connection that created them. Other connections
 /// cannot interact with a session they don't own. Each session runs on a
 /// dedicated OS thread with its own V8 isolate.
-///
-/// Optionally maintains a warm pool of pre-created sessions with isolates
-/// already initialized from the snapshot cache, eliminating cold start overhead.
 pub struct SessionManager {
     sessions: HashMap<String, SessionEntry>,
     max_concurrency: usize,
@@ -71,20 +66,15 @@ pub struct SessionManager {
     call_id_router: CallIdRouter,
     /// Shared snapshot cache for fast isolate creation from pre-compiled bridge code
     snapshot_cache: Arc<SnapshotCache>,
-    /// Pre-warmed sessions ready to be claimed by create_session
-    warm_pool: Vec<WarmSession>,
-    /// Target number of warm sessions to maintain
-    warm_pool_target: usize,
-    /// Bridge code for creating warm sessions (set via set_warm_pool_config)
-    warm_pool_bridge_code: Option<String>,
-    /// Default heap limit for warm sessions
-    default_warm_heap_limit_mb: Option<u32>,
-    /// Default CPU time limit for warm sessions
-    default_warm_cpu_time_limit_ms: Option<u32>,
 }
 
 impl SessionManager {
-    pub fn new(max_concurrency: usize, ipc_tx: IpcSender, call_id_router: CallIdRouter, snapshot_cache: Arc<SnapshotCache>) -> Self {
+    pub fn new(
+        max_concurrency: usize,
+        ipc_tx: IpcSender,
+        call_id_router: CallIdRouter,
+        snapshot_cache: Arc<SnapshotCache>,
+    ) -> Self {
         SessionManager {
             sessions: HashMap::new(),
             max_concurrency,
@@ -92,105 +82,18 @@ impl SessionManager {
             ipc_tx,
             call_id_router,
             snapshot_cache,
-            warm_pool: Vec::new(),
-            warm_pool_target: 0,
-            warm_pool_bridge_code: None,
-            default_warm_heap_limit_mb: None,
-            default_warm_cpu_time_limit_ms: None,
         }
     }
 
     /// Get the snapshot cache for pre-warming from WarmSnapshot messages.
+    #[allow(dead_code)]
     pub fn snapshot_cache(&self) -> &Arc<SnapshotCache> {
         &self.snapshot_cache
     }
 
-    /// Configure the warm pool and fill it. Returns a WarmReadySignal that
-    /// callers can wait on for all warm sessions to finish isolate creation.
-    pub fn set_warm_pool_config(
-        &mut self,
-        bridge_code: String,
-        pool_size: usize,
-        heap_limit_mb: Option<u32>,
-        cpu_time_limit_ms: Option<u32>,
-    ) -> WarmReadySignal {
-        self.warm_pool_bridge_code = Some(bridge_code);
-        self.warm_pool_target = pool_size;
-        self.default_warm_heap_limit_mb = heap_limit_mb;
-        self.default_warm_cpu_time_limit_ms = cpu_time_limit_ms;
-        self.replenish_warm_pool()
-    }
-
-    /// Spawn background threads to fill the warm pool up to target.
-    /// Returns a WarmReadySignal that fires when all spawned sessions are ready.
-    fn replenish_warm_pool(&mut self) -> WarmReadySignal {
-        let needed = self.warm_pool_target.saturating_sub(self.warm_pool.len());
-        let signal: WarmReadySignal = Arc::new((Mutex::new(0), Condvar::new()));
-
-        if needed == 0 || self.warm_pool_bridge_code.is_none() {
-            // Nothing to spawn — signal immediately
-            let (lock, cvar) = &*signal;
-            *lock.lock().unwrap() = needed; // 0
-            cvar.notify_all();
-            return signal;
-        }
-
-        let bridge_code = self.warm_pool_bridge_code.clone().unwrap();
-        let heap_limit_mb = self.default_warm_heap_limit_mb;
-        let cpu_time_limit_ms = self.default_warm_cpu_time_limit_ms;
-
-        for _ in 0..needed {
-            let (tx, rx) = crossbeam_channel::bounded(256);
-            let slot_control = Arc::clone(&self.slot_control);
-            let max = self.max_concurrency;
-            let ipc_tx = self.ipc_tx.clone();
-            let router = Arc::clone(&self.call_id_router);
-            let snap_cache = Arc::clone(&self.snapshot_cache);
-            let bc = bridge_code.clone();
-            let ready_signal = Arc::clone(&signal);
-            let target = needed;
-
-            let join_handle = thread::Builder::new()
-                .name("warm-pool".into())
-                .spawn(move || {
-                    session_thread(
-                        heap_limit_mb,
-                        cpu_time_limit_ms,
-                        rx,
-                        slot_control,
-                        max,
-                        ipc_tx,
-                        router,
-                        snap_cache,
-                        Some((bc, ready_signal, target)),
-                    );
-                })
-                .expect("failed to spawn warm pool thread");
-
-            self.warm_pool.push(WarmSession {
-                tx,
-                join_handle: Some(join_handle),
-                heap_limit_mb,
-                cpu_time_limit_ms,
-            });
-        }
-
-        signal
-    }
-
-    /// Drain all warm pool sessions, shutting them down and releasing slots.
-    fn drain_warm_pool(&mut self) {
-        for mut warm in self.warm_pool.drain(..) {
-            let _ = warm.tx.send(SessionCommand::Shutdown);
-            if let Some(handle) = warm.join_handle.take() {
-                let _ = handle.join();
-            }
-        }
-    }
-
     /// Create a new session bound to the given connection.
-    /// If a compatible warm session is available, claims it instead of cold-starting.
-    /// If config doesn't match, drains the pool, updates config, and refills.
+    /// Spawns a dedicated thread with a V8 isolate. If max concurrency is
+    /// reached, the session thread will block until a slot becomes available.
     pub fn create_session(
         &mut self,
         session_id: String,
@@ -202,33 +105,6 @@ impl SessionManager {
             return Err(format!("session {} already exists", session_id));
         }
 
-        // Try to claim a warm session with matching config
-        if let Some(pos) = self.warm_pool.iter().position(|w|
-            w.heap_limit_mb == heap_limit_mb && w.cpu_time_limit_ms == cpu_time_limit_ms
-        ) {
-            let warm = self.warm_pool.swap_remove(pos);
-            self.sessions.insert(
-                session_id,
-                SessionEntry {
-                    tx: warm.tx,
-                    connection_id,
-                    join_handle: warm.join_handle,
-                },
-            );
-            // Replenish in background (signal not awaited)
-            let _ = self.replenish_warm_pool();
-            return Ok(());
-        }
-
-        // Config mismatch — drain pool, update config, refill
-        if !self.warm_pool.is_empty() {
-            self.drain_warm_pool();
-            self.default_warm_heap_limit_mb = heap_limit_mb;
-            self.default_warm_cpu_time_limit_ms = cpu_time_limit_ms;
-            let _ = self.replenish_warm_pool();
-        }
-
-        // Cold path — spawn a new session thread
         let (tx, rx) = crossbeam_channel::bounded(256);
         let slot_control = Arc::clone(&self.slot_control);
         let max = self.max_concurrency;
@@ -244,7 +120,16 @@ impl SessionManager {
         let join_handle = thread::Builder::new()
             .name(format!("session-{}", name_prefix))
             .spawn(move || {
-                session_thread(heap_limit_mb, cpu_time_limit_ms, rx, slot_control, max, ipc_tx, router, snap_cache, None);
+                session_thread(
+                    heap_limit_mb,
+                    cpu_time_limit_ms,
+                    rx,
+                    slot_control,
+                    max,
+                    ipc_tx,
+                    router,
+                    snap_cache,
+                );
             })
             .map_err(|e| format!("failed to spawn session thread: {}", e))?;
 
@@ -262,11 +147,7 @@ impl SessionManager {
 
     /// Destroy a session. Sends shutdown to the session thread and joins it.
     /// Returns an error if the session doesn't exist or belongs to another connection.
-    pub fn destroy_session(
-        &mut self,
-        session_id: &str,
-        connection_id: u64,
-    ) -> Result<(), String> {
+    pub fn destroy_session(&mut self, session_id: &str, connection_id: u64) -> Result<(), String> {
         let entry = self
             .sessions
             .get(session_id)
@@ -329,11 +210,13 @@ impl SessionManager {
     }
 
     /// Number of registered sessions (including those waiting for a slot).
+    #[allow(dead_code)]
     pub fn session_count(&self) -> usize {
         self.sessions.len()
     }
 
     /// Return all session IDs with their owning connection IDs.
+    #[allow(dead_code)]
     pub fn all_sessions(&self) -> Vec<(String, u64)> {
         self.sessions
             .iter()
@@ -342,6 +225,7 @@ impl SessionManager {
     }
 
     /// Number of sessions that have acquired a concurrency slot.
+    #[allow(dead_code)]
     pub fn active_slot_count(&self) -> usize {
         let (lock, _) = &*self.slot_control;
         *lock.lock().unwrap()
@@ -350,18 +234,6 @@ impl SessionManager {
     /// Get the call_id routing table for BridgeResponse dispatch.
     pub fn call_id_router(&self) -> &CallIdRouter {
         &self.call_id_router
-    }
-
-    /// Number of warm sessions currently in the pool.
-    pub fn warm_pool_count(&self) -> usize {
-        self.warm_pool.len()
-    }
-}
-
-impl Drop for SessionManager {
-    fn drop(&mut self) {
-        // Shut down warm pool sessions on manager drop
-        self.drain_warm_pool();
     }
 }
 
@@ -382,13 +254,10 @@ fn send_message(ipc_tx: &IpcSender, frame: &BinaryFrame, frame_buf: &mut Vec<u8>
     }
 }
 
-/// Session thread: acquires a concurrency slot, optionally pre-creates the
-/// V8 isolate from snapshot (warm pool), and processes commands until shutdown.
-///
-/// `prewarm` — if Some, eagerly creates the isolate from the given bridge code
-/// snapshot after acquiring the concurrency slot. The tuple contains:
-/// (bridge_code, ready_signal, target_count). After isolate creation, the
-/// thread increments the ready counter and notifies the condvar.
+/// Session thread: acquires a concurrency slot, defers V8 isolate creation
+/// to first Execute (when bridge code is known for snapshot lookup), and
+/// processes commands until shutdown.
+#[allow(clippy::too_many_arguments)]
 fn session_thread(
     #[cfg_attr(test, allow(unused_variables))] heap_limit_mb: Option<u32>,
     #[cfg_attr(test, allow(unused_variables))] cpu_time_limit_ms: Option<u32>,
@@ -398,7 +267,6 @@ fn session_thread(
     #[cfg_attr(test, allow(unused_variables))] ipc_tx: IpcSender,
     #[cfg_attr(test, allow(unused_variables))] call_id_router: CallIdRouter,
     #[cfg_attr(test, allow(unused_variables))] snapshot_cache: Arc<SnapshotCache>,
-    #[cfg_attr(test, allow(unused_variables))] prewarm: Option<(String, WarmReadySignal, usize)>,
 ) {
     // Acquire concurrency slot (blocks if at capacity)
     {
@@ -410,46 +278,20 @@ fn session_thread(
         *count += 1;
     }
 
-    // Isolate creation: eager if pre-warming, deferred to first Execute otherwise
+    // Isolate creation is deferred to first Execute (when bridge code is known
+    // for snapshot cache lookup). This avoids creating an isolate that may never
+    // be used and enables snapshot-based fast creation.
     #[cfg(not(test))]
     let mut v8_isolate: Option<v8::OwnedIsolate> = None;
     #[cfg(not(test))]
     let mut _v8_context: Option<v8::Global<v8::Context>> = None;
 
+    // Whether the isolate was created from a context snapshot.
+    // When true, Execute uses the snapshot's default context (bridge IIFE
+    // already executed) and skips re-running the bridge code. Bridge function
+    // stubs in the snapshot are replaced with real session-local functions.
     #[cfg(not(test))]
     let mut from_snapshot = false;
-
-    // Eager isolate creation for warm pool sessions
-    #[cfg(not(test))]
-    if let Some((ref bridge_code, ref ready_signal, target)) = prewarm {
-        isolate::init_v8_platform();
-        let mut iso = if !bridge_code.is_empty() {
-            match snapshot_cache.get_or_create(bridge_code) {
-                Ok(blob) => {
-                    from_snapshot = true;
-                    snapshot::create_isolate_from_snapshot((*blob).clone(), heap_limit_mb)
-                }
-                Err(e) => {
-                    eprintln!("warm pool snapshot failed, falling back: {}", e);
-                    isolate::create_isolate(heap_limit_mb)
-                }
-            }
-        } else {
-            isolate::create_isolate(heap_limit_mb)
-        };
-        execution::disable_wasm(&mut iso);
-        let ctx = isolate::create_context(&mut iso);
-        _v8_context = Some(ctx);
-        v8_isolate = Some(iso);
-
-        // Signal readiness
-        let (lock, cvar) = &**ready_signal;
-        let mut count = lock.lock().unwrap();
-        *count += 1;
-        if *count >= target {
-            cvar.notify_all();
-        }
-    }
 
     #[cfg(not(test))]
     let pending = bridge::PendingPromises::new();
@@ -462,10 +304,9 @@ fn session_thread(
     #[cfg(not(test))]
     let mut bridge_cache: Option<execution::BridgeCodeCache> = None;
 
-    // Cached bridge code string to skip resending over IPC.
-    // Pre-populated from prewarm bridge code if warm-pooled.
+    // Cached bridge code string to skip resending over IPC
     #[cfg(not(test))]
-    let mut last_bridge_code: Option<String> = prewarm.as_ref().map(|(bc, _, _)| bc.clone());
+    let mut last_bridge_code: Option<String> = None;
 
     // Pre-allocated serialization buffers for V8 ValueSerializer output
     #[cfg(not(test))]
@@ -482,10 +323,7 @@ fn session_thread(
             Ok(SessionCommand::Message(_msg)) => {
                 #[cfg(not(test))]
                 match _msg {
-                    BinaryFrame::InjectGlobals {
-                        payload,
-                        ..
-                    } => {
+                    BinaryFrame::InjectGlobals { payload, .. } => {
                         // Store V8-serialized config for injection into fresh context at Execute time
                         last_globals_payload = Some(payload);
                     }
@@ -512,7 +350,10 @@ fn session_thread(
                                 match snapshot_cache.get_or_create(&effective_bridge_code) {
                                     Ok(blob) => {
                                         from_snapshot = true;
-                                        snapshot::create_isolate_from_snapshot((*blob).clone(), heap_limit_mb)
+                                        snapshot::create_isolate_from_snapshot(
+                                            (*blob).clone(),
+                                            heap_limit_mb,
+                                        )
                                     }
                                     Err(e) => {
                                         eprintln!("snapshot creation failed, falling back to fresh isolate: {}", e);
@@ -553,10 +394,20 @@ fn session_thread(
                             (None, None)
                         };
 
+                        // Create deferred queue for sync bridge call filtering
+                        let deferred_queue = new_deferred_queue();
+
                         // Create BridgeCallContext with channel sender (no shared mutex)
                         let channel_rx = match maybe_abort_rx {
-                            Some(ref arx) => ChannelResponseReceiver::with_abort(rx.clone(), arx.clone()),
-                            None => ChannelResponseReceiver::new(rx.clone()),
+                            Some(ref arx) => ChannelResponseReceiver::with_abort(
+                                rx.clone(),
+                                arx.clone(),
+                                Arc::clone(&deferred_queue),
+                            ),
+                            None => ChannelResponseReceiver::new(
+                                rx.clone(),
+                                Arc::clone(&deferred_queue),
+                            ),
                         };
                         let bridge_ctx = BridgeCallContext::with_receiver(
                             Box::new(ChannelFrameSender::new(ipc_tx.clone())),
@@ -579,7 +430,8 @@ fn session_thread(
                                 scope,
                                 &bridge_ctx as *const BridgeCallContext,
                                 &pending as *const bridge::PendingPromises,
-                                &session_buffers as *const std::cell::RefCell<bridge::SessionBuffers>,
+                                &session_buffers
+                                    as *const std::cell::RefCell<bridge::SessionBuffers>,
                                 &SYNC_BRIDGE_FNS,
                                 &ASYNC_BRIDGE_FNS,
                             );
@@ -591,7 +443,8 @@ fn session_thread(
                             let scope = &mut v8::HandleScope::new(iso);
                             let ctx = v8::Local::new(scope, &exec_context);
                             let scope = &mut v8::ContextScope::new(scope, ctx);
-                            let (prs_code, prs_err) = execution::run_init_script(scope, &post_restore_script);
+                            let (prs_code, prs_err) =
+                                execution::run_init_script(scope, &post_restore_script);
                             if prs_code != 0 {
                                 let result_frame = BinaryFrame::ExecutionResult {
                                     session_id,
@@ -621,14 +474,26 @@ fn session_thread(
                         // On snapshot-restored context, skip bridge IIFE (already in
                         // snapshot) and run user code only. On fresh context, run full
                         // bridge code + user code as before.
-                        let bridge_code_for_exec = if from_snapshot { "" } else { &effective_bridge_code };
-                        let file_path_opt = if file_path.is_empty() { None } else { Some(file_path.as_str()) };
+                        let bridge_code_for_exec = if from_snapshot {
+                            ""
+                        } else {
+                            &effective_bridge_code
+                        };
+                        let file_path_opt = if file_path.is_empty() {
+                            None
+                        } else {
+                            Some(file_path.as_str())
+                        };
                         let (code, exports, error) = if mode == 0 {
                             let scope = &mut v8::HandleScope::new(iso);
                             let ctx = v8::Local::new(scope, &exec_context);
                             let scope = &mut v8::ContextScope::new(scope, ctx);
-                            let (c, e) =
-                                execution::execute_script(scope, bridge_code_for_exec, &user_code, &mut bridge_cache);
+                            let (c, e) = execution::execute_script(
+                                scope,
+                                bridge_code_for_exec,
+                                &user_code,
+                                &mut bridge_cache,
+                            );
                             (c, None, e)
                         } else {
                             let scope = &mut v8::HandleScope::new(iso);
@@ -649,13 +514,19 @@ fn session_thread(
                             let scope = &mut v8::HandleScope::new(iso);
                             let ctx = v8::Local::new(scope, &exec_context);
                             let scope = &mut v8::ContextScope::new(scope, ctx);
-                            !run_event_loop(scope, &rx, &pending, maybe_abort_rx.as_ref())
+                            !run_event_loop(
+                                scope,
+                                &rx,
+                                &pending,
+                                maybe_abort_rx.as_ref(),
+                                Some(&deferred_queue),
+                            )
                         } else {
                             false
                         };
 
                         // Check if timeout fired
-                        let timed_out = timeout_guard.as_ref().map_or(false, |g| g.timed_out());
+                        let timed_out = timeout_guard.as_ref().is_some_and(|g| g.timed_out());
 
                         // Cancel timeout guard (joins timer thread)
                         if let Some(ref mut guard) = timeout_guard {
@@ -791,6 +662,10 @@ pub(crate) const ASYNC_BRIDGE_FNS: [&str; 7] = [
 /// Polls the session channel for BridgeResponse, StreamEvent, and
 /// TerminateExecution messages, dispatching each into V8 with microtask flush.
 ///
+/// When `deferred` is provided, drains queued messages from sync bridge calls
+/// before blocking on the channel. This prevents StreamEvent loss when sync
+/// bridge calls consume non-BridgeResponse messages from the shared channel.
+///
 /// When `abort_rx` is provided (timeout is configured), uses `select!` to
 /// also monitor the abort channel — if the timeout fires and drops the sender,
 /// the abort channel unblocks and terminates execution.
@@ -801,8 +676,22 @@ pub(crate) fn run_event_loop(
     rx: &Receiver<SessionCommand>,
     pending: &crate::bridge::PendingPromises,
     abort_rx: Option<&crossbeam_channel::Receiver<()>>,
+    deferred: Option<&DeferredQueue>,
 ) -> bool {
     while pending.len() > 0 {
+        // Drain deferred messages queued by sync bridge calls before blocking
+        if let Some(dq) = deferred {
+            let frames: Vec<BinaryFrame> = dq.lock().unwrap().drain(..).collect();
+            for frame in frames {
+                if !dispatch_event_loop_frame(scope, frame, pending) {
+                    return false;
+                }
+            }
+            if pending.len() == 0 {
+                break;
+            }
+        }
+
         // Receive next command, with optional abort monitoring
         let cmd = if let Some(abort) = abort_rx {
             crossbeam_channel::select! {
@@ -824,104 +713,132 @@ pub(crate) fn run_event_loop(
         };
 
         match cmd {
-            SessionCommand::Message(frame) => match frame {
-                BinaryFrame::BridgeResponse {
-                    call_id,
-                    status,
-                    payload,
-                    ..
-                } => {
-                    let (result, error) = if status == 1 {
-                        (None, Some(String::from_utf8_lossy(&payload).to_string()))
-                    } else if !payload.is_empty() {
-                        // status=0: V8-serialized, status=2: raw binary (Uint8Array)
-                        (Some(payload), None)
-                    } else {
-                        (None, None)
-                    };
-                    let _ = crate::bridge::resolve_pending_promise(
-                        scope, pending, call_id, result, error,
-                    );
-                    // Microtasks already flushed in resolve_pending_promise
-                }
-                BinaryFrame::StreamEvent {
-                    event_type,
-                    payload,
-                    ..
-                } => {
-                    crate::stream::dispatch_stream_event(scope, &event_type, &payload);
-                    scope.perform_microtask_checkpoint();
-                }
-                BinaryFrame::TerminateExecution { .. } => {
-                    scope.terminate_execution();
+            SessionCommand::Message(frame) => {
+                if !dispatch_event_loop_frame(scope, frame, pending) {
                     return false;
                 }
-                _ => {
-                    // Ignore other messages during event loop
-                }
-            },
+            }
             SessionCommand::Shutdown => return false,
         }
     }
     true
 }
 
+/// Dispatch a single BinaryFrame within the event loop.
+/// Returns true to continue the loop, false to terminate execution.
+fn dispatch_event_loop_frame(
+    scope: &mut v8::HandleScope,
+    frame: BinaryFrame,
+    pending: &crate::bridge::PendingPromises,
+) -> bool {
+    match frame {
+        BinaryFrame::BridgeResponse {
+            call_id,
+            status,
+            payload,
+            ..
+        } => {
+            let (result, error) = if status == 1 {
+                (None, Some(String::from_utf8_lossy(&payload).to_string()))
+            } else if !payload.is_empty() {
+                // status=0: V8-serialized, status=2: raw binary (Uint8Array)
+                (Some(payload), None)
+            } else {
+                (None, None)
+            };
+            let _ = crate::bridge::resolve_pending_promise(scope, pending, call_id, result, error);
+            // Microtasks already flushed in resolve_pending_promise
+            true
+        }
+        BinaryFrame::StreamEvent {
+            event_type,
+            payload,
+            ..
+        } => {
+            crate::stream::dispatch_stream_event(scope, &event_type, &payload);
+            scope.perform_microtask_checkpoint();
+            true
+        }
+        BinaryFrame::TerminateExecution { .. } => {
+            scope.terminate_execution();
+            false
+        }
+        _ => {
+            // Ignore other messages during event loop
+            true
+        }
+    }
+}
+
 /// ResponseReceiver that receives BinaryFrame directly from the session channel.
 ///
-/// Eliminates the re-serialization cycle: frames arrive already deserialized
-/// from the connection handler and are passed straight to sync_call without
-/// encoding/decoding through the old ChannelMessageReader → read_frame path.
+/// Only returns BridgeResponse frames from recv_response(). Non-BridgeResponse
+/// messages (StreamEvent, TerminateExecution) consumed during sync bridge calls
+/// are queued in the deferred queue for later processing by the event loop.
 ///
 /// When `abort_rx` is set (timeout configured), uses `select!` to also monitor
 /// the abort channel. If the timeout fires, the abort sender is dropped, which
 /// unblocks the select and returns a timeout error.
-#[cfg(not(test))]
-struct ChannelResponseReceiver {
+pub(crate) struct ChannelResponseReceiver {
     rx: Receiver<SessionCommand>,
     abort_rx: Option<crossbeam_channel::Receiver<()>>,
+    deferred: DeferredQueue,
 }
 
-#[cfg(not(test))]
 impl ChannelResponseReceiver {
-    fn new(rx: Receiver<SessionCommand>) -> Self {
+    pub(crate) fn new(rx: Receiver<SessionCommand>, deferred: DeferredQueue) -> Self {
         ChannelResponseReceiver {
             rx,
             abort_rx: None,
+            deferred,
         }
     }
 
-    fn with_abort(rx: Receiver<SessionCommand>, abort_rx: crossbeam_channel::Receiver<()>) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn with_abort(
+        rx: Receiver<SessionCommand>,
+        abort_rx: crossbeam_channel::Receiver<()>,
+        deferred: DeferredQueue,
+    ) -> Self {
         ChannelResponseReceiver {
             rx,
             abort_rx: Some(abort_rx),
+            deferred,
         }
     }
 }
 
-#[cfg(not(test))]
 impl crate::host_call::ResponseReceiver for ChannelResponseReceiver {
     fn recv_response(&self) -> Result<BinaryFrame, String> {
-        // Wait for next command, with optional abort monitoring
-        let cmd = if let Some(ref abort) = self.abort_rx {
-            crossbeam_channel::select! {
-                recv(self.rx) -> result => match result {
+        loop {
+            // Wait for next command, with optional abort monitoring
+            let cmd = if let Some(ref abort) = self.abort_rx {
+                crossbeam_channel::select! {
+                    recv(self.rx) -> result => match result {
+                        Ok(cmd) => cmd,
+                        Err(_) => return Err("channel closed".into()),
+                    },
+                    recv(abort) -> _ => {
+                        return Err("execution timed out".into());
+                    },
+                }
+            } else {
+                match self.rx.recv() {
                     Ok(cmd) => cmd,
                     Err(_) => return Err("channel closed".into()),
-                },
-                recv(abort) -> _ => {
-                    return Err("execution timed out".into());
-                },
-            }
-        } else {
-            match self.rx.recv() {
-                Ok(cmd) => cmd,
-                Err(_) => return Err("channel closed".into()),
-            }
-        };
+                }
+            };
 
-        match cmd {
-            SessionCommand::Message(frame) => Ok(frame),
-            SessionCommand::Shutdown => Err("session shutdown".into()),
+            match cmd {
+                SessionCommand::Message(frame) => {
+                    if matches!(&frame, BinaryFrame::BridgeResponse { .. }) {
+                        return Ok(frame);
+                    }
+                    // Queue non-BridgeResponse for later event loop processing
+                    self.deferred.lock().unwrap().push_back(frame);
+                }
+                SessionCommand::Shutdown => return Err("session shutdown".into()),
+            }
         }
     }
 }
@@ -974,7 +891,8 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(200));
 
             // Duplicate session ID is rejected
-            let err = mgr.create_session("session-bbb".into(), 1, None, None);            assert!(err.is_err());
+            let err = mgr.create_session("session-bbb".into(), 1, None, None);
+            assert!(err.is_err());
             assert!(err.unwrap_err().contains("already exists"));
 
             // Connection binding: connection 2 cannot destroy connection 1's session
@@ -1007,9 +925,12 @@ mod tests {
         {
             let mut mgr = test_manager(2);
 
-            mgr.create_session("s1".into(), 1, None, None).expect("create s1");
-            mgr.create_session("s2".into(), 1, None, None).expect("create s2");
-            mgr.create_session("s3".into(), 1, None, None).expect("create s3");
+            mgr.create_session("s1".into(), 1, None, None)
+                .expect("create s1");
+            mgr.create_session("s2".into(), 1, None, None)
+                .expect("create s2");
+            mgr.create_session("s3".into(), 1, None, None)
+                .expect("create s3");
 
             // Allow threads to acquire slots
             std::thread::sleep(std::time::Duration::from_millis(300));
@@ -1053,5 +974,54 @@ mod tests {
             mgr.destroy_session("conn2-s1", 200).expect("destroy");
             assert_eq!(mgr.session_count(), 0);
         }
+    }
+
+    #[test]
+    fn channel_response_receiver_filters_bridge_response() {
+        use crate::host_call::ResponseReceiver;
+
+        // Sync bridge call interleaved with StreamEvent does not drop the StreamEvent
+        let (tx, rx) = crossbeam_channel::bounded(10);
+        let deferred = new_deferred_queue();
+        let receiver = ChannelResponseReceiver::new(rx, Arc::clone(&deferred));
+
+        // Send: StreamEvent, TerminateExecution, then BridgeResponse
+        tx.send(SessionCommand::Message(BinaryFrame::StreamEvent {
+            session_id: "s1".into(),
+            event_type: "child_stdout".into(),
+            payload: vec![0x01, 0x02],
+        }))
+        .unwrap();
+        tx.send(SessionCommand::Message(BinaryFrame::TerminateExecution {
+            session_id: "s1".into(),
+        }))
+        .unwrap();
+        tx.send(SessionCommand::Message(BinaryFrame::BridgeResponse {
+            session_id: "s1".into(),
+            call_id: 1,
+            status: 0,
+            payload: vec![0xAB],
+        }))
+        .unwrap();
+
+        // recv_response should skip StreamEvent and TerminateExecution, return BridgeResponse
+        let frame = receiver.recv_response().unwrap();
+        assert!(
+            matches!(&frame, BinaryFrame::BridgeResponse { call_id: 1, .. }),
+            "expected BridgeResponse with call_id=1, got {:?}",
+            frame
+        );
+
+        // Deferred queue should contain the StreamEvent and TerminateExecution
+        let dq = deferred.lock().unwrap();
+        assert_eq!(dq.len(), 2, "expected 2 deferred messages");
+        assert!(
+            matches!(&dq[0], BinaryFrame::StreamEvent { event_type, .. } if event_type == "child_stdout"),
+            "first deferred should be StreamEvent"
+        );
+        assert!(
+            matches!(&dq[1], BinaryFrame::TerminateExecution { .. }),
+            "second deferred should be TerminateExecution"
+        );
     }
 }

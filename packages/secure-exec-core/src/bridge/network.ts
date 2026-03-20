@@ -15,14 +15,6 @@ import type {
 	NetworkHttpServerListenRawBridgeRef,
 	RegisterHandleBridgeFn,
 	UnregisterHandleBridgeFn,
-	UpgradeSocketWriteRawBridgeRef,
-	UpgradeSocketEndRawBridgeRef,
-	UpgradeSocketDestroyRawBridgeRef,
-	NetSocketConnectRawBridgeRef,
-	NetSocketWriteRawBridgeRef,
-	NetSocketEndRawBridgeRef,
-	NetSocketDestroyRawBridgeRef,
-	NetSocketUpgradeTlsRawBridgeRef,
 } from "../shared/bridge-contract.js";
 
 // Declare host bridge References
@@ -38,38 +30,6 @@ declare const _networkHttpServerListenRaw:
 
 declare const _networkHttpServerCloseRaw:
   | NetworkHttpServerCloseRawBridgeRef
-  | undefined;
-
-declare const _upgradeSocketWriteRaw:
-  | UpgradeSocketWriteRawBridgeRef
-  | undefined;
-
-declare const _upgradeSocketEndRaw:
-  | UpgradeSocketEndRawBridgeRef
-  | undefined;
-
-declare const _upgradeSocketDestroyRaw:
-  | UpgradeSocketDestroyRawBridgeRef
-  | undefined;
-
-declare const _netSocketConnectRaw:
-  | NetSocketConnectRawBridgeRef
-  | undefined;
-
-declare const _netSocketWriteRaw:
-  | NetSocketWriteRawBridgeRef
-  | undefined;
-
-declare const _netSocketEndRaw:
-  | NetSocketEndRawBridgeRef
-  | undefined;
-
-declare const _netSocketDestroyRaw:
-  | NetSocketDestroyRawBridgeRef
-  | undefined;
-
-declare const _netSocketUpgradeTlsRaw:
-  | NetSocketUpgradeTlsRawBridgeRef
   | undefined;
 
 declare const _registerHandle:
@@ -109,24 +69,10 @@ interface FetchResponse {
 }
 
 // Fetch polyfill
-export async function fetch(input: string | URL | Request, options: FetchOptions = {}): Promise<FetchResponse> {
+export async function fetch(url: string | URL, options: FetchOptions = {}): Promise<FetchResponse> {
   if (typeof _networkFetchRaw === 'undefined') {
     console.error('fetch requires NetworkAdapter to be configured');
     throw new Error('fetch requires NetworkAdapter to be configured');
-  }
-
-  // Extract URL and options from Request object (used by axios fetch adapter)
-  let resolvedUrl: string;
-  if (input instanceof Request) {
-    resolvedUrl = input.url;
-    options = {
-      method: input.method,
-      headers: Object.fromEntries(input.headers.entries()),
-      body: input.body,
-      ...options,
-    };
-  } else {
-    resolvedUrl = String(input);
   }
 
   const optionsJson = JSON.stringify({
@@ -135,18 +81,7 @@ export async function fetch(input: string | URL | Request, options: FetchOptions
     body: options.body || null,
   });
 
-  const responseJson = await _networkFetchRaw.apply(undefined, [resolvedUrl, optionsJson], {
-    result: { promise: true },
-  });
-  const response = JSON.parse(responseJson) as {
-    ok: boolean;
-    status: number;
-    statusText: string;
-    headers?: Record<string, string>;
-    url?: string;
-    redirected?: boolean;
-    body?: string;
-  };
+  const response = await _networkFetchRaw(String(url), optionsJson);
 
   // Create Response-like object
   return {
@@ -154,7 +89,7 @@ export async function fetch(input: string | URL | Request, options: FetchOptions
     status: response.status,
     statusText: response.statusText,
     headers: new Map(Object.entries(response.headers || {})),
-    url: response.url || resolvedUrl,
+    url: response.url || String(url),
     redirected: response.redirected || false,
     type: "basic",
 
@@ -324,10 +259,8 @@ export const dns = {
       cb = options as DnsCallback;
     }
 
-    _networkDnsLookupRaw
-      .apply(undefined, [hostname], { result: { promise: true } })
-      .then((resultJson) => {
-        const result = JSON.parse(resultJson) as { error?: string; code?: string; address?: string; family?: number };
+    _networkDnsLookupRaw(hostname)
+      .then((result) => {
         if (result.error) {
           const err: DnsError = new Error(result.error);
           err.code = result.code || "ENOTFOUND";
@@ -775,37 +708,15 @@ export class ClientRequest {
         ...tls,
       });
 
-      const responseJson = await _networkHttpRequestRaw.apply(undefined, [url, optionsJson], {
-        result: { promise: true },
-      });
-      const response = JSON.parse(responseJson) as {
-        headers?: Record<string, string>;
-        url?: string;
-        status?: number;
-        statusText?: string;
-        body?: string;
-        trailers?: Record<string, string>;
-        upgradeSocketId?: number;
-      };
+      const response = await _networkHttpRequestRaw(url, optionsJson);
 
       this.finished = true;
 
       // 101 Switching Protocols → fire 'upgrade' event
       if (response.status === 101) {
         const res = new IncomingMessage(response);
-        // Use UpgradeSocket for bidirectional data relay when socketId is available
-        let socket: FakeSocket | UpgradeSocket = this.socket;
-        if (response.upgradeSocketId != null) {
-          socket = new UpgradeSocket(response.upgradeSocketId, {
-            host: this._options.hostname as string,
-            port: Number(this._options.port) || 80,
-          });
-          upgradeSocketInstances.set(response.upgradeSocketId, socket);
-        }
-        const head = typeof Buffer !== "undefined"
-          ? (response.body ? Buffer.from(response.body, "base64") : Buffer.alloc(0))
-          : new Uint8Array(0);
-        this._emit("upgrade", res, socket, head);
+        const head = typeof Buffer !== "undefined" ? Buffer.alloc(0) : new Uint8Array(0);
+        this._emit("upgrade", res, this.socket, head);
         return;
       }
 
@@ -1072,8 +983,6 @@ const serverRequestListeners = new Map<
   number,
   (incoming: ServerIncomingMessage, outgoing: ServerResponseBridge) => unknown
 >();
-// Server instances indexed by serverId — used by upgrade dispatch to emit 'upgrade' events
-const serverInstances = new Map<number, Server>();
 
 class ServerIncomingMessage {
   headers: Record<string, string>;
@@ -1398,11 +1307,9 @@ class Server {
     } else {
       serverRequestListeners.set(this._serverId, () => undefined);
     }
-    serverInstances.set(this._serverId, this);
   }
 
-  /** @internal Emit an event — used by upgrade dispatch to fire 'upgrade' events. */
-  _emit(event: string, ...args: unknown[]): void {
+  private _emit(event: string, ...args: unknown[]): void {
     const listeners = this._listeners[event];
     if (!listeners || listeners.length === 0) return;
     listeners.slice().forEach((listener) => listener(...args));
@@ -1415,12 +1322,9 @@ class Server {
       );
     }
 
-    const resultJson = await _networkHttpServerListenRaw.apply(
-      undefined,
-      [JSON.stringify({ serverId: this._serverId, port, hostname })],
-      { result: { promise: true } }
+    const result = await _networkHttpServerListenRaw(
+      JSON.stringify({ serverId: this._serverId, port, hostname }),
     );
-    const result = JSON.parse(resultJson) as SerializedServerListenResult;
     this._address = result.address;
     this.listening = true;
     this._handleId = `http-server:${this._serverId}`;
@@ -1465,13 +1369,10 @@ class Server {
           await this._listenPromise;
         }
         if (this.listening && typeof _networkHttpServerCloseRaw !== "undefined") {
-          await _networkHttpServerCloseRaw.apply(undefined, [this._serverId], {
-            result: { promise: true },
-          });
+          await _networkHttpServerCloseRaw(this._serverId);
         }
         this.listening = false;
         this._address = null;
-        serverInstances.delete(this._serverId);
         if (this._handleId && typeof _unregisterHandle === "function") {
           _unregisterHandle(this._handleId);
         }
@@ -1551,14 +1452,12 @@ class Server {
 /** Route an incoming HTTP request to the server's request listener and return the serialized response. */
 async function dispatchServerRequest(
   serverId: number,
-  requestJson: string
-): Promise<string> {
+  request: SerializedServerRequest
+): Promise<SerializedServerResponse> {
   const listener = serverRequestListeners.get(serverId);
   if (!listener) {
     throw new Error(`Unknown HTTP server: ${serverId}`);
   }
-
-  const request = JSON.parse(requestJson) as SerializedServerRequest;
   const incoming = new ServerIncomingMessage(request);
   const outgoing = new ServerResponseBridge();
 
@@ -1588,204 +1487,7 @@ async function dispatchServerRequest(
   }
 
   await outgoing.waitForClose();
-  return JSON.stringify(outgoing.serialize());
-}
-
-// Upgrade socket for bidirectional data relay through the host bridge
-const upgradeSocketInstances = new Map<number, UpgradeSocket>();
-
-class UpgradeSocket {
-  remoteAddress: string;
-  remotePort: number;
-  localAddress = "127.0.0.1";
-  localPort = 0;
-  connecting = false;
-  destroyed = false;
-  writable = true;
-  readable = true;
-  readyState = "open";
-  bytesWritten = 0;
-  private _listeners: Record<string, EventListener[]> = {};
-  private _socketId: number;
-
-  // Readable stream state stub for ws compatibility (socketOnClose checks _readableState.endEmitted)
-  _readableState = { endEmitted: false };
-  _writableState = { finished: false, errorEmitted: false };
-
-  constructor(socketId: number, options?: { host?: string; port?: number }) {
-    this._socketId = socketId;
-    this.remoteAddress = options?.host || "127.0.0.1";
-    this.remotePort = options?.port || 80;
-  }
-
-  setTimeout(_ms: number, _cb?: () => void): this { return this; }
-  setNoDelay(_noDelay?: boolean): this { return this; }
-  setKeepAlive(_enable?: boolean, _delay?: number): this { return this; }
-  ref(): this { return this; }
-  unref(): this { return this; }
-  cork(): void {}
-  uncork(): void {}
-  pause(): this { return this; }
-  resume(): this { return this; }
-  address(): { address: string; family: string; port: number } {
-    return { address: this.localAddress, family: "IPv4", port: this.localPort };
-  }
-
-  on(event: string, listener: EventListener): this {
-    if (!this._listeners[event]) this._listeners[event] = [];
-    this._listeners[event].push(listener);
-    return this;
-  }
-
-  addListener(event: string, listener: EventListener): this {
-    return this.on(event, listener);
-  }
-
-  once(event: string, listener: EventListener): this {
-    const wrapper = (...args: unknown[]): void => {
-      this.off(event, wrapper);
-      listener(...args);
-    };
-    return this.on(event, wrapper);
-  }
-
-  off(event: string, listener: EventListener): this {
-    if (this._listeners[event]) {
-      const idx = this._listeners[event].indexOf(listener);
-      if (idx !== -1) this._listeners[event].splice(idx, 1);
-    }
-    return this;
-  }
-
-  removeListener(event: string, listener: EventListener): this {
-    return this.off(event, listener);
-  }
-
-  removeAllListeners(event?: string): this {
-    if (event) {
-      delete this._listeners[event];
-    } else {
-      this._listeners = {};
-    }
-    return this;
-  }
-
-  emit(event: string, ...args: unknown[]): boolean {
-    const handlers = this._listeners[event];
-    if (handlers) handlers.slice().forEach((fn) => fn.call(this, ...args));
-    return handlers !== undefined && handlers.length > 0;
-  }
-
-  listenerCount(event: string): number {
-    return this._listeners[event]?.length || 0;
-  }
-
-  // Allow arbitrary property assignment (used by ws for Symbol properties)
-  [key: string | symbol]: unknown;
-
-  write(data: unknown, encodingOrCb?: string | (() => void), cb?: (() => void)): boolean {
-    if (this.destroyed) return false;
-    const callback = typeof encodingOrCb === "function" ? encodingOrCb : cb;
-    if (typeof _upgradeSocketWriteRaw !== "undefined") {
-      let base64: string;
-      if (typeof Buffer !== "undefined" && Buffer.isBuffer(data)) {
-        base64 = data.toString("base64");
-      } else if (typeof data === "string") {
-        base64 = typeof Buffer !== "undefined" ? Buffer.from(data).toString("base64") : btoa(data);
-      } else if (data instanceof Uint8Array) {
-        base64 = typeof Buffer !== "undefined" ? Buffer.from(data).toString("base64") : btoa(String.fromCharCode(...data));
-      } else {
-        base64 = typeof Buffer !== "undefined" ? Buffer.from(String(data)).toString("base64") : btoa(String(data));
-      }
-      this.bytesWritten += base64.length;
-      _upgradeSocketWriteRaw.applySync(undefined, [this._socketId, base64]);
-    }
-    if (callback) callback();
-    return true;
-  }
-
-  end(data?: unknown): this {
-    if (data) this.write(data);
-    if (typeof _upgradeSocketEndRaw !== "undefined" && !this.destroyed) {
-      _upgradeSocketEndRaw.applySync(undefined, [this._socketId]);
-    }
-    this.writable = false;
-    this.emit("finish");
-    return this;
-  }
-
-  destroy(err?: Error): this {
-    if (this.destroyed) return this;
-    this.destroyed = true;
-    this.writable = false;
-    this.readable = false;
-    this._readableState.endEmitted = true;
-    this._writableState.finished = true;
-    if (typeof _upgradeSocketDestroyRaw !== "undefined") {
-      _upgradeSocketDestroyRaw.applySync(undefined, [this._socketId]);
-    }
-    upgradeSocketInstances.delete(this._socketId);
-    if (err) this.emit("error", err);
-    this.emit("close", false);
-    return this;
-  }
-
-  // Push data received from the host into this socket
-  _pushData(data: Buffer | Uint8Array): void {
-    this.emit("data", data);
-  }
-
-  // Signal end-of-stream from the host
-  _pushEnd(): void {
-    this.readable = false;
-    this._readableState.endEmitted = true;
-    this._writableState.finished = true;
-    this.emit("end");
-    this.emit("close", false);
-    upgradeSocketInstances.delete(this._socketId);
-  }
-}
-
-/** Route an incoming HTTP upgrade to the server's 'upgrade' event listeners. */
-function dispatchUpgradeRequest(
-  serverId: number,
-  requestJson: string,
-  headBase64: string,
-  socketId: number
-): void {
-  const server = serverInstances.get(serverId);
-  if (!server) {
-    throw new Error(`Unknown HTTP server for upgrade: ${serverId}`);
-  }
-
-  const request = JSON.parse(requestJson) as SerializedServerRequest;
-  const incoming = new ServerIncomingMessage(request);
-  const head = typeof Buffer !== "undefined" ? Buffer.from(headBase64, "base64") : new Uint8Array(0);
-
-  const socket = new UpgradeSocket(socketId, {
-    host: incoming.headers["host"]?.split(":")[0] || "127.0.0.1",
-  });
-  upgradeSocketInstances.set(socketId, socket);
-
-  // Emit 'upgrade' on the server — ws.WebSocketServer listens for this
-  server._emit("upgrade", incoming, socket, head);
-}
-
-/** Push data from host to an upgrade socket. */
-function onUpgradeSocketData(socketId: number, dataBase64: string): void {
-  const socket = upgradeSocketInstances.get(socketId);
-  if (socket) {
-    const data = typeof Buffer !== "undefined" ? Buffer.from(dataBase64, "base64") : new Uint8Array(0);
-    socket._pushData(data);
-  }
-}
-
-/** Signal end-of-stream from host to an upgrade socket. */
-function onUpgradeSocketEnd(socketId: number): void {
-  const socket = upgradeSocketInstances.get(socketId);
-  if (socket) {
-    socket._pushEnd();
-  }
+  return outgoing.serialize();
 }
 
 // Function-based ServerResponse constructor — allows .call() inheritance
@@ -1941,420 +1643,12 @@ export const http2 = {
   },
 };
 
-// ----------------------------------------------------------------
-// net module — TCP socket bridge
-// ----------------------------------------------------------------
-
-const netSocketInstances = new Map<number, NetSocket>();
-
-class NetSocket {
-  remoteAddress = "";
-  remotePort = 0;
-  remoteFamily = "";
-  localAddress = "0.0.0.0";
-  localPort = 0;
-  connecting = true;
-  pending = true;
-  destroyed = false;
-  writable = true;
-  readable = true;
-  readyState: "opening" | "open" | "readOnly" | "writeOnly" | "closed" = "opening";
-  bytesRead = 0;
-  bytesWritten = 0;
-  private _listeners: Record<string, EventListener[]> = {};
-  /** @internal socket ID shared with TLS upgrade bridge */
-  _socketId = -1;
-  private _connectHost = "";
-  private _connectPort = 0;
-
-  // Stream state stubs for compatibility (ssh2 checks _readableState.ended)
-  _readableState = { endEmitted: false, ended: false };
-  _writableState = { finished: false, errorEmitted: false, ended: false };
-
-  constructor(_options?: Record<string, unknown>) {
-    // Options like { allowHalfOpen } are accepted but ignored
-  }
-
-  connect(...args: unknown[]): this {
-    // Parse overloaded signatures: connect(port, host?, cb?) or connect({port, host}, cb?)
-    let port: number;
-    let host: string;
-    let connectListener: (() => void) | undefined;
-
-    if (typeof args[0] === "object" && args[0] !== null) {
-      const opts = args[0] as Record<string, unknown>;
-      port = Number(opts.port);
-      host = String(opts.host || "127.0.0.1");
-      if (typeof args[1] === "function") connectListener = args[1] as () => void;
-    } else {
-      port = Number(args[0]);
-      host = typeof args[1] === "string" ? args[1] : "127.0.0.1";
-      if (typeof args[1] === "function") {
-        connectListener = args[1] as () => void;
-        host = "127.0.0.1";
-      } else if (typeof args[2] === "function") {
-        connectListener = args[2] as () => void;
-      }
-    }
-
-    this._connectHost = host;
-    this._connectPort = port;
-
-    if (connectListener) this.once("connect", connectListener);
-
-    if (typeof _netSocketConnectRaw === "undefined") {
-      // Schedule error emission asynchronously like real Node
-      Promise.resolve().then(() => {
-        const err = new Error("net.Socket requires NetworkAdapter to be configured");
-        this._onError(err.message);
-      });
-      return this;
-    }
-
-    // Register active handle
-    if (typeof _registerHandle !== "undefined") {
-      _registerHandle(`net.socket:${host}:${port}`, `TCP connection to ${host}:${port}`);
-    }
-
-    // Synchronous call: host creates socket, starts connecting, returns socketId
-    this._socketId = _netSocketConnectRaw.applySync(undefined, [host, port]);
-    netSocketInstances.set(this._socketId, this);
-
-    return this;
-  }
-
-  setTimeout(_ms: number, _cb?: () => void): this { return this; }
-  setNoDelay(_noDelay?: boolean): this { return this; }
-  setKeepAlive(_enable?: boolean, _delay?: number): this { return this; }
-  setMaxListeners(_n: number): this { return this; }
-  getMaxListeners(): number { return 10; }
-  ref(): this { return this; }
-  unref(): this { return this; }
-  cork(): void {}
-  uncork(): void {}
-  pause(): this { return this; }
-  resume(): this { return this; }
-  pipe<T>(destination: T): T { return destination; }
-  address(): { address: string; family: string; port: number } {
-    return { address: this.localAddress, family: "IPv4", port: this.localPort };
-  }
-
-  listeners(event: string): EventListener[] {
-    return (this._listeners[event] || []).slice();
-  }
-
-  rawListeners(event: string): EventListener[] {
-    return this.listeners(event);
-  }
-
-  eventNames(): string[] {
-    return Object.keys(this._listeners).filter((k) => (this._listeners[k]?.length ?? 0) > 0);
-  }
-
-  prependListener(event: string, listener: EventListener): this {
-    if (!this._listeners[event]) this._listeners[event] = [];
-    this._listeners[event].unshift(listener);
-    return this;
-  }
-
-  prependOnceListener(event: string, listener: EventListener): this {
-    const wrapper = (...args: unknown[]): void => {
-      this.off(event, wrapper);
-      listener(...args);
-    };
-    return this.prependListener(event, wrapper);
-  }
-
-  on(event: string, listener: EventListener): this {
-    if (!this._listeners[event]) this._listeners[event] = [];
-    this._listeners[event].push(listener);
-    return this;
-  }
-  addListener(event: string, listener: EventListener): this { return this.on(event, listener); }
-
-  once(event: string, listener: EventListener): this {
-    const wrapper = (...args: unknown[]): void => {
-      this.off(event, wrapper);
-      listener(...args);
-    };
-    return this.on(event, wrapper);
-  }
-
-  off(event: string, listener: EventListener): this {
-    if (this._listeners[event]) {
-      const idx = this._listeners[event].indexOf(listener);
-      if (idx !== -1) this._listeners[event].splice(idx, 1);
-    }
-    return this;
-  }
-  removeListener(event: string, listener: EventListener): this { return this.off(event, listener); }
-
-  removeAllListeners(event?: string): this {
-    if (event) { delete this._listeners[event]; } else { this._listeners = {}; }
-    return this;
-  }
-
-  emit(event: string, ...args: unknown[]): boolean {
-    const handlers = this._listeners[event];
-    if (handlers) handlers.slice().forEach((fn) => fn.call(this, ...args));
-    return handlers !== undefined && handlers.length > 0;
-  }
-
-  listenerCount(event: string): number {
-    return this._listeners[event]?.length || 0;
-  }
-
-  // Allow arbitrary property assignment
-  [key: string | symbol]: unknown;
-
-  write(data: unknown, encodingOrCb?: string | (() => void), cb?: (() => void)): boolean {
-    if (this.destroyed) return false;
-    const callback = typeof encodingOrCb === "function" ? encodingOrCb : cb;
-    if (typeof _netSocketWriteRaw !== "undefined" && this._socketId >= 0) {
-      let base64: string;
-      if (typeof Buffer !== "undefined" && Buffer.isBuffer(data)) {
-        base64 = data.toString("base64");
-      } else if (typeof data === "string") {
-        const encoding = typeof encodingOrCb === "string" ? encodingOrCb : "utf8";
-        base64 = typeof Buffer !== "undefined" ? Buffer.from(data, encoding as BufferEncoding).toString("base64") : btoa(data);
-      } else if (data instanceof Uint8Array) {
-        base64 = typeof Buffer !== "undefined" ? Buffer.from(data).toString("base64") : btoa(String.fromCharCode(...data));
-      } else {
-        base64 = typeof Buffer !== "undefined" ? Buffer.from(String(data)).toString("base64") : btoa(String(data));
-      }
-      this.bytesWritten += base64.length;
-      _netSocketWriteRaw.applySync(undefined, [this._socketId, base64]);
-    }
-    if (callback) callback();
-    return true;
-  }
-
-  end(data?: unknown, encodingOrCb?: string | (() => void), cb?: (() => void)): this {
-    if (data !== undefined && data !== null) this.write(data, encodingOrCb, cb);
-    if (typeof _netSocketEndRaw !== "undefined" && this._socketId >= 0 && !this.destroyed) {
-      _netSocketEndRaw.applySync(undefined, [this._socketId]);
-    }
-    this.writable = false;
-    this.readyState = this.readable ? "readOnly" : "closed";
-    this.emit("finish");
-    return this;
-  }
-
-  destroy(err?: Error): this {
-    if (this.destroyed) return this;
-    this.destroyed = true;
-    this.writable = false;
-    this.readable = false;
-    this.readyState = "closed";
-    this._readableState.endEmitted = true;
-    this._writableState.finished = true;
-    if (typeof _netSocketDestroyRaw !== "undefined" && this._socketId >= 0) {
-      _netSocketDestroyRaw.applySync(undefined, [this._socketId]);
-    }
-    this._cleanup();
-    if (err) this.emit("error", err);
-    this.emit("close", !!err);
-    return this;
-  }
-
-  // Host→Guest event dispatch handlers
-  _onConnect(): void {
-    this.connecting = false;
-    this.pending = false;
-    this.remoteAddress = this._connectHost;
-    this.remotePort = this._connectPort;
-    this.remoteFamily = "IPv4";
-    this.readyState = "open";
-    this.emit("connect");
-    this.emit("ready");
-  }
-
-  _onData(dataBase64: string): void {
-    const buf = typeof Buffer !== "undefined" ? Buffer.from(dataBase64, "base64") : new Uint8Array(0);
-    this.bytesRead += buf.length;
-    this.emit("data", buf);
-  }
-
-  _onEnd(): void {
-    this.readable = false;
-    this._readableState.endEmitted = true;
-    this._readableState.ended = true;
-    this.readyState = this.writable ? "writeOnly" : "closed";
-    this.emit("end");
-  }
-
-  _onError(message: string): void {
-    const err = new Error(message);
-    this.destroy(err);
-  }
-
-  _onClose(hadError: boolean): void {
-    this._cleanup();
-    if (!this.destroyed) {
-      this.destroyed = true;
-      this.readable = false;
-      this.writable = false;
-      this.readyState = "closed";
-      this.emit("close", hadError);
-    }
-  }
-
-  private _cleanup(): void {
-    if (this._socketId >= 0) {
-      netSocketInstances.delete(this._socketId);
-      if (typeof _unregisterHandle !== "undefined") {
-        _unregisterHandle(`net.socket:${this._connectHost}:${this._connectPort}`);
-      }
-    }
-  }
-}
-
-/** Dispatch events from host to guest net sockets. */
-function onNetSocketDispatch(socketId: number, type: string, data: string): void {
-  const socket = netSocketInstances.get(socketId);
-  if (!socket) return;
-  switch (type) {
-    case "connect": socket._onConnect(); break;
-    case "data": socket._onData(data); break;
-    case "end": socket._onEnd(); break;
-    case "error": socket._onError(data); break;
-    case "close": socket._onClose(data === "1"); break;
-    case "secureConnect": socket.emit("secureConnect"); break;
-  }
-}
-
-// Validate IP address format
-function netIsIP(input: string): number {
-  if (typeof input !== "string") return 0;
-  // IPv4: four octets 0-255
-  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(input)) {
-    const parts = input.split(".");
-    if (parts.every((p) => { const n = Number(p); return n >= 0 && n <= 255; })) return 4;
-  }
-  // IPv6: simplified check
-  if (/^(::)?([0-9a-fA-F]{1,4}(::?)){0,7}([0-9a-fA-F]{1,4})?$/.test(input)) return 6;
-  if (/^::ffff:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(input)) return 6;
-  return 0;
-}
-
-export const net = {
-  Socket: NetSocket as unknown as typeof import("net").Socket,
-  connect(portOrOpts: number | Record<string, unknown>, hostOrCb?: string | (() => void), cb?: () => void): NetSocket {
-    const socket = new NetSocket();
-    socket.connect(portOrOpts as number, hostOrCb as string, cb);
-    return socket;
-  },
-  createConnection(portOrOpts: number | Record<string, unknown>, hostOrCb?: string | (() => void), cb?: () => void): NetSocket {
-    return net.connect(portOrOpts, hostOrCb, cb);
-  },
-  createServer(): never {
-    throw new Error("net.createServer is not supported in sandbox");
-  },
-  isIP: netIsIP,
-  isIPv4(input: string): boolean { return netIsIP(input) === 4; },
-  isIPv6(input: string): boolean { return netIsIP(input) === 6; },
-};
-
-// ----------------------------------------------------------------
-// tls module — TLS socket upgrade bridge
-// ----------------------------------------------------------------
-
-/** TLS socket that wraps an existing NetSocket after host-side TLS upgrade. */
-class TLSSocket extends NetSocket {
-  encrypted = true;
-  authorized = false;
-  authorizationError: string | null = null;
-  alpnProtocol: string | false = false;
-  private _wrappedSocket: NetSocket | null = null;
-
-  constructor(originalSocket: NetSocket) {
-    super();
-    this._wrappedSocket = originalSocket;
-    // Copy connection state from original socket
-    this.remoteAddress = originalSocket.remoteAddress;
-    this.remotePort = originalSocket.remotePort;
-    this.remoteFamily = originalSocket.remoteFamily;
-    this.localAddress = originalSocket.localAddress;
-    this.localPort = originalSocket.localPort;
-    this.connecting = false;
-    this.pending = false;
-    this.readyState = "open";
-    // Share the same socketId — bridge events route here after upgrade
-    this._socketId = originalSocket._socketId;
-    // Copy private connect info so _cleanup unregisters the correct handle
-    (this as Record<string, unknown>)._connectHost = (originalSocket as Record<string, unknown>)._connectHost;
-    (this as Record<string, unknown>)._connectPort = (originalSocket as Record<string, unknown>)._connectPort;
-    netSocketInstances.set(this._socketId, this);
-  }
-
-  _onSecureConnect(): void {
-    this.authorized = true;
-    this.emit("secureConnect");
-  }
-
-  // Forward end/close to the wrapped raw socket — Node.js tls.TLSSocket
-  // closes the underlying socket, which fires its 'close' event. Libraries
-  // like pg rely on the original socket's 'close' listener to detect shutdown.
-  _onEnd(): void {
-    super._onEnd();
-    if (this._wrappedSocket) this._wrappedSocket._onEnd();
-  }
-
-  _onClose(hadError: boolean): void {
-    super._onClose(hadError);
-    if (this._wrappedSocket) {
-      this._wrappedSocket._onClose(hadError);
-      this._wrappedSocket = null;
-    }
-  }
-}
-
-export const tlsModule = {
-  TLSSocket: TLSSocket as unknown as typeof import("tls").TLSSocket,
-  connect(options: Record<string, unknown>): NetSocket {
-    const existingSocket = options.socket as NetSocket | undefined;
-    if (!existingSocket || existingSocket._socketId < 0) {
-      throw new Error("tls.connect requires an existing connected socket via options.socket");
-    }
-
-    // Create TLS socket wrapper on sandbox side
-    const tlsSocket = new TLSSocket(existingSocket);
-
-    if (typeof _netSocketUpgradeTlsRaw === "undefined") {
-      Promise.resolve().then(() => {
-        tlsSocket._onError("tls.connect requires NetworkAdapter TLS support");
-      });
-      return tlsSocket;
-    }
-
-    // Tell host to wrap the underlying TCP socket with TLS
-    _netSocketUpgradeTlsRaw.applySync(undefined, [
-      existingSocket._socketId,
-      JSON.stringify({
-        rejectUnauthorized: options.rejectUnauthorized ?? true,
-        servername: options.servername,
-      }),
-    ]);
-
-    return tlsSocket;
-  },
-  createSecureContext(_options?: Record<string, unknown>): Record<string, unknown> {
-    return {};
-  },
-};
-
 // Export modules and make them available as globals for require()
 exposeCustomGlobal("_httpModule", http);
 exposeCustomGlobal("_httpsModule", https);
 exposeCustomGlobal("_http2Module", http2);
 exposeCustomGlobal("_dnsModule", dns);
-exposeCustomGlobal("_netModule", net);
-exposeCustomGlobal("_tlsModule", tlsModule);
 exposeCustomGlobal("_httpServerDispatch", dispatchServerRequest);
-exposeCustomGlobal("_httpServerUpgradeDispatch", dispatchUpgradeRequest);
-exposeCustomGlobal("_upgradeSocketData", onUpgradeSocketData);
-exposeCustomGlobal("_upgradeSocketEnd", onUpgradeSocketEnd);
-exposeCustomGlobal("_netSocketDispatch", onNetSocketDispatch);
 
 // Harden fetch API globals (non-writable, non-configurable)
 exposeCustomGlobal("fetch", fetch);
@@ -2375,8 +1669,6 @@ export default {
   http,
   https,
   http2,
-  net,
-  tls: tlsModule,
   IncomingMessage,
   ClientRequest,
 };

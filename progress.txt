@@ -98,7 +98,6 @@ PRD: ralph/kernel-hardening (46 stories)
 - Node driver stdin: buffer writeStdin data, closeStdin resolves Promise passed to exec({ stdin })
 - Permission-wrapped VFS affects mount() via populateBin() — fs deny tests must skip driver mounting; childProcess deny tests must include allowAllFs
 - Bridge process.stdin does NOT emit 'end' for empty stdin ("") — pass undefined for no-stdin case
-- TLS bridge: host wraps net.Socket with tls.TLSSocket, remove only specific event types (not removeAllListeners) — TLSSocket forward end/close to wrapped raw socket for library compat (pg relies on original socket's close listener)
 - E2E fixture tests: use NodeFileSystem({ root: projectDir }) for real npm package resolution
 - npm/npx in V8 isolate need host filesystem fallback — createHostFallbackVfs wraps kernel VFS
 - WasmVM _handleSyscall fdRead case MUST call data.set(result, 0) to write to SAB — without this, worker reads garbage
@@ -113,8 +112,6 @@ PRD: ralph/kernel-hardening (46 stories)
 - tcgetattr returns a deep copy — callers cannot mutate internal state
 - /dev/fd/N in fdOpen → dup(N); VFS-level readDir/stat for /dev/fd are PID-unaware; use devFdReadDir(pid) and devFdStat(pid, fd) on KernelInterface for PID-aware operations
 - Device layer has DEVICE_DIRS set (/dev/fd, /dev/pts) for pseudo-directories — stat returns directory mode 0o755, readDir returns empty (PID context required for dynamic content)
-- diagnostics_channel.tracingChannel() stub must include traceSync/tracePromise/traceCallback — libraries (pino, etc.) call these directly
-- Project-matrix fixtures using pino: use process.stdout as destination (sonic-boom fd writes fail with EBADF in sandbox)
 - ResourceBudgets (maxOutputBytes, maxBridgeCalls, maxTimers, maxChildProcesses) flow: NodeRuntimeOptions → RuntimeDriverOptions → NodeExecutionDriver constructor
 - Bridge-side timer budget: inject `_maxTimers` number as global, bridge checks `_timers.size + _intervals.size >= _maxTimers` synchronously — host-side enforcement doesn't work because `_scheduleTimer.apply()` is async (Promise)
 - Bridge `_scheduleTimer.apply(undefined, [delay], { result: { promise: true } })` is async — host throws become unhandled Promise rejections, not catchable try/catch
@@ -141,9 +138,6 @@ PRD: ralph/kernel-hardening (46 stories)
 - Sandbox Server class needs `setTimeout`, `keepAliveTimeout`, `requestTimeout` properties for framework compatibility — added as no-ops
 - Moving a module from Unsupported (Tier 5) to Deferred (Tier 4) requires changes in: module-resolver.ts, require-setup.ts, node-stdlib.md contract, and adding BUILTIN_NAMED_EXPORTS entry
 - `declare module` for untyped npm packages must live in a `.d.ts` file (not `.ts`) — TypeScript treats it as augmentation in `.ts` files and fails with TS2665
-- Sandbox createPrivateKey/createPublicKey must validate PEM format (throw for non-PEM strings) — libraries like jsonwebtoken rely on the throw to fall through to createSecretKey
-- Sandbox createSecretKey creates SandboxKeyObject with type='secret' — needed by libraries checking key.type for symmetric algorithm validation
-- SandboxHmac must handle SandboxKeyObject as key (check key._pem property) — libraries pass KeyObject directly to crypto.createHmac()
 - Host httpRequest adapter must use `http` or `https` transport based on URL protocol — always using `https` breaks localhost HTTP requests from sandbox
 - To test sandbox http.request() client behavior, create an external nodeHttp server in the test code and have the sandbox request to it
 - NodeExecutionDriver split into 5 modules in src/node/: isolate-bootstrap.ts (types+utilities), module-resolver.ts, esm-compiler.ts, bridge-setup.ts, execution-lifecycle.ts; facade is execution-driver.ts (<300 lines)
@@ -2855,4 +2849,107 @@ PRD: ralph/kernel-hardening (46 stories)
   - When stubs have no External data, callback's args.data() returns undefined → try_from::<v8::External> fails → throws V8 exception, which is correct behavior for stubs
   - Pre-existing SIGSEGV on process teardown after running full cargo test suite (V8 global state cleanup) — not a regression
   - SYNC_BRIDGE_FNS (31) + ASYNC_BRIDGE_FNS (7) = 38 total bridge functions
+---
+
+## 2026-03-19 - US-074
+- Implemented two-phase locking with per-key in-flight tracking for SnapshotCache
+- Replaced single Mutex<Vec<CacheEntry>> with Mutex<CacheInner> containing entries + in_flight HashMap
+- Added InFlightEntry struct with Condvar for callers waiting on same bridge code variant
+- Flow: check cache (short lock) → if miss, check/register in-flight → drop lock → create_snapshot → re-lock → insert + notify
+- Added test Part 20a: concurrent get_or_create with 3 different bridge codes verifies independent progress
+- Files changed:
+  - crates/v8-runtime/src/snapshot.rs — SnapshotCache restructured with CacheInner, InFlightEntry, two-phase get_or_create, Part 20a test
+- **Learnings for future iterations:**
+  - Pre-existing SIGSEGV on cargo test full suite (V8 process teardown) — individual tests pass fine; not a regression
+  - Condvar + Mutex<Option<Result>> is the idiomatic Rust pattern for "first thread creates, others wait and share result"
+  - HashMap<u64, Arc<InFlightEntry>> for per-key coordination avoids global lock during expensive operations
+---
+## 2026-03-20 - US-075
+- Fixed ChannelResponseReceiver::recv_response to only return BridgeResponse frames
+- Added DeferredQueue type (Arc<Mutex<VecDeque<BinaryFrame>>>) shared between ChannelResponseReceiver and run_event_loop
+- recv_response now loops, queuing non-BridgeResponse messages (StreamEvent, TerminateExecution) in deferred queue
+- run_event_loop drains deferred queue before blocking on the channel via new dispatch_event_loop_frame helper
+- Removed #[cfg(not(test))] from ChannelResponseReceiver to enable direct testing
+- Files changed:
+  - crates/v8-runtime/src/session.rs — DeferredQueue, ChannelResponseReceiver filtering, run_event_loop deferred drain, dispatch_event_loop_frame helper, test
+  - crates/v8-runtime/src/execution.rs — Updated all 13 run_event_loop call sites to pass new deferred parameter (None)
+- **Learnings for future iterations:**
+  - crossbeam channel clone gives handle to same underlying channel — messages are distributed, not duplicated; consumers compete
+  - Extracting dispatch_event_loop_frame reduces duplication between deferred drain and channel recv paths
+  - All 81 cargo tests pass (up from 79); 28/28 typecheck tasks pass
+---
+
+## 2026-03-20 - US-076
+- Implemented shared V8 runtime lifecycle management and retry on failure
+- Added `disposeSharedV8Runtime()` function that kills the Rust child process and resets singleton state
+- Added `.catch()` handler on `sharedV8RuntimePromise` to reset on failure (allows retry instead of permanently cached rejection)
+- Registered `process.on('beforeExit')` handler to auto-dispose the shared runtime, preventing orphan Rust processes
+- Exported `disposeSharedV8Runtime` from `@secure-exec/node` and re-exported from `secure-exec`
+- Files changed:
+  - packages/secure-exec-node/src/execution-driver.ts — disposeSharedV8Runtime(), .catch() retry, beforeExit handler
+  - packages/secure-exec-node/src/index.ts — export disposeSharedV8Runtime
+  - packages/secure-exec/src/index.ts — re-export disposeSharedV8Runtime from @secure-exec/node
+  - packages/secure-exec/tests/runtime-driver/node/v8-lifecycle.test.ts — new test file: dispose kills child, multi-cycle resilience
+- **Learnings for future iterations:**
+  - `process.on('beforeExit')` fires when event loop drains — safe for cleanup, does not fire mid-test in vitest
+  - disposeSharedV8Runtime must handle in-progress creation (await then dispose) to avoid orphaned processes
+  - Pre-existing test failures in index.test.ts (100/116) and resource-limits.test.ts (3/3) — not caused by this change
+  - 28/28 typecheck tasks pass; 2/2 new tests pass
+---
+
+## 2026-03-20 - US-085
+- Fixed V8 process cleanup hang on terminate/dispose
+- Root cause: child process, its stdio streams, and the IPC socket all kept the Node event loop alive after dispose()
+- Fix: three-part approach:
+  1. Unref child process and stdio immediately after spawn (they don't need to keep event loop alive on their own)
+  2. IPC socket ref-counted by active sessions: ref when sessions exist, unref when no sessions
+  3. dispose() destroys child stdio streams, removes all listeners, and uses ref'd timeout for SIGKILL fallback
+- IpcClient gains ref()/unref() methods; close() now removeAllListeners before destroy
+- Benchmarks replaced process.exit(0) hacks with disposeSharedV8Runtime()
+- beforeExit handler now works correctly: unrefed handles allow event loop to drain, triggering cleanup
+- Files changed:
+  - packages/secure-exec-v8/src/runtime.ts — unref child/stdio, ref-count IPC socket, cleanup in dispose
+  - packages/secure-exec-v8/src/ipc-client.ts — ref/unref methods, removeAllListeners in close
+  - packages/secure-exec/benchmarks/quick-bench.ts — disposeSharedV8Runtime instead of process.exit
+  - packages/secure-exec/benchmarks/coldstart.bench.ts — disposeSharedV8Runtime instead of process.exit
+  - packages/secure-exec/tests/runtime-driver/node/v8-lifecycle.test.ts — new test: process exits cleanly
+- **Learnings for future iterations:**
+  - child.unref() unrefs the child process handle, not its stdio streams — must unref each separately
+  - child.stdout pipes from child_process.spawn have unref() at runtime but TypeScript types them as Readable (needs cast)
+  - Socket.unref() prevents the socket from keeping the event loop alive but events still fire while loop runs for other reasons
+  - The IPC socket must stay ref'd while there are pending execute() calls, otherwise event loop drains before results arrive
+  - Pre-existing test failures unchanged: crash-isolation (3), resource-limits (3), test-suite (1)
+  - 28/28 typecheck tasks pass; 22/22 tests pass (lifecycle + snapshot)
+---
+
+## 2026-03-20 - US-083
+- Added lint job to .github/workflows/rust.yml with cargo clippy and cargo fmt checks
+- Lint job runs on ubuntu-latest before build matrix (needs: lint) for fail-fast on lint errors
+- Fixed 18 clippy warnings across 8 Rust source files:
+  - Dead code: added #[cfg(test)] to test-only functions (inject_globals, build_process_config, build_os_config, run_init_script); #[allow(dead_code)] for pub API methods used externally (snapshot_cache, session_count, all_sessions, active_slot_count, with_abort, stub, new, is_call_pending, pending_count, StubFrameSender, StubResponseReceiver, WriterFrameSender, ReaderResponseReceiver)
+  - vec_box: allowed with comment (Box needed for stable pointer address with v8::External)
+  - map_or(false, ...) → is_some_and(...) in execution.rs and session.rs
+  - thread_local const initializer in execution.rs
+  - too_many_arguments on session_thread (allowed — 8 params needed for session setup)
+  - format! iterator → fold with write! in main.rs random_hex_128
+  - approx_constant: changed 3.14 to 3.125 in test
+  - len_zero: .len() > 0 → !is_empty()
+  - useless_vec: vec![...] → array literal in test
+  - Unused import: removed `stream` from session.rs (used via crate:: prefix), removed `super::*` from timeout.rs tests
+- Applied cargo fmt to all files
+- Files changed: .github/workflows/rust.yml, crates/v8-runtime/src/{bridge,execution,host_call,ipc_binary,main,session,snapshot,stream,timeout}.rs
+- **Learnings for future iterations:**
+  - cargo fmt should be run after any Rust code changes — many manual edits don't match rustfmt style
+  - clippy dead_code warnings for pub API items used only externally (e.g. by tests, snapshot code, or future consumers): use #[allow(dead_code)] since removing them would break the API
+  - #[cfg(test)] is cleaner than #[allow(dead_code)] for functions only called from test code
+  - V8 snapshot tests SIGSEGV during process teardown (after all 82 tests pass) is a known pre-existing issue — not a regression
+---
+
+## 2026-03-20 - US-084
+- Added experimental warning callout to docs/process-isolation.mdx noting V8 runtime and process isolation API are new
+- Added FD table limit (1024 open file descriptors per isolate, EMFILE on excess) to Resource Limits section of docs/security-model.mdx
+- Files changed: docs/process-isolation.mdx, docs/security-model.mdx
+- **Learnings for future iterations:**
+  - Docs callout pattern uses `<Warning>` JSX tag (not `:::warning` or other Markdown syntax)
+  - Existing experimental pages use consistent text: "This page documents experimental functionality. APIs, behavior, and docs may change without notice."
 ---

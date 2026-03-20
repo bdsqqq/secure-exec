@@ -26,14 +26,12 @@ const MSG_BRIDGE_RESPONSE = 0x06;
 const MSG_STREAM_EVENT = 0x07;
 const MSG_TERMINATE_EXECUTION = 0x08;
 const MSG_WARM_SNAPSHOT = 0x09;
-const MSG_INIT = 0x0b;
 
 // Rust → Host message type codes
 const MSG_BRIDGE_CALL = 0x81;
 const MSG_EXECUTION_RESULT = 0x82;
 const MSG_LOG = 0x83;
 const MSG_STREAM_CALLBACK = 0x84;
-const MSG_INIT_READY = 0x8c;
 
 // ExecutionResult flags
 const FLAG_HAS_EXPORTS = 0x01;
@@ -83,14 +81,6 @@ export type BinaryFrame =
 	  }
 	| { type: "TerminateExecution"; sessionId: string }
 	| { type: "WarmSnapshot"; bridgeCode: string }
-	| {
-			type: "Init";
-			bridgeCode: string;
-			warmPoolSize: number;
-			defaultWarmHeapLimitMb: number;
-			defaultWarmCpuTimeLimitMs: number;
-			waitForWarmPool: boolean;
-	  }
 	// Rust → Host
 	| {
 			type: "BridgeCall";
@@ -112,8 +102,7 @@ export type BinaryFrame =
 			sessionId: string;
 			callbackType: string;
 			payload: Buffer;
-	  }
-	| { type: "InitReady" };
+	  };
 
 /**
  * Encode a binary frame into a Buffer with 4-byte length prefix.
@@ -216,27 +205,6 @@ export function decodeFrame(buf: Buffer): BinaryFrame {
 			const bridgeCode = buf.toString("utf8", pos, pos + bcLen);
 			return { type: "WarmSnapshot", bridgeCode };
 		}
-		case MSG_INIT: {
-			const initBcLen = buf.readUInt32BE(pos);
-			pos += 4;
-			const bridgeCode = buf.toString("utf8", pos, pos + initBcLen);
-			pos += initBcLen;
-			const warmPoolSize = buf.readUInt32BE(pos);
-			pos += 4;
-			const defaultWarmHeapLimitMb = buf.readUInt32BE(pos);
-			pos += 4;
-			const defaultWarmCpuTimeLimitMs = buf.readUInt32BE(pos);
-			pos += 4;
-			const waitForWarmPool = buf[pos] !== 0;
-			return {
-				type: "Init",
-				bridgeCode,
-				warmPoolSize,
-				defaultWarmHeapLimitMb,
-				defaultWarmCpuTimeLimitMs,
-				waitForWarmPool,
-			};
-		}
 		case MSG_BRIDGE_CALL: {
 			const callId = Number(buf.readBigUInt64BE(pos));
 			pos += 8;
@@ -289,8 +257,6 @@ export function decodeFrame(buf: Buffer): BinaryFrame {
 			const payload = Buffer.from(buf.subarray(pos));
 			return { type: "StreamCallback", sessionId, callbackType, payload };
 		}
-		case MSG_INIT_READY:
-			return { type: "InitReady" };
 		default:
 			throw new Error(
 				`Unknown message type: 0x${msgType.toString(16).padStart(2, "0")}`,
@@ -308,7 +274,7 @@ export function extractSessionId(raw: Buffer): string | null {
 		throw new Error("Frame too short");
 	}
 	const msgType = raw[0];
-	if (msgType === MSG_AUTHENTICATE || msgType === MSG_WARM_SNAPSHOT || msgType === MSG_INIT) {
+	if (msgType === MSG_AUTHENTICATE || msgType === MSG_WARM_SNAPSHOT) {
 		return null;
 	}
 	const sidLen = raw[1];
@@ -410,21 +376,6 @@ function encodeBody(frame: BinaryFrame): Buffer {
 			parts.push(bcBuf);
 			break;
 		}
-		case "Init": {
-			parts.push(Buffer.from([MSG_INIT, 0])); // no session_id
-			const initBcBuf = Buffer.from(frame.bridgeCode, "utf8");
-			const initBcLen = Buffer.alloc(4);
-			initBcLen.writeUInt32BE(initBcBuf.length, 0);
-			parts.push(initBcLen);
-			parts.push(initBcBuf);
-			const initFixed = Buffer.alloc(13);
-			initFixed.writeUInt32BE(frame.warmPoolSize, 0);
-			initFixed.writeUInt32BE(frame.defaultWarmHeapLimitMb, 4);
-			initFixed.writeUInt32BE(frame.defaultWarmCpuTimeLimitMs, 8);
-			initFixed[12] = frame.waitForWarmPool ? 1 : 0;
-			parts.push(initFixed);
-			break;
-		}
 		case "BridgeCall": {
 			parts.push(Buffer.from([MSG_BRIDGE_CALL]));
 			parts.push(encodeSessionId(frame.sessionId));
@@ -479,10 +430,6 @@ function encodeBody(frame: BinaryFrame): Buffer {
 			parts.push(ctLen);
 			parts.push(ctBuf);
 			parts.push(frame.payload);
-			break;
-		}
-		case "InitReady": {
-			parts.push(Buffer.from([MSG_INIT_READY, 0])); // no session_id
 			break;
 		}
 	}

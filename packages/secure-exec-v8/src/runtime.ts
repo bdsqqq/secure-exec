@@ -33,18 +33,12 @@ export interface V8RuntimeOptions {
 	maxSessions?: number;
 	/** Bridge code to pre-warm the snapshot cache with (fire-and-forget). Skipped if SECURE_EXEC_NO_SNAPSHOT_WARMUP=1. */
 	warmupBridgeCode?: string;
-	/** Number of pre-warmed sessions to maintain. Default 3, 0 to disable. */
-	warmPoolSize?: number;
-	/** Default heap limit (MB) for warm pool sessions. Default 128. */
-	defaultWarmHeapLimitMb?: number;
-	/** Default CPU time limit (ms) for warm pool sessions. Default 0 (no limit). */
-	defaultWarmCpuTimeLimitMs?: number;
-	/** Whether to wait for warm pool to fill before returning. Default true. */
-	waitForWarmPool?: boolean;
 }
 
 /** Manages the Rust V8 child process and session lifecycle. */
 export interface V8Runtime {
+	/** Whether the Rust child process is still alive. */
+	readonly isAlive: boolean;
 	/** Create a new session (V8 isolate) in the runtime process. */
 	createSession(options?: V8SessionOptions): Promise<V8Session>;
 	/** Kill the child process and clean up. */
@@ -155,6 +149,15 @@ export async function createV8Runtime(
 	// Read socket path from first line of stdout
 	const socketPath = await readSocketPath(child);
 
+	// Unref child process and its stdio so they don't keep the event loop
+	// alive on their own. The IPC socket (ref-counted by active sessions)
+	// is the sole handle that gates event loop lifetime.
+	child.unref();
+	child.stdout?.destroy(); // Done reading after readline
+	// Unref stderr (still collects errors, but doesn't block exit)
+	const stderrStream = child.stderr as NodeJS.ReadableStream & { unref?: () => void };
+	stderrStream?.unref?.();
+
 	// Connect IPC client
 	let ipcClient: IpcClient | null = null;
 	let disposed = false;
@@ -164,19 +167,12 @@ export async function createV8Runtime(
 		string,
 		(frame: BinaryFrame) => void
 	>();
-
-	// Pending InitReady resolver — set when Init is sent, resolved on InitReady
-	let initReadyResolve: (() => void) | null = null;
+	// Per-session reject functions for rejecting in-flight execute() promises
+	const sessionRejects = new Map<string, (err: Error) => void>();
 
 	ipcClient = new IpcClient({
 		socketPath,
 		onMessage: (frame) => {
-			// Handle InitReady (no sessionId)
-			if (frame.type === "InitReady") {
-				initReadyResolve?.();
-				initReadyResolve = null;
-				return;
-			}
 			// Route frame to the appropriate session handler by sessionId
 			if ("sessionId" in frame && frame.sessionId) {
 				const handler = sessionHandlers.get(frame.sessionId);
@@ -185,6 +181,12 @@ export async function createV8Runtime(
 		},
 		onClose: () => {
 			ipcClient = null;
+			// Reject all pending executions — the Rust process may have
+			// deadlocked without exiting, so we can't rely on the 'exit'
+			// event alone.
+			rejectPendingSessions(
+				new Error("IPC connection closed"),
+			);
 		},
 		onError: (err) => {
 			// Surface IPC errors as exit errors if process is still alive
@@ -198,41 +200,16 @@ export async function createV8Runtime(
 		await ipcClient.connect();
 		ipcClient.authenticate(authToken);
 
-		// Send Init to configure warm pool + snapshot cache.
-		// Warm pool defaults to 3 when bridge code is provided (snapshot-based
-		// warm sessions take ~2ms to claim vs ~6ms cold). Without bridge code,
-		// pool is disabled since there's no snapshot to pre-create from.
-		const warmPoolSize = process.env.SECURE_EXEC_NO_SNAPSHOT_WARMUP === "1"
-			? 0
-			: (options?.warmPoolSize ?? (options?.warmupBridgeCode ? 3 : 0));
-		if (warmPoolSize > 0) {
-			const initReady = new Promise<void>((resolve, reject) => {
-				const timeout = setTimeout(() => {
-					initReadyResolve = null;
-					reject(new Error("Timed out waiting for InitReady"));
-				}, 30_000);
-				initReadyResolve = () => {
-					clearTimeout(timeout);
-					resolve();
-				};
-			});
-			ipcClient.send({
-				type: "Init",
-				bridgeCode: options?.warmupBridgeCode ?? "",
-				warmPoolSize,
-				defaultWarmHeapLimitMb: options?.defaultWarmHeapLimitMb ?? 128,
-				defaultWarmCpuTimeLimitMs: options?.defaultWarmCpuTimeLimitMs ?? 0,
-				waitForWarmPool: options?.waitForWarmPool ?? true,
-			});
-			await initReady;
-			initReadyResolve = null;
-		} else if (options?.warmupBridgeCode) {
-			// Warm pool disabled — just warm the snapshot cache
+		// Send warm-up snapshot request (fire-and-forget)
+		if (options?.warmupBridgeCode && process.env.SECURE_EXEC_NO_SNAPSHOT_WARMUP !== "1") {
 			ipcClient.send({
 				type: "WarmSnapshot",
 				bridgeCode: options.warmupBridgeCode,
 			});
 		}
+
+		// No active sessions yet — unref socket so it doesn't block exit
+		ipcClient.unref();
 	} catch (err) {
 		// Connection failed — kill child and surface error
 		child.kill("SIGTERM");
@@ -243,7 +220,17 @@ export async function createV8Runtime(
 		);
 	}
 
-	/** Resolve all pending executions with a crash/exit error. */
+	/** Ref/unref the IPC socket based on active session count. */
+	function updateSocketRef(): void {
+		if (!ipcClient || disposed) return;
+		if (sessionHandlers.size > 0) {
+			ipcClient.ref();
+		} else {
+			ipcClient.unref();
+		}
+	}
+
+	/** Resolve all pending execute() promises with a crash/close error result. */
 	function rejectPendingSessions(error: Error): void {
 		const handlers = [...sessionHandlers.entries()];
 		for (const [sid, handler] of handlers) {
@@ -260,6 +247,15 @@ export async function createV8Runtime(
 				},
 			});
 		}
+		// Fallback: reject any sessions that weren't resolved by
+		// the synthetic ExecutionResult (e.g. handler not yet registered)
+		const rejects = [...sessionRejects.entries()];
+		for (const [sid, reject] of rejects) {
+			sessionHandlers.delete(sid);
+			sessionRejects.delete(sid);
+			reject(error);
+		}
+		updateSocketRef();
 	}
 
 	/** Ensure the process is alive, throw if crashed. */
@@ -270,6 +266,9 @@ export async function createV8Runtime(
 	}
 
 	const runtime: V8Runtime = {
+		get isAlive() {
+			return processAlive && !disposed && ipcClient !== null;
+		},
 		async createSession(sessionOptions?: V8SessionOptions): Promise<V8Session> {
 			ensureAlive();
 			if (!ipcClient) {
@@ -323,7 +322,11 @@ export async function createV8Runtime(
 					});
 
 					// Set up result promise
-					return new Promise((resolve, _reject) => {
+					return new Promise((resolve, reject) => {
+						// Store reject so rejectPendingSessions can
+						// reject this promise on IPC close or process crash
+						sessionRejects.set(sessionId, reject);
+
 						// Register session message handler
 						sessionHandlers.set(sessionId, (frame) => {
 							switch (frame.type) {
@@ -392,8 +395,10 @@ export async function createV8Runtime(
 									break;
 								}
 								case "ExecutionResult": {
-									// Clean up handler and resolve
+									// Clean up handler and reject entry, then resolve
 									sessionHandlers.delete(sessionId);
+									sessionRejects.delete(sessionId);
+									updateSocketRef();
 									resolve({
 										code: frame.exitCode,
 										exports: frame.exports,
@@ -439,11 +444,15 @@ export async function createV8Runtime(
 						mode: execOptions.mode === "exec" ? 0 : 1,
 						filePath: execOptions.filePath ?? "",
 					});
+					// Ref the socket while execution is in-flight
+					updateSocketRef();
 					});
 				},
 
 				async destroy(): Promise<void> {
 					sessionHandlers.delete(sessionId);
+					sessionRejects.delete(sessionId);
+					updateSocketRef();
 					if (client.isConnected) {
 						client.send({
 							type: "DestroySession",
@@ -483,6 +492,13 @@ export async function createV8Runtime(
 					});
 				});
 			}
+
+			// Clean up child process handles to fully release the event loop
+			child.stdout?.removeAllListeners();
+			child.stdout?.destroy();
+			child.stderr?.removeAllListeners();
+			child.stderr?.destroy();
+			child.removeAllListeners();
 		},
 	};
 
