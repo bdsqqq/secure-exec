@@ -275,6 +275,90 @@
       "priority": 15,
       "passes": true,
       "notes": "Completed. Added 'More examples' section with CardGroup linking to S3 and SQLite examples on GitHub, plus a list of other VFS use cases."
+    },
+    {
+      "id": "US-016",
+      "title": "Add SSH key-based authentication e2e-docker fixture",
+      "description": "As a developer, I need an SSH fixture that tests pubkey authentication through the sandbox so we validate the crypto bridge handles key parsing, sign(), and createSign() for RSA/Ed25519.",
+      "acceptanceCriteria": [
+        "Add authorized_keys setup to sshd.Dockerfile (generate a test keypair at build time or embed one)",
+        "New fixture ssh2-key-auth in tests/e2e-docker/ that connects using privateKey option instead of password",
+        "Fixture runs conn.exec() and verifies stdout/stderr/exit code parity with host",
+        "fixture.json expectation is 'pass'",
+        "Host and sandbox produce identical normalized output",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": "Key-based auth exercises completely different crypto paths than password auth (key parsing, signature generation). If the sandbox's crypto bridge has gaps in sign()/createSign() for RSA/Ed25519, the password-only test would not catch it."
+    },
+    {
+      "id": "US-017",
+      "title": "Add SSH port forwarding / tunneling e2e-docker fixture",
+      "description": "As a developer, I need an SSH fixture that tests TCP port forwarding through the sandbox so we validate that conn.forwardOut() works for database tunneling scenarios.",
+      "acceptanceCriteria": [
+        "New fixture ssh2-tunnel in tests/e2e-docker/ that opens an SSH connection and uses forwardOut to tunnel to a service",
+        "Can tunnel to the existing Postgres or Redis container through the SSH container as a jump host",
+        "Fixture connects via tunnel, runs a simple query/command through the tunnel, verifies response",
+        "fixture.json expectation is 'pass'",
+        "Host and sandbox produce identical normalized output",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": "SSH tunneling (forwardOut/forwardIn) is commonly used for database access through bastion hosts. This exercises nested TCP streams through the sandbox's net bridge — a very different path than direct connections."
+    },
+    {
+      "id": "US-018",
+      "title": "Add SFTP directory operations e2e-docker fixture",
+      "description": "As a developer, I need an SFTP fixture that tests directory operations (mkdir, rmdir, readdir) through the sandbox so we validate the full SFTP subsystem works.",
+      "acceptanceCriteria": [
+        "New fixture ssh2-sftp-dirs in tests/e2e-docker/ that connects via SSH, opens SFTP, and tests directory ops",
+        "Fixture creates directory, lists it with readdir, creates a file inside, reads directory again, removes file, removes directory",
+        "fixture.json expectation is 'pass'",
+        "Host and sandbox produce identical normalized output",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": "The existing ssh2-sftp-transfer fixture only tests file CRUD (createWriteStream, readFile, stat, unlink). Directory listing via SFTP is a core operation for file management tools and is completely untested."
+    },
+    {
+      "id": "US-019",
+      "title": "Add SSH/SFTP error path e2e-docker fixtures",
+      "description": "As a developer, I need fixtures that test SSH error paths (connection refused, auth failure) through the sandbox so we validate error reporting matches host behavior.",
+      "acceptanceCriteria": [
+        "New fixture ssh2-auth-fail that connects with wrong password and verifies the error matches host behavior",
+        "New fixture ssh2-connect-refused that connects to a non-listening port and verifies the error matches host behavior",
+        "Both fixtures have fixture.json expectation 'pass' (they should produce the same error output on host and sandbox)",
+        "Host and sandbox produce identical normalized stdout/stderr/exit code",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 19,
+      "passes": false,
+      "notes": "Zero error paths are currently tested for SSH/SFTP. Connection refused and auth failure are the two most common error cases. The sandbox could swallow or reshape these errors differently from host Node.js without detection."
+    },
+    {
+      "id": "US-020",
+      "title": "Add SFTP large file transfer and rename e2e-docker fixture",
+      "description": "As a developer, I need an SFTP fixture that tests larger file transfers and rename operations through the sandbox so we validate TCP buffer management and stream backpressure.",
+      "acceptanceCriteria": [
+        "New fixture ssh2-sftp-large in tests/e2e-docker/ that transfers a file of at least 1MB via SFTP through the sandbox",
+        "Fixture uses createWriteStream for upload and createReadStream for download (not just readFile)",
+        "Fixture tests sftp.rename() on the remote file",
+        "Verifies data integrity via hash comparison after round-trip",
+        "fixture.json expectation is 'pass'",
+        "Host and sandbox produce identical normalized output",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 20,
+      "passes": false,
+      "notes": "The current SFTP fixture only transfers 18 bytes. Larger transfers stress the sandbox's TCP buffer management, stream backpressure handling, and memory limits. Also tests createReadStream (streaming) which exercises different buffer management than readFile (buffered)."
     }
   ]
 }
