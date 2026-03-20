@@ -11,6 +11,7 @@ on:
   push:
     branches:
       - main
+      - nathan/v8-process-isolation-pt1
     paths:
       - ".github/workflows/pkg-pr-new.yaml"
       - "package.json"
@@ -43,10 +44,15 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build packages
-        run: pnpm turbo run build --filter='@secure-exec/typescript...'
+        run: pnpm turbo run build
+
+      - name: Build linux-x64 binary via Docker
+        run: |
+          cd crates/v8-runtime
+          docker build -f docker/Dockerfile.linux-x64-gnu -o type=local,dest=npm/linux-x64-gnu .
 
       - name: Publish to pkg.pr.new
         run: |
@@ -57,4 +63,5 @@ jobs:
             "./packages/secure-exec-browser" \
             "./packages/secure-exec-python" \
             "./packages/secure-exec-typescript" \
+            "./packages/secure-exec-v8" \
             --packageManager pnpm
