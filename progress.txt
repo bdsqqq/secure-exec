@@ -2642,3 +2642,19 @@ PRD: ralph/kernel-hardening (46 stories)
   - waitForClaudeBoot helper auto-dismisses setup dialogs (theme, workspace trust) with Enter presses — needed because Claude has multi-step first-run setup
   - HostBinaryDriver must register actual claudeBinary path (may be ~/.claude/local/claude, not just 'claude')
 ---
+
+## 2026-03-19 - US-012
+- Updated docs-internal/specs/cli-tool-e2e.md to reflect actual tool capabilities
+- Clarified Pi is the only tool that runs as JS inside the isolate VM
+- Documented Claude Code as a native binary (SDK spawns cli.js, has .node addons) — same bridge-spawn approach as OpenCode
+- Removed Strategy B (SDK client via @opencode-ai/sdk) throughout the spec
+- Updated "Two sandbox strategies" → In-VM (Pi only) + Bridge-spawn (Claude Code, OpenCode)
+- Updated gap analysis: "Blocking for binary spawn path" now covers both Claude Code and OpenCode
+- Updated risks: Claude Code native binary, module resolution (Pi only), removed OpenCode server lifecycle risk
+- Updated success criteria and test file layout comments
+- Files changed: docs-internal/specs/cli-tool-e2e.md
+- **Learnings for future iterations:**
+  - The spec was originally written assuming Claude Code could run in-VM — always verify runtime constraints before planning sandbox strategies
+  - Claude Code's SDK (sdk.mjs) is not a standalone runner; it always spawns cli.js as a subprocess with native .node dependencies
+  - OpenCode is a compiled Bun ELF binary — no JS source to extract
+---

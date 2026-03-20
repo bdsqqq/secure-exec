@@ -224,8 +224,8 @@
         "Typecheck passes"
       ],
       "priority": 12,
-      "passes": false,
-      "notes": "The spec currently claims OpenCode 'exercises a different sandbox path: the binary runs on the host via child_process.spawn' as if this is unique to OpenCode. In reality, Claude Code also requires this approach. Pi is the only tool that can genuinely run as JS inside the VM."
+      "passes": true,
+      "notes": "Updated: spec now documents Pi as the only in-VM tool; Claude Code and OpenCode both use bridge-spawn. Removed Strategy B (SDK). Documented Claude Code native binary reality (.node addons, sdk.mjs spawns cli.js). Updated gap analysis, risks, and success criteria."
     },
     {
       "id": "US-013",
