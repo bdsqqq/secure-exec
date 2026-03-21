@@ -276,6 +276,9 @@ importers:
 
   packages/os/browser:
     dependencies:
+      '@secure-exec/browser':
+        specifier: workspace:*
+        version: link:../../secure-exec-browser
       '@secure-exec/kernel':
         specifier: workspace:*
         version: link:../../kernel

@@ -39,6 +39,16 @@
       "types": "./dist/permission-validation.d.ts",
       "import": "./dist/permission-validation.js",
       "default": "./dist/permission-validation.js"
+    },
+    "./internal/os-filesystem": {
+      "types": "./dist/os-filesystem.d.ts",
+      "import": "./dist/os-filesystem.js",
+      "default": "./dist/os-filesystem.js"
+    },
+    "./internal/worker-adapter": {
+      "types": "./dist/worker-adapter.d.ts",
+      "import": "./dist/worker-adapter.js",
+      "default": "./dist/worker-adapter.js"
     }
   },
   "scripts": {

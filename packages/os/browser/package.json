@@ -13,6 +13,7 @@
   },
   "license": "Apache-2.0",
   "dependencies": {
+    "@secure-exec/browser": "workspace:*",
     "@secure-exec/kernel": "workspace:*"
   },
   "devDependencies": {
