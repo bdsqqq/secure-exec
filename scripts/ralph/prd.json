@@ -2190,6 +2190,103 @@
       "priority": 109,
       "passes": false,
       "notes": "Document the fork at rivet-dev/codex as Tier 3 (full fork) in wasmvm/CLAUDE.md. List all changes made: cfg gates for sandbox/PTY/tokio, host_process spawn replacement, wasi-http replacement for reqwest, crossterm WASI patch. This documentation must be accurate to what was actually implemented — do not document features that were not built."
+    },
+    {
+      "id": "US-110",
+      "title": "Fix kernel PTY flaky test — single large write EAGAIN",
+      "description": "As a developer, I need the PTY adversarial stress test to pass reliably so CI stays green.",
+      "acceptanceCriteria": [
+        "test/resource-exhaustion.test.ts 'single large write (1MB+) — immediate EAGAIN, no partial buffering' passes reliably",
+        "The test at line ~270 (readResolved check) must account for timing — a large write may be partially buffered before EAGAIN",
+        "All other resource-exhaustion tests continue to pass",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 110,
+      "passes": false,
+      "notes": "Pre-existing flaky test on main. The test writes 1MB+ to a PTY master and expects immediate EAGAIN with no buffering, but the PTY ring buffer can accept some data before blocking. Fix the assertion or the PTY behavior to be deterministic. File: packages/kernel/test/resource-exhaustion.test.ts"
+    },
+    {
+      "id": "US-111",
+      "title": "Fix Node RuntimeDriver kernel integration tests",
+      "description": "As a developer, I need the Node RuntimeDriver tests to pass so the runtime-node package CI is green.",
+      "acceptanceCriteria": [
+        "test/driver.test.ts 'node -e executes inline code and exits 0' passes",
+        "test/driver.test.ts 'node -e captures stdout' passes",
+        "test/driver.test.ts 'node script reads from VFS' passes",
+        "test/driver.test.ts 'node -p evaluates expression' passes",
+        "test/driver.test.ts 'KernelCommandExecutor routing' test passes",
+        "test/driver.test.ts stdin streaming tests pass (writeStdin, closeStdin)",
+        "test/driver.test.ts exploit/abuse path tests pass (readFileSync /etc/passwd, symlink traversal, relative traversal, concurrent PIDs)",
+        "All 25 tests in packages/runtime/node/test/driver.test.ts pass",
+        "Typecheck passes"
+      ],
+      "priority": 111,
+      "passes": false,
+      "notes": "Pre-existing on main — 11 of 25 tests fail. The kernel integration tests (node -e, node -p, node script) fail because the V8 runtime process spawn or session setup has issues. The exploit/abuse tests fail because fs.readFileSync errors return code:undefined instead of code:EACCES. The concurrent PID test returns 'err' for all 12 spawns. Investigate whether these are V8 runtime integration issues or test setup problems."
+    },
+    {
+      "id": "US-112",
+      "title": "Fix V8 crash isolation test timeouts",
+      "description": "As a developer, I need the V8 crash isolation tests to complete within the timeout so CI passes.",
+      "acceptanceCriteria": [
+        "test/crash-isolation.test.ts 'OOM error is surfaced as ExecutionResult' passes within 30s",
+        "test/process-isolation.test.ts 'crashed runtime reports ERR_V8_PROCESS_CRASH' passes within 30s",
+        "All other V8 tests continue to pass (57 passing + 74 skipped currently)",
+        "Typecheck passes"
+      ],
+      "priority": 112,
+      "passes": false,
+      "notes": "Pre-existing on main. Both tests timeout at 30s. The V8 process crash detection path may be too slow or the IPC cleanup on crash doesn't resolve quickly enough. Investigate whether the V8 binary's crash handling needs a faster exit path, or if the test timeout is too short for OOM scenarios. Files: packages/secure-exec-v8/test/crash-isolation.test.ts, packages/secure-exec-v8/test/process-isolation.test.ts"
+    },
+    {
+      "id": "US-113",
+      "title": "Fix crossterm vendor patch auto-apply in patch-vendor.sh",
+      "description": "As a developer, I need patch-vendor.sh to correctly detect and apply crossterm patches so make wasm succeeds on a fresh checkout.",
+      "acceptanceCriteria": [
+        "scripts/patch-vendor.sh correctly detects when crossterm patch needs applying (not falsely reporting 'already applied')",
+        "make wasm from a fresh vendor/ succeeds without manual patch application",
+        "The 'already applied' detection via patch -R --dry-run does not give false positives for patches that add new files",
+        "All existing patches still apply correctly",
+        "Typecheck passes"
+      ],
+      "priority": 113,
+      "passes": false,
+      "notes": "The patch script uses 'patch -R --dry-run' to check if a patch is already applied. For patches that add new files (like crossterm WASI support which adds src/cursor/sys/wasi.rs etc.), the reverse check can succeed even when the patch was never applied, because reversing a file-add checks if the file doesn't exist (which is true). Fix: check for forward-apply first, only fall back to reverse check if forward-apply fails. Also ensure .cargo-checksum.json is nulled after patching. File: wasmvm/scripts/patch-vendor.sh"
+    },
+    {
+      "id": "US-114",
+      "title": "Fix C parity test WASM exit code 17 for non-patched programs",
+      "description": "As a developer, I need the C parity tests to pass for basic programs like hello, args, env, cat, wc, sort.",
+      "acceptanceCriteria": [
+        "C parity test 'hello: stdout and exit code match' passes (exit code 0, not 17)",
+        "C parity test 'args: argc and argv[1..] match' passes",
+        "C parity test 'env: user-specified env vars match' passes",
+        "C parity test 'cat: stdin passthrough matches' passes",
+        "C parity test 'wc: word/line/byte counts match' passes",
+        "C parity test 'sort: sorted output matches' passes",
+        "All Tier 1 and Tier 2 c-parity tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 114,
+      "passes": false,
+      "notes": "The C WASM programs exit with code 17 when run through the kernel. The issue is that ALL C programs (even simple ones like hello.c) are compiled against the patched wasi-libc sysroot which adds host_user.isatty import. The WasmVM kernel-worker.ts provides host_user imports, but the C programs may be trapping during initialization. Investigate: (1) whether the host_user imports are correctly provided for C-built WASM binaries, (2) whether the isatty import signature matches between C sysroot patch and kernel-worker.ts, (3) whether the WASI polyfill handles the C program's _start differently. Files: packages/runtime/wasmvm/src/kernel-worker.ts, wasmvm/c/Makefile, wasmvm/patches/wasi-libc/"
+    },
+    {
+      "id": "US-115",
+      "title": "Fix secure-exec main test suite failures from build cascade",
+      "description": "As a developer, I need the secure-exec main package test suite to pass so CI is green.",
+      "acceptanceCriteria": [
+        "pnpm turbo build succeeds for all packages including @secure-exec/core",
+        "pnpm --filter secure-exec test has zero test failures caused by build/import errors",
+        "The node runtime integration suite (tests/test-suite/node.test.ts) passes",
+        "The runtime-driver node tests pass",
+        "Python runtime tests may still fail if pyodide is not installed (acceptable skip)",
+        "Typecheck passes"
+      ],
+      "priority": 115,
+      "passes": false,
+      "notes": "The secure-exec test suite has 500+ failures, but most cascade from @secure-exec/core build failure (now fixed by US-110's UpgradeSocket bridge refs commit). After rebuilding, verify the tests actually pass. Remaining failures may be from the node runtime driver issues (covered by US-111) or python runtime (PythonRuntime constructor errors, acceptable if pyodide not installed). Focus on getting the node integration suite green."
     }
   ]
 }
