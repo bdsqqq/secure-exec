@@ -21,6 +21,7 @@ import type {
 } from '@secure-exec/core';
 import { NodeExecutionDriver } from './execution-driver.js';
 import { createNodeDriver } from './driver.js';
+import type { BindingTree } from './bindings.js';
 import {
   allowAllChildProcess,
   allowAllFs,
@@ -43,6 +44,11 @@ export interface NodeRuntimeOptions {
    * (fs/network/env deny-by-default). Use allowAll for full sandbox access.
    */
   permissions?: Partial<Permissions>;
+  /**
+   * Host-side functions exposed to sandbox code via SecureExec.bindings.
+   * Nested objects become dot-separated paths (max depth 4, max 64 leaves).
+   */
+  bindings?: BindingTree;
 }
 
 /**
@@ -318,11 +324,13 @@ class NodeRuntimeDriver implements RuntimeDriver {
   private _kernel: KernelInterface | null = null;
   private _memoryLimit: number;
   private _permissions: Partial<Permissions>;
+  private _bindings?: BindingTree;
   private _activeDrivers = new Map<number, NodeExecutionDriver>();
 
   constructor(options?: NodeRuntimeOptions) {
     this._memoryLimit = options?.memoryLimit ?? 128;
     this._permissions = options?.permissions ?? { ...allowAllChildProcess };
+    this._bindings = options?.bindings;
   }
 
   async init(kernel: KernelInterface): Promise<void> {
@@ -453,6 +461,7 @@ class NodeRuntimeDriver implements RuntimeDriver {
         system: systemDriver,
         runtime: systemDriver.runtime,
         memoryLimit: this._memoryLimit,
+        bindings: this._bindings,
       });
       this._activeDrivers.set(ctx.pid, executionDriver);
 

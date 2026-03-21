@@ -16,9 +16,11 @@ import type {
 	TimingMitigation,
 } from "@secure-exec/core/internal/shared/api-types";
 import type { ResolutionCache } from "./package-bundler.js";
+import type { BindingTree } from "./bindings.js";
 
 export interface NodeExecutionDriverOptions extends RuntimeDriverOptions {
 	createIsolate?(memoryLimit: number): unknown;
+	bindings?: BindingTree;
 }
 
 export interface BudgetState {

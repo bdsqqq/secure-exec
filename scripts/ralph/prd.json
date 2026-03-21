@@ -301,7 +301,7 @@
         "Typecheck passes"
       ],
       "priority": 19,
-      "passes": false,
+      "passes": true,
       "notes": "Custom bindings Phase 1. ~40-50 LOC. No Rust changes needed — bridgeHandlers already accepts dynamic entries."
     },
     {

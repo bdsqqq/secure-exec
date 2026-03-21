@@ -43,6 +43,7 @@ export type { Kernel, KernelInterface } from "@secure-exec/core";
 
 // Re-export kernel Node runtime factory.
 export { createNodeRuntime } from "@secure-exec/nodejs";
+export type { BindingTree, BindingFunction } from "@secure-exec/nodejs";
 
 export { createInMemoryFileSystem } from "./shared/in-memory-fs.js";
 export {

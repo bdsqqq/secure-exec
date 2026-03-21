@@ -38,6 +38,10 @@ export {
 	createProcessConfigForExecution,
 } from "./bridge-handlers.js";
 
+// Custom bindings
+export type { BindingTree, BindingFunction } from "./bindings.js";
+export { BINDING_PREFIX, flattenBindingTree } from "./bindings.js";
+
 // Kernel runtime driver (RuntimeDriver for kernel.mount())
 export { createNodeRuntime } from "./kernel-runtime.js";
 export type { NodeRuntimeOptions } from "./kernel-runtime.js";

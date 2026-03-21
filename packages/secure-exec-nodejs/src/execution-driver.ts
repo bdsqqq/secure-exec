@@ -73,6 +73,7 @@ import type {
 	ProcessConfig,
 } from "@secure-exec/core/internal/shared/api-types";
 import type { BudgetState } from "./isolate-bootstrap.js";
+import { type FlattenedBinding, flattenBindingTree } from "./bindings.js";
 
 export { NodeExecutionDriverOptions };
 
@@ -293,6 +294,7 @@ export class NodeExecutionDriver implements RuntimeDriver {
 	private state: DriverState;
 	private memoryLimit: number;
 	private disposed: boolean = false;
+	private flattenedBindings: FlattenedBinding[] | null = null;
 
 	constructor(options: NodeExecutionDriverOptions) {
 		this.memoryLimit = options.memoryLimit ?? 128;
@@ -352,6 +354,11 @@ export class NodeExecutionDriver implements RuntimeDriver {
 			activeHostTimers: new Set(),
 			resolutionCache: createResolutionCache(),
 		};
+
+		// Validate and flatten bindings once at construction time
+		if (options.bindings) {
+			this.flattenedBindings = flattenBindingTree(options.bindings);
+		}
 	}
 
 	get network(): Pick<NetworkAdapter, "fetch" | "dnsLookup" | "httpRequest"> {
@@ -526,6 +533,13 @@ export class NodeExecutionDriver implements RuntimeDriver {
 					stdinIsTTY: s.processConfig.stdinIsTTY,
 				}),
 			};
+
+			// Merge custom bindings into bridge handlers
+			if (this.flattenedBindings) {
+				for (const binding of this.flattenedBindings) {
+					bridgeHandlers[binding.key] = binding.handler;
+				}
+			}
 
 			// Build process/os config for V8 execution
 			const execProcessConfig = createProcessConfigForExecution(
