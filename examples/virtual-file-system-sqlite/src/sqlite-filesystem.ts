@@ -1,6 +1,8 @@
 import type { VirtualFileSystem } from "secure-exec";
 import initSqlJs, { type Database as SqlJsDatabase } from "sql.js";
 
+type VirtualStat = Awaited<ReturnType<VirtualFileSystem["stat"]>>;
+
 /**
  * A VirtualFileSystem backed by a SQLite database (via sql.js / WASM).
  *
@@ -181,7 +183,7 @@ export class SQLiteFileSystem implements VirtualFileSystem {
 		}
 	}
 
-	async stat(path: string) {
+	async stat(path: string): Promise<VirtualStat> {
 		const resolved = this.#resolveSymlink(path);
 		const row = this.#getEntry(resolved);
 		if (!row)
@@ -189,42 +191,17 @@ export class SQLiteFileSystem implements VirtualFileSystem {
 				`ENOENT: no such file or directory, stat '${path}'`,
 			);
 
-		return {
-			mode: row.mode as number,
-			size: row.is_dir
-				? 4096
-				: ((row.content as Uint8Array | null)?.byteLength ?? 0),
-			isDirectory: row.is_dir === 1,
-			isSymbolicLink: false,
-			atimeMs: row.atime_ms as number,
-			mtimeMs: row.mtime_ms as number,
-			ctimeMs: row.ctime_ms as number,
-			birthtimeMs: row.birthtime_ms as number,
-		};
+		return this.#toVirtualStat(row, { isSymbolicLink: false });
 	}
 
-	async lstat(path: string) {
+	async lstat(path: string): Promise<VirtualStat> {
 		const row = this.#getEntry(path);
 		if (!row)
 			throw new Error(
 				`ENOENT: no such file or directory, lstat '${path}'`,
 			);
 
-		return {
-			mode: row.mode as number,
-			size: row.is_symlink
-				? new TextEncoder().encode(row.link_target as string)
-						.byteLength
-				: row.is_dir
-					? 4096
-					: ((row.content as Uint8Array | null)?.byteLength ?? 0),
-			isDirectory: row.is_dir === 1,
-			isSymbolicLink: row.is_symlink === 1,
-			atimeMs: row.atime_ms as number,
-			mtimeMs: row.mtime_ms as number,
-			ctimeMs: row.ctime_ms as number,
-			birthtimeMs: row.birthtime_ms as number,
-		};
+		return this.#toVirtualStat(row, { isSymbolicLink: row.is_symlink === 1 });
 	}
 
 	async removeFile(path: string): Promise<void> {
@@ -406,6 +383,15 @@ export class SQLiteFileSystem implements VirtualFileSystem {
 		]);
 	}
 
+	async realpath(path: string): Promise<string> {
+		return this.#resolveSymlink(path);
+	}
+
+	async pread(path: string, offset: number, length: number): Promise<Uint8Array> {
+		const data = await this.readFile(path);
+		return data.slice(offset, offset + length);
+	}
+
 	close() {
 		this.db.close();
 	}
@@ -495,6 +481,33 @@ export class SQLiteFileSystem implements VirtualFileSystem {
 			`ELOOP: too many levels of symbolic links, stat '${path}'`,
 		);
 	}
+
+	#toVirtualStat(
+		row: Record<string, unknown>,
+		options: { isSymbolicLink: boolean },
+	): VirtualStat {
+		const path = row.path as string;
+		const size = options.isSymbolicLink
+			? new TextEncoder().encode(row.link_target as string).byteLength
+			: row.is_dir
+				? 4096
+				: ((row.content as Uint8Array | null)?.byteLength ?? 0);
+
+		return {
+			mode: row.mode as number,
+			size,
+			isDirectory: row.is_dir === 1,
+			isSymbolicLink: options.isSymbolicLink,
+			atimeMs: row.atime_ms as number,
+			mtimeMs: row.mtime_ms as number,
+			ctimeMs: row.ctime_ms as number,
+			birthtimeMs: row.birthtime_ms as number,
+			ino: hashPath(path),
+			nlink: 1,
+			uid: 0,
+			gid: 0,
+		};
+	}
 }
 
 function dirname(path: string): string {
@@ -506,4 +519,12 @@ function dirname(path: string): string {
 /** Escape SQL LIKE wildcards (% and _) so paths are matched literally. */
 function escapeLike(s: string): string {
 	return s.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
+function hashPath(path: string): number {
+	let hash = 0;
+	for (let i = 0; i < path.length; i++) {
+		hash = ((hash << 5) - hash + path.charCodeAt(i)) | 0;
+	}
+	return Math.abs(hash) || 1;
 }

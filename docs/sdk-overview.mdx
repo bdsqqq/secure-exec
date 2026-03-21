@@ -56,7 +56,7 @@ All host capabilities are deny-by-default. You opt in to what sandboxed code can
       NodeRuntime,
       createBrowserDriver,
       createBrowserRuntimeDriverFactory,
-    } from "secure-exec/browser";
+    } from "@secure-exec/browser";
 
     const runtime = new NodeRuntime({
       systemDriver: await createBrowserDriver({ filesystem: "memory" }),

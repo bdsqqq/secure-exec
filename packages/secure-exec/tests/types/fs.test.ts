@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from "vitest";
 import type * as nodeFs from "fs";
-import bridgeFs from "../../../secure-exec-core/src/bridge/fs.js";
+import bridgeFs from "../../../nodejs/src/bridge/fs.js";
 import type { NodePartial } from "./_helpers.js";
 
 // Type-level assignability: bridge exports → NodePartial<node:fs>

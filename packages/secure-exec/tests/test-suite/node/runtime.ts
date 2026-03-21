@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import type { StdioEvent } from "../../../src/shared/api-types.js";
-import type { NodeRuntimeOptions } from "../../../src/browser-runtime.js";
+import type { NodeRuntimeOptions } from "../../../src/runtime.js";
 
 export type NodeRuntimeTarget = "node" | "browser";
 

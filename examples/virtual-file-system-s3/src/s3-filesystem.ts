@@ -9,6 +9,8 @@ import {
 	CopyObjectCommand,
 } from "@aws-sdk/client-s3";
 
+type VirtualStat = Awaited<ReturnType<VirtualFileSystem["stat"]>>;
+
 export interface S3FileSystemOptions {
 	client: S3Client;
 	bucket: string;
@@ -216,21 +218,18 @@ export class S3FileSystem implements VirtualFileSystem {
 		return (res.Contents?.length ?? 0) > 0;
 	}
 
-	async stat(path: string) {
+	async stat(path: string): Promise<VirtualStat> {
 		const now = Date.now();
 
 		// Root always exists
 		if (path === "/" || path === "") {
-			return {
+			return buildStat(path || "/", {
 				mode: 0o040755,
 				size: 0,
 				isDirectory: true,
 				isSymbolicLink: false,
-				atimeMs: now,
-				mtimeMs: now,
-				ctimeMs: now,
-				birthtimeMs: now,
-			};
+				timestampMs: now,
+			});
 		}
 
 		// Try as file
@@ -242,16 +241,13 @@ export class S3FileSystem implements VirtualFileSystem {
 				}),
 			);
 			const mtime = res.LastModified?.getTime() ?? now;
-			return {
+			return buildStat(path, {
 				mode: 0o100644,
 				size: res.ContentLength ?? 0,
 				isDirectory: false,
 				isSymbolicLink: false,
-				atimeMs: mtime,
-				mtimeMs: mtime,
-				ctimeMs: mtime,
-				birthtimeMs: mtime,
-			};
+				timestampMs: mtime,
+			});
 		} catch (err: unknown) {
 			if (!isNotFound(err)) throw err;
 		}
@@ -265,22 +261,19 @@ export class S3FileSystem implements VirtualFileSystem {
 			}),
 		);
 		if ((res.Contents?.length ?? 0) > 0) {
-			return {
+			return buildStat(path, {
 				mode: 0o040755,
 				size: 0,
 				isDirectory: true,
 				isSymbolicLink: false,
-				atimeMs: now,
-				mtimeMs: now,
-				ctimeMs: now,
-				birthtimeMs: now,
-			};
+				timestampMs: now,
+			});
 		}
 
 		throw new Error(`ENOENT: no such file or directory, stat '${path}'`);
 	}
 
-	async lstat(path: string) {
+	async lstat(path: string): Promise<VirtualStat> {
 		return this.stat(path);
 	}
 
@@ -456,6 +449,15 @@ export class S3FileSystem implements VirtualFileSystem {
 			await this.writeFile(path, data.slice(0, length));
 		}
 	}
+
+	async realpath(path: string): Promise<string> {
+		return normalizePath(path);
+	}
+
+	async pread(path: string, offset: number, length: number): Promise<Uint8Array> {
+		const data = await this.readFile(path);
+		return data.slice(offset, offset + length);
+	}
 }
 
 function isNotFound(err: unknown): boolean {
@@ -466,4 +468,44 @@ function isNotFound(err: unknown): boolean {
 		e.name === "NotFound" ||
 		(e.$metadata as Record<string, unknown>)?.httpStatusCode === 404
 	);
+}
+
+function buildStat(
+	path: string,
+	options: {
+		mode: number;
+		size: number;
+		isDirectory: boolean;
+		isSymbolicLink: boolean;
+		timestampMs: number;
+	},
+): VirtualStat {
+	return {
+		mode: options.mode,
+		size: options.size,
+		isDirectory: options.isDirectory,
+		isSymbolicLink: options.isSymbolicLink,
+		atimeMs: options.timestampMs,
+		mtimeMs: options.timestampMs,
+		ctimeMs: options.timestampMs,
+		birthtimeMs: options.timestampMs,
+		ino: hashPath(path),
+		nlink: 1,
+		uid: 0,
+		gid: 0,
+	};
+}
+
+function normalizePath(path: string): string {
+	const normalized = path.replace(/\/+/g, "/");
+	if (normalized === "") return "/";
+	return normalized.startsWith("/") ? normalized : `/${normalized}`;
+}
+
+function hashPath(path: string): number {
+	let hash = 0;
+	for (let i = 0; i < path.length; i++) {
+		hash = ((hash << 5) - hash + path.charCodeAt(i)) | 0;
+	}
+	return Math.abs(hash) || 1;
 }

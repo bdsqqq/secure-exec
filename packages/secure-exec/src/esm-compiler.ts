@@ -1,4 +1,4 @@
-// Re-exported from @secure-exec/core — canonical source is packages/secure-exec-core/src/esm-compiler.ts
+// Re-exported from @secure-exec/core — canonical source moved to packages/nodejs/src/esm-compiler.ts (US-003)
 export {
 	getStaticBuiltinWrapperSource,
 	createBuiltinESMWrapper,

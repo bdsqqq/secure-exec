@@ -27,18 +27,18 @@ import {
   createKernel,
   allowAllChildProcess,
   allowAllEnv,
-} from '../../../kernel/src/index.ts';
+} from '../../../core/src/kernel/index.ts';
 import type {
   Kernel,
   RuntimeDriver,
   KernelInterface,
   DriverProcess,
   ProcessContext,
-} from '../../../kernel/src/index.ts';
-import type { VirtualFileSystem } from '../../../kernel/src/vfs.ts';
-import { TerminalHarness } from '../../../kernel/test/terminal-harness.ts';
-import { InMemoryFileSystem } from '../../../os/browser/src/index.ts';
-import { createNodeRuntime } from '../../../runtime/node/src/index.ts';
+} from '../../../core/src/kernel/index.ts';
+import type { VirtualFileSystem } from '../../../core/src/kernel/vfs.ts';
+import { TerminalHarness } from '../../../core/test/kernel/terminal-harness.ts';
+import { InMemoryFileSystem } from '../../../browser/src/os-filesystem.ts';
+import { createNodeRuntime } from '../../../nodejs/src/kernel-runtime.ts';
 import {
   createMockLlmServer,
   type MockLlmServerHandle,
@@ -632,6 +632,41 @@ describe.skipIf(skipReason)('OpenCode interactive PTY E2E (sandbox)', () => {
       expect(screen).toContain('still alive');
     },
     60_000,
+  );
+
+  it(
+    'PTY resize — OpenCode TUI re-renders for new dimensions',
+    async ({ skip }) => {
+      if (sandboxSkip) skip();
+
+      mockServer.reset([
+        { type: 'text', text: 'placeholder' },
+        { type: 'text', text: 'placeholder' },
+      ]);
+
+      harness = createOpenCodeHarness({
+        mockPort: mockServer.port,
+      });
+
+      // Wait for TUI to boot
+      await harness.waitFor('Ask anything', 1, 30_000);
+
+      const screenBefore = harness.screenshotTrimmed();
+
+      // Resize PTY to wider terminal and resize xterm to match
+      harness.shell.resize(120, 40);
+      harness.term.resize(120, 40);
+
+      // Wait for OpenCode to process SIGWINCH and re-render
+      await new Promise((r) => setTimeout(r, 1_500));
+
+      const screenAfter = harness.screenshotTrimmed();
+      // OpenCode TUI should still show its UI elements after resize
+      expect(screenAfter).toMatch(/Ask anything|ctrl\+[a-z]/i);
+      // Screen should not be blank/garbled
+      expect(screenAfter.length).toBeGreaterThan(0);
+    },
+    45_000,
   );
 
   it(

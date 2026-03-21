@@ -393,7 +393,7 @@ MessagePack handles binary data natively as `bin` format. No more base64 encodin
 ## Rust Crate Structure
 
 ```
-crates/v8-runtime/
+native/v8-runtime/
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs              # Binary entry point, UDS listener
@@ -441,7 +441,7 @@ serde = { version = "1", features = ["derive"] }
 ## NPM Package Structure
 
 ```
-packages/secure-exec-v8/
+packages/v8/
 ├── package.json              # @secure-exec/v8
 ├── src/
 │   └── index.ts              # JS wrapper: spawn process, manage sessions, IPC
@@ -534,12 +534,12 @@ Expected binary size: ~40-60MB per platform (V8 is large).
 ## Migration Plan
 
 ### Phase 1: Build the Rust binary
-- Implement `crates/v8-runtime/` with IPC protocol
+- Implement `native/v8-runtime/` with IPC protocol
 - Basic isolate lifecycle: create, execute script, destroy
 - Host function injection for sync bridge calls
 
 ### Phase 2: Build the JS wrapper
-- `packages/secure-exec-v8/` with process management and IPC client
+- `packages/v8/` with process management and IPC client
 - Session abstraction matching what `NodeExecutionDriver` needs
 
 ### Phase 3: Swap execution driver

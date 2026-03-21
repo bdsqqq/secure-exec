@@ -1,6 +1,6 @@
-// Re-exported from @secure-exec/node
+// Re-exported from @secure-exec/nodejs
 export {
 	emitConsoleEvent,
 	stripDangerousEnv,
 	createProcessConfigForExecution,
-} from "@secure-exec/node";
+} from "@secure-exec/nodejs";

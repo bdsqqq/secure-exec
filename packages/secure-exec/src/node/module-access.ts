@@ -1,3 +1,3 @@
-// Re-exported from @secure-exec/node — canonical source is packages/secure-exec-node/src/module-access.ts
-export { ModuleAccessFileSystem } from "@secure-exec/node/internal/module-access";
-export type { ModuleAccessOptions } from "@secure-exec/node/internal/module-access";
+// Re-exported from @secure-exec/nodejs — canonical source is packages/nodejs/src/module-access.ts
+export { ModuleAccessFileSystem } from "@secure-exec/nodejs/internal/module-access";
+export type { ModuleAccessOptions } from "@secure-exec/nodejs/internal/module-access";

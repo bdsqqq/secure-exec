@@ -305,7 +305,7 @@ When an isolate is created from a snapshot that used `set_default_context()`, th
 
 ### Phase 1: Fix setupFsFacade (prerequisite)
 
-**File: `packages/secure-exec-core/isolate-runtime/src/inject/setup-fs-facade.ts`**
+**File: `packages/core/isolate-runtime/src/inject/setup-fs-facade.ts`**
 
 Replace direct property assignment with getter-based delegation. Every `_fs.xxx` property becomes a getter that looks up `globalThis._fsXxx` at call time.
 
@@ -313,8 +313,8 @@ Replace direct property assignment with getter-based delegation. Every `_fs.xxx`
 
 ### Phase 2: Defer config-dependent setup (prerequisite)
 
-**File: `packages/secure-exec-core/isolate-runtime/src/inject/bridge-initial-globals.ts`**
-**File: `packages/secure-exec-core/isolate-runtime/src/inject/apply-timing-mitigation-freeze.ts`**
+**File: `packages/core/isolate-runtime/src/inject/bridge-initial-globals.ts`**
+**File: `packages/core/isolate-runtime/src/inject/apply-timing-mitigation-freeze.ts`**
 
 1. Make `__jsonPayloadLimitBytes` and `__payloadLimitErrorCode` read from globals at call time instead of capturing at setup
 2. Add `globalThis.__runtimeApplyConfig(config)` function that applies timing mitigation and config values post-restore
@@ -332,7 +332,7 @@ Split `composeBridgeCode()` into:
 
 ### Phase 4: Add stub bridge context
 
-**File: `crates/v8-runtime/src/bridge.rs`**
+**File: `native/v8-runtime/src/bridge.rs`**
 
 Add `BridgeCallContext::stub()` — a no-op context that panics if `sync_call` or `async_send` is called. Used during snapshot creation.
 
@@ -340,7 +340,7 @@ Add `register_stub_bridge_fns(scope, sync_fns, async_fns)` — registers all 38 
 
 ### Phase 5: Context snapshot creation
 
-**File: `crates/v8-runtime/src/snapshot.rs`**
+**File: `native/v8-runtime/src/snapshot.rs`**
 
 Update `create_snapshot()` to:
 1. Register stub bridge functions
@@ -351,7 +351,7 @@ Update `create_snapshot()` to:
 
 ### Phase 6: Context restore in session thread
 
-**File: `crates/v8-runtime/src/session.rs`**
+**File: `native/v8-runtime/src/session.rs`**
 
 On Execute, instead of:
 ```
@@ -367,7 +367,7 @@ Add `replace_bridge_fns(scope, ctx, buffers, sync_fns, async_fns)` — overwrite
 
 ### Phase 7: Post-restore init script
 
-**File: `packages/secure-exec-v8/src/runtime.ts`**
+**File: `packages/v8/src/runtime.ts`**
 
 Add a `postRestoreScript` field to the Execute message (or compose it on the Rust side from config). This short script:
 - Calls `__runtimeApplyConfig(...)` with session config

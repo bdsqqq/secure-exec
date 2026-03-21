@@ -50,7 +50,7 @@ jobs:
 
       - name: Build linux-x64 binary via Docker
         run: |
-          cd crates/v8-runtime
+          cd native/v8-runtime
           docker build -f docker/Dockerfile.linux-x64-gnu -o type=local,dest=npm/linux-x64-gnu .
 
       - name: Publish to pkg.pr.new
@@ -58,7 +58,7 @@ jobs:
           pnpm dlx pkg-pr-new publish \
             "./packages/secure-exec" \
             "./packages/secure-exec-core" \
-            "./packages/secure-exec-node" \
+            "./packages/secure-exec-nodejs" \
             "./packages/secure-exec-browser" \
             "./packages/secure-exec-python" \
             "./packages/secure-exec-typescript" \

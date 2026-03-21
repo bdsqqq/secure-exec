@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from "vitest";
 import type * as nodeProcess from "process";
-import bridgeProcess from "../../../secure-exec-core/src/bridge/process.js";
+import bridgeProcess from "../../../nodejs/src/bridge/process.js";
 
 // Type-level assignability: bridge exports → Partial<node:process>
 const _moduleCheck: Partial<typeof nodeProcess> = bridgeProcess;

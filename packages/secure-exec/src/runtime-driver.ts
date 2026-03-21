@@ -1,4 +1,4 @@
-// Re-exported from @secure-exec/core — canonical source is packages/secure-exec-core/src/runtime-driver.ts
+// Re-exported from @secure-exec/core — canonical source is packages/core/src/runtime-driver.ts
 export type {
 	DriverRuntimeConfig,
 	NodeRuntimeDriver,

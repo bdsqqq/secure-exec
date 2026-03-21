@@ -12,6 +12,7 @@
     "test": "pnpm exec vitest run ./tests/"
   },
   "dependencies": {
+    "@secure-exec/browser": "workspace:*",
     "secure-exec": "workspace:*"
   },
   "devDependencies": {

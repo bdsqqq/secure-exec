@@ -5,13 +5,13 @@ on:
     branches:
       - main
     paths:
-      - "crates/v8-runtime/**"
+      - "native/v8-runtime/**"
       - ".github/workflows/rust.yml"
   pull_request:
     branches:
       - main
     paths:
-      - "crates/v8-runtime/**"
+      - "native/v8-runtime/**"
       - ".github/workflows/rust.yml"
 
 jobs:
@@ -33,17 +33,17 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            crates/v8-runtime/target
-          key: rust-lint-${{ hashFiles('crates/v8-runtime/Cargo.lock') }}
+            native/v8-runtime/target
+          key: rust-lint-${{ hashFiles('native/v8-runtime/Cargo.lock') }}
           restore-keys: |
             rust-lint-
 
       - name: Check formatting
-        working-directory: crates/v8-runtime
+        working-directory: native/v8-runtime
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        working-directory: crates/v8-runtime
+        working-directory: native/v8-runtime
         run: cargo clippy --all-targets -- -D warnings
 
   build:
@@ -94,8 +94,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            crates/v8-runtime/target
-          key: rust-${{ matrix.target }}-${{ hashFiles('crates/v8-runtime/Cargo.lock') }}
+            native/v8-runtime/target
+          key: rust-${{ matrix.target }}-${{ hashFiles('native/v8-runtime/Cargo.lock') }}
           restore-keys: |
             rust-${{ matrix.target }}-
 
@@ -108,7 +108,7 @@ jobs:
 
       - name: Configure cross-compilation linker
         if: matrix.cross
-        working-directory: crates/v8-runtime
+        working-directory: native/v8-runtime
         run: |
           mkdir -p .cargo
           cat > .cargo/config.toml <<'EOF'
@@ -117,16 +117,16 @@ jobs:
           EOF
 
       - name: Build
-        working-directory: crates/v8-runtime
+        working-directory: native/v8-runtime
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Run tests
         if: matrix.test
-        working-directory: crates/v8-runtime
+        working-directory: native/v8-runtime
         run: cargo test --release --target ${{ matrix.target }}
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: v8-${{ matrix.npm-dir }}
-          path: crates/v8-runtime/target/${{ matrix.target }}/release/${{ matrix.binary }}
+          path: native/v8-runtime/target/${{ matrix.target }}/release/${{ matrix.binary }}

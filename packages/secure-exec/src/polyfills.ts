@@ -1,7 +1,7 @@
-// Re-exported from @secure-exec/node — canonical source is packages/secure-exec-node/src/polyfills.ts
+// Re-exported from @secure-exec/nodejs — canonical source is packages/nodejs/src/polyfills.ts
 export {
 	bundlePolyfill,
 	getAvailableStdlib,
 	hasPolyfill,
 	prebundleAllPolyfills,
-} from "@secure-exec/node/internal/polyfills";
+} from "@secure-exec/nodejs/internal/polyfills";

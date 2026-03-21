@@ -10,7 +10,7 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
-      "@secure-exec/typescript": ["../../packages/secure-exec-typescript/src/index.ts"],
+      "@secure-exec/typescript": ["../../packages/typescript/src/index.ts"],
       "secure-exec": ["../../packages/secure-exec/src/index.ts"]
     }
   },

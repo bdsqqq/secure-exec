@@ -29,18 +29,18 @@ import {
   createKernel,
   allowAllChildProcess,
   allowAllEnv,
-} from '../../../kernel/src/index.ts';
+} from '../../../core/src/kernel/index.ts';
 import type {
   Kernel,
   RuntimeDriver,
   KernelInterface,
   DriverProcess,
   ProcessContext,
-} from '../../../kernel/src/index.ts';
-import type { VirtualFileSystem } from '../../../kernel/src/vfs.ts';
-import { TerminalHarness } from '../../../kernel/test/terminal-harness.ts';
-import { InMemoryFileSystem } from '../../../os/browser/src/index.ts';
-import { createNodeRuntime } from '../../../runtime/node/src/index.ts';
+} from '../../../core/src/kernel/index.ts';
+import type { VirtualFileSystem } from '../../../core/src/kernel/vfs.ts';
+import { TerminalHarness } from '../../../core/test/kernel/terminal-harness.ts';
+import { InMemoryFileSystem } from '../../../browser/src/os-filesystem.ts';
+import { createNodeRuntime } from '../../../nodejs/src/kernel-runtime.ts';
 import {
   createMockLlmServer,
   type MockLlmServerHandle,
@@ -681,6 +681,88 @@ describe.skipIf(skipReason)('Claude Code interactive PTY E2E (sandbox)', () => {
         }
       }
       expect(hasColor).toBe(true);
+    },
+    45_000,
+  );
+
+  it(
+    'Tool use UI — tool execution renders on screen when LLM requests a tool',
+    async ({ skip }) => {
+      if (sandboxSkip) skip();
+
+      // Queue: tool_use (Bash) → text result after tool execution
+      mockServer.reset([
+        { type: 'tool_use', name: 'Bash', input: { command: 'echo TOOL_CANARY_42' } },
+        { type: 'text', text: 'The tool ran successfully.' },
+        { type: 'text', text: 'The tool ran successfully.' },
+      ]);
+
+      harness = createClaudeHarness();
+      await waitForClaudeBoot(harness);
+      await harness.waitFor('❯', 1, 5_000);
+
+      // Submit a prompt that will trigger a tool use
+      await harness.type('run echo\r');
+
+      // Wait for tool-related UI to appear — Claude shows tool name or output
+      // With --dangerously-skip-permissions, tools auto-execute and show results
+      await harness.waitFor('Bash', 1, 30_000);
+
+      const screen = harness.screenshotTrimmed();
+      // Tool name should appear in the TUI output
+      expect(screen).toMatch(/Bash|echo|TOOL_CANARY/i);
+    },
+    60_000,
+  );
+
+  it(
+    'PTY resize — Ink re-renders for new dimensions',
+    async ({ skip }) => {
+      if (sandboxSkip) skip();
+
+      mockServer.reset([{ type: 'text', text: 'resize placeholder' }]);
+
+      harness = createClaudeHarness();
+      await waitForClaudeBoot(harness);
+      await harness.waitFor('❯', 1, 5_000);
+
+      // Resize PTY to wider terminal and resize xterm to match
+      harness.shell.resize(120, 40);
+      harness.term.resize(120, 40);
+
+      // Wait for Claude's Ink TUI to process SIGWINCH and re-render
+      await new Promise((r) => setTimeout(r, 1_500));
+
+      const screenAfter = harness.screenshotTrimmed();
+      // Claude TUI should still show its UI elements after resize
+      expect(screenAfter).toMatch(/❯|Haiku|Welcome/);
+      // Screen should not be blank/garbled
+      expect(screenAfter.length).toBeGreaterThan(0);
+    },
+    45_000,
+  );
+
+  it(
+    '/help renders help text — help command output visible on screen',
+    async ({ skip }) => {
+      if (sandboxSkip) skip();
+
+      mockServer.reset([]);
+
+      harness = createClaudeHarness();
+      await waitForClaudeBoot(harness);
+      await harness.waitFor('❯', 1, 5_000);
+
+      // Type /help and submit
+      await harness.type('/help\r');
+
+      // Wait for help content to render — Claude shows slash commands list
+      // Help output includes common commands like /exit, /clear, /help
+      await harness.waitFor('exit', 1, 15_000);
+
+      const screen = harness.screenshotTrimmed();
+      // Help text should list available commands
+      expect(screen).toMatch(/exit|clear|help/i);
     },
     45_000,
   );

@@ -1,4 +1,4 @@
-// Re-exported from @secure-exec/core — canonical source is packages/secure-exec-core/src/module-resolver.ts
+// Re-exported from @secure-exec/core — canonical source moved to packages/nodejs/src/builtin-modules.ts (US-003)
 export {
 	BUILTIN_NAMED_EXPORTS,
 	normalizeBuiltinSpecifier,

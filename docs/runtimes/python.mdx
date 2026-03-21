@@ -14,17 +14,13 @@ A `PythonRuntime` requires a [system driver](/system-drivers/overview) and a Pyo
 
 ```ts
 import { PythonRuntime, createPyodideRuntimeDriverFactory } from "@secure-exec/python";
-import { createNodeDriver } from "@secure-exec/node";
+import { createNodeDriver } from "@secure-exec/nodejs";
 
 const runtime = new PythonRuntime({
   systemDriver: createNodeDriver(),
   runtimeDriverFactory: createPyodideRuntimeDriverFactory(),
 });
 ```
-
-<Note>
-  These exports are also available from `"secure-exec"` for backward compatibility.
-</Note>
 
 ## exec vs run
 

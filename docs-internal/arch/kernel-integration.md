@@ -172,7 +172,7 @@ secure-exec/                           ← monorepo root
 │   │   │   └── index.ts            ← Re-exports kernel + all runtimes + all OS adapters
 │   │   └── package.json
 │   │
-│   ├── secure-exec-typescript/       ← EXISTING: TypeScript compiler tools
+│   ├── typescript/       ← EXISTING: TypeScript compiler tools
 │   ├── playground/                   ← EXISTING: web demo
 │   └── website/                      ← EXISTING: docs site
 │
@@ -1281,7 +1281,7 @@ secure-exec/                                    ← monorepo root
 │   │       ├── project-matrix/
 │   │       └── types/
 │   │
-│   ├── secure-exec-typescript/                 ← EXISTING: TypeScript compiler tools
+│   ├── typescript/                 ← EXISTING: TypeScript compiler tools
 │   ├── playground/                             ← EXISTING: web demo
 │   └── website/                                ← EXISTING: docs site
 │

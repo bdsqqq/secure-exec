@@ -1,10 +1,12 @@
 import {
 	NodeRuntime,
 	allowAll,
+} from "secure-exec";
+import type { StdioChannel, StdioEvent } from "secure-exec";
+import {
 	createBrowserDriver,
 	createBrowserRuntimeDriverFactory,
-} from "secure-exec/browser";
-import type { StdioChannel, StdioEvent } from "secure-exec/browser";
+} from "@secure-exec/browser";
 
 type Language = "nodejs" | "python";
 type TypeScriptApi = typeof import("typescript");

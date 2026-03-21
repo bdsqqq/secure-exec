@@ -25,7 +25,7 @@ Addresses bugs, test quality gaps, missing coverage, and documentation debt iden
 
 ### 2. SharedArrayBuffer 1MB Truncation (WasmVM)
 
-**Location:** `packages/runtime/wasmvm/src/syscall-rpc.ts`
+**Location:** `packages/wasmvm/src/syscall-rpc.ts`
 
 **Problem:** The WasmVM RPC uses a 1MB SharedArrayBuffer for all response data. File reads >1MB silently truncate with no error. Large directory listings overflow.
 
@@ -207,13 +207,13 @@ Addresses bugs, test quality gaps, missing coverage, and documentation debt iden
 **Problem:** WasmVM real execution tests are gated behind `skipIf(!hasWasmBinaries)`. If CI doesn't build the Rust crates, all real execution tests silently skip. The test suite reports green despite not running critical tests.
 
 **Acceptance criteria:** (RESOLVED)
-- CI pipeline runs `make wasm` to build standalone binaries to `wasmvm/target/wasm32-wasip1/release/commands/`
+- CI pipeline runs `make wasm` to build standalone binaries to `native/wasmvm/target/wasm32-wasip1/release/commands/`
 - CI-only test asserts `hasWasmBinaries === true` so CI fails if binaries are missing
 - CLAUDE.md documents how to build locally
 
 ### 15. Error String Matching → Structured Errors (WasmVM)
 
-**Location:** `packages/runtime/wasmvm/src/kernel-worker.ts`
+**Location:** `packages/wasmvm/src/kernel-worker.ts`
 
 **Problem:** `mapErrorToErrno()` matches on `error.message` content (`msg.includes('EBADF')`). Brittle — if kernel error messages change, errno mapping silently breaks.
 
@@ -593,7 +593,7 @@ process.exit(code);
 
 ### 27. fdPread / fdPwrite (Positional I/O) (was 26)
 
-**Location:** `packages/kernel/src/fd-table.ts`, `packages/kernel/src/kernel.ts`, `packages/runtime/wasmvm/src/kernel-worker.ts`
+**Location:** `packages/kernel/src/fd-table.ts`, `packages/kernel/src/kernel.ts`, `packages/wasmvm/src/kernel-worker.ts`
 
 **Problem:** WasmVM's kernel-worker RPC defines `fdPread` and `fdPwrite` handlers but they fall back to sequential `fdRead`/`fdWrite` without respecting the offset parameter. Positional I/O reads/writes at a specific offset without changing the FD's cursor position. This is used by databases (SQLite), memory-mapped file patterns, and concurrent readers of the same file.
 

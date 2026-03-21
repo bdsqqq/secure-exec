@@ -54,7 +54,7 @@ jobs:
 
       - name: Build linux-x64 binary via Docker
         run: |
-          cd crates/v8-runtime
+          cd native/v8-runtime
           docker build -f docker/Dockerfile.linux-x64-gnu -o type=local,dest=npm/linux-x64-gnu .
 
       - name: Publish to npm
@@ -80,7 +80,7 @@ jobs:
           done
 
           # Publish v8 platform packages (not in pnpm workspace)
-          for dir in crates/v8-runtime/npm/*/; do
+          for dir in native/v8-runtime/npm/*/; do
             if [ ! -f "$dir/package.json" ]; then
               continue
             fi

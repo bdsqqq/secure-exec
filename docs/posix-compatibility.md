@@ -211,7 +211,7 @@ The WasmVM runtime (`packages/runtime/wasmvm/`) runs WASM binaries in Web Worker
 
 ## Node.js Bridge
 
-The Node bridge (`packages/secure-exec-core/src/bridge/`) provides Node.js API compatibility inside V8 isolates.
+The Node bridge (`packages/core/src/bridge/`) provides Node.js API compatibility inside V8 isolates.
 
 ### Module Support Tiers
 
@@ -255,7 +255,7 @@ The Node bridge (`packages/secure-exec-core/src/bridge/`) provides Node.js API c
 
 ## Python Bridge
 
-The Python bridge (`packages/secure-exec-python/`) runs Python via Pyodide (CPython compiled to WASM via Emscripten). This is an **experimental runtime**.
+The Python bridge (`packages/python/`) runs Python via Pyodide (CPython compiled to WASM via Emscripten). This is an **experimental runtime**.
 
 ### What Works
 

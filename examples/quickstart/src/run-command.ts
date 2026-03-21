@@ -1,22 +1,22 @@
 import {
-  NodeRuntime,
-  allowAllChildProcess,
-  createNodeDriver,
-  createNodeRuntimeDriverFactory,
+  createKernel,
+  createInMemoryFileSystem,
+  createNodeRuntime,
 } from "secure-exec";
 
-const runtime = new NodeRuntime({
-  systemDriver: createNodeDriver({
-    permissions: { ...allowAllChildProcess },
-  }),
-  runtimeDriverFactory: createNodeRuntimeDriverFactory(),
+const kernel = createKernel({
+  filesystem: createInMemoryFileSystem(),
+  permissions: {
+    childProcess: () => ({ allow: true }),
+  },
 });
+await kernel.mount(createNodeRuntime());
 
-const result = await runtime.run<{ output: string }>(`
-  const { execSync } = require("node:child_process");
-  module.exports = {
-    output: execSync("node --version", { encoding: "utf8" }).trim(),
-  };
-`);
+const result = await kernel.exec(`node -e "
+  const { execSync } = require('node:child_process');
+  console.log(execSync('node --version', { encoding: 'utf8' }).trim());
+"`);
 
-console.log(result.exports?.output); // e.g. "v22.x.x"
+console.log(result.stdout); // e.g. "v22.x.x\n"
+
+await kernel.dispose();

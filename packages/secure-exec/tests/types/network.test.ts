@@ -1,7 +1,7 @@
 import { describe, expectTypeOf, it } from "vitest";
 import type * as nodeHttp from "http";
 import type * as nodeDns from "dns";
-import { http, dns } from "../../../secure-exec-core/src/bridge/network.js";
+import { http, dns } from "../../../nodejs/src/bridge/network.js";
 import type { NodePartial } from "./_helpers.js";
 
 // Type-level assignability

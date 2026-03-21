@@ -4,15 +4,15 @@
 TBD - created by archiving change harden-isolate-runtime-typing-and-layout. Update Purpose after archive.
 ## Requirements
 ### Requirement: Isolate Runtime Source Layout Separates Inject Entrypoints and Shared Modules
-The isolate-runtime source tree SHALL organize host-injected entry scripts under `packages/secure-exec-core/isolate-runtime/src/inject/` and shared reusable modules under `packages/secure-exec-core/isolate-runtime/src/common/`.
+The isolate-runtime source tree SHALL organize host-injected entry scripts under `packages/core/isolate-runtime/src/inject/` and shared reusable modules under `packages/core/isolate-runtime/src/common/`.
 
 #### Scenario: Existing inject sources are migrated to canonical layout
 - **WHEN** isolate-runtime injection sources are maintained or refactored
-- **THEN** entry scripts evaluated by host runtime MUST live under `packages/secure-exec-core/isolate-runtime/src/inject/` and shared helpers/types MUST live under `packages/secure-exec-core/isolate-runtime/src/common/`
+- **THEN** entry scripts evaluated by host runtime MUST live under `packages/core/isolate-runtime/src/inject/` and shared helpers/types MUST live under `packages/core/isolate-runtime/src/common/`
 
 #### Scenario: New isolate injection source is added
 - **WHEN** contributors introduce a new host-to-isolate injected script
-- **THEN** the source file MUST be added under `packages/secure-exec-core/isolate-runtime/src/inject/` and MUST NOT be placed in legacy flat isolate-runtime paths
+- **THEN** the source file MUST be added under `packages/core/isolate-runtime/src/inject/` and MUST NOT be placed in legacy flat isolate-runtime paths
 
 ### Requirement: Inject Entrypoints SHALL Compile as Standalone Runtime Artifacts
 Inject entrypoint files SHALL be compiled into standalone executable source payloads suitable for host runtime injection, including any shared code imported from `src/common`.

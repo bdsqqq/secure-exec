@@ -1,5 +1,5 @@
 import { describe } from "vitest";
-import { allowAll } from "../../src/browser-runtime.js";
+import { allowAll } from "../../src/shared/permissions.js";
 import {
 	runPythonNetworkSuite,
 } from "./python/network.js";

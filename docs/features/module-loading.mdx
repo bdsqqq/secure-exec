@@ -36,10 +36,10 @@ const runtime = new NodeRuntime({
 try {
 	const result = await runtime.run<{ version: string }>(
 		`
-    const typescript = require("typescript");
+    const typescript = require("/root/node_modules/typescript/lib/typescript.js");
     module.exports = { version: typescript.version };
   `,
-		"/root/example.js",
+		"/app/example.js",
 	);
 
 	if (result.code !== 0 || typeof result.exports?.version !== "string") {

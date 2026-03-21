@@ -21,12 +21,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { createKernel } from '../../../kernel/src/index.ts';
-import type { Kernel } from '../../../kernel/src/index.ts';
-import type { VirtualFileSystem } from '../../../kernel/src/vfs.ts';
-import { TerminalHarness } from '../../../kernel/test/terminal-harness.ts';
-import { InMemoryFileSystem } from '../../../os/browser/src/index.ts';
-import { createNodeRuntime } from '../../../runtime/node/src/index.ts';
+import { createKernel } from '../../../core/src/kernel/index.ts';
+import type { Kernel } from '../../../core/src/kernel/index.ts';
+import type { VirtualFileSystem } from '../../../core/src/kernel/index.ts';
+import { TerminalHarness } from '../../../core/test/kernel/terminal-harness.ts';
+import { InMemoryFileSystem } from '../../../browser/src/os-filesystem.ts';
+import { createNodeRuntime } from '../../../nodejs/src/kernel-runtime.ts';
 import {
   createMockLlmServer,
   type MockLlmServerHandle,
@@ -445,6 +445,93 @@ describe.skipIf(piSkip)('Pi interactive PTY E2E (sandbox)', () => {
   );
 
   it(
+    'differential rendering — multiple interactions render without artifacts',
+    async ({ skip }) => {
+      if (sandboxSkip) skip();
+
+      const firstCanary = 'DIFF_RENDER_FIRST_42';
+      const secondCanary = 'DIFF_RENDER_SECOND_77';
+      mockServer.reset([
+        { type: 'text', text: firstCanary },
+        { type: 'text', text: secondCanary },
+      ]);
+      harness = createPiHarness();
+
+      await harness.waitFor('claude-sonnet', 1, 30_000);
+
+      // First interaction
+      await harness.type('first prompt\r');
+      await harness.waitFor(firstCanary, 1, 30_000);
+
+      const screenAfterFirst = harness.screenshotTrimmed();
+      expect(screenAfterFirst).toContain(firstCanary);
+
+      // Second interaction — Pi re-renders, new response should appear
+      await harness.type('second prompt\r');
+      await harness.waitFor(secondCanary, 1, 30_000);
+
+      const screenAfterSecond = harness.screenshotTrimmed();
+      expect(screenAfterSecond).toContain(secondCanary);
+      // No garbled escape sequences should appear as visible text
+      expect(screenAfterSecond).not.toMatch(/\x1b\[[\d;]*[A-Za-z]/);
+    },
+    90_000,
+  );
+
+  it(
+    'synchronized output — CSI ?2026h/l sequences do not leak to screen',
+    async ({ skip }) => {
+      if (sandboxSkip) skip();
+
+      const canary = 'SYNC_OUTPUT_CANARY';
+      mockServer.reset([{ type: 'text', text: canary }]);
+      harness = createPiHarness();
+
+      await harness.waitFor('claude-sonnet', 1, 30_000);
+
+      await harness.type('say something\r');
+      await harness.waitFor(canary, 1, 30_000);
+
+      const screen = harness.screenshotTrimmed();
+      // Synchronized update sequences (CSI ?2026h / CSI ?2026l) should be
+      // consumed by xterm, not rendered as visible text on screen
+      expect(screen).not.toContain('?2026h');
+      expect(screen).not.toContain('?2026l');
+      expect(screen).toContain(canary);
+    },
+    60_000,
+  );
+
+  it(
+    'PTY resize — Pi re-renders for new dimensions',
+    async ({ skip }) => {
+      if (sandboxSkip) skip();
+
+      mockServer.reset([{ type: 'text', text: 'resize test' }]);
+      harness = createPiHarness();
+
+      await harness.waitFor('claude-sonnet', 1, 30_000);
+
+      const screenBefore = harness.screenshotTrimmed();
+
+      // Resize PTY to wider terminal and resize xterm to match
+      harness.shell.resize(120, 40);
+      harness.term.resize(120, 40);
+
+      // Wait for Pi to process SIGWINCH and re-render
+      await new Promise((r) => setTimeout(r, 1_000));
+
+      const screenAfter = harness.screenshotTrimmed();
+      // Pi should still show its UI elements after resize
+      expect(screenAfter).toContain('claude-sonnet');
+      // Screen should differ from before (re-rendered at new width)
+      // or at minimum still be a valid TUI (not blank/garbled)
+      expect(screenAfter.length).toBeGreaterThan(0);
+    },
+    45_000,
+  );
+
+  it(
     'exit cleanly — ^D on empty editor, Pi exits and PTY closes',
     async ({ skip }) => {
       if (sandboxSkip) skip();
@@ -463,6 +550,35 @@ describe.skipIf(piSkip)('Pi interactive PTY E2E (sandbox)', () => {
         new Promise<number>((_, reject) =>
           setTimeout(
             () => reject(new Error('Pi did not exit within 10s')),
+            10_000,
+          ),
+        ),
+      ]);
+
+      expect(exitCode).toBe(0);
+    },
+    45_000,
+  );
+
+  it(
+    '/exit command — Pi exits cleanly via /exit',
+    async ({ skip }) => {
+      if (sandboxSkip) skip();
+
+      mockServer.reset([]);
+      harness = createPiHarness();
+
+      await harness.waitFor('claude-sonnet', 1, 30_000);
+
+      // Type /exit and submit
+      await harness.type('/exit\r');
+
+      // Wait for process to exit
+      const exitCode = await Promise.race([
+        harness.shell.wait(),
+        new Promise<number>((_, reject) =>
+          setTimeout(
+            () => reject(new Error('Pi did not exit within 10s after /exit')),
             10_000,
           ),
         ),

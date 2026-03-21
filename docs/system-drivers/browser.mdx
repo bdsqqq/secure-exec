@@ -16,11 +16,11 @@ The same `NodeRuntime` class works in both Node.js and browser environments. The
 `createBrowserDriver` is async because it needs to initialize the [Origin Private File System (OPFS)](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system) before returning.
 
 ```ts
+import { NodeRuntime } from "secure-exec";
 import {
-  NodeRuntime,
   createBrowserDriver,
   createBrowserRuntimeDriverFactory,
-} from "secure-exec/browser";
+} from "@secure-exec/browser";
 
 const runtime = new NodeRuntime({
   systemDriver: await createBrowserDriver(),

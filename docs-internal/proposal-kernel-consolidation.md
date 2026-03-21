@@ -82,13 +82,13 @@ The expensive part — `NodeExecutionDriver` + V8 isolate + bridge — is identi
 │       └── CLAUDE.md
 ├── packages/                       ← All TypeScript packages (pnpm workspace)
 │   ├── secure-exec/                ← Re-export of @secure-exec/nodejs
-│   ├── secure-exec-core/           ← Kernel + types + utilities
-│   ├── secure-exec-nodejs/         ← Node.js runtime driver + bridge
-│   ├── secure-exec-v8/             ← V8 bindings (TS side)
-│   ├── secure-exec-python/         ← Python runtime driver
-│   ├── secure-exec-wasmvm/         ← WasmVM runtime driver (TS side)
-│   ├── secure-exec-browser/        ← Browser platform adapter (future)
-│   ├── secure-exec-typescript/     ← TypeScript helpers
+│   ├── core/           ← Kernel + types + utilities
+│   ├── nodejs/         ← Node.js runtime driver + bridge
+│   ├── v8/             ← V8 bindings (TS side)
+│   ├── python/         ← Python runtime driver
+│   ├── wasmvm/         ← WasmVM runtime driver (TS side)
+│   ├── browser/        ← Browser platform adapter (future)
+│   ├── typescript/     ← TypeScript helpers
 │   ├── playground/                 ← Dev playground (private)
 │   └── website/                    ← Docs site (private)
 ├── docs/                           ← Public documentation (Astro)
@@ -336,8 +336,8 @@ const kernel = createKernel({
 
 ### Phase 2: Move bridge to `@secure-exec/nodejs` (medium risk)
 
-1. Move `packages/secure-exec-core/src/bridge/` → `packages/secure-exec-node/src/bridge/`.
-2. Move `packages/secure-exec-core/src/shared/bridge-contract.ts` → `packages/secure-exec-node/src/bridge-contract.ts`.
+1. Move `packages/core/src/bridge/` → `packages/secure-exec-node/src/bridge/`.
+2. Move `packages/core/src/shared/bridge-contract.ts` → `packages/secure-exec-node/src/bridge-contract.ts`.
 3. Move ESM compiler, module resolver, package bundler from core to nodejs.
 4. Move bridge build scripts (`build:bridge`, `build:polyfills`, `build:isolate-runtime`) from core to nodejs.
 5. Move `esbuild`, `node-stdlib-browser`, `sucrase`, `whatwg-url`, `buffer`, `text-encoding-utf-8` from core's `dependencies` to nodejs's `devDependencies`.
@@ -349,7 +349,7 @@ const kernel = createKernel({
 
 ### Phase 3: Merge kernel into core (medium risk)
 
-1. Move `packages/kernel/src/*` → `packages/secure-exec-core/src/kernel/`.
+1. Move `packages/kernel/src/*` → `packages/core/src/kernel/`.
 2. Export `createKernel`, `Kernel`, `KernelInterface`, and all kernel types from `@secure-exec/core`.
 3. Delete duplicate type definitions in core (VirtualFileSystem, Permissions, etc.).
 4. Re-export kernel types from core's public API for backward compatibility.
@@ -366,15 +366,15 @@ const kernel = createKernel({
    - `KernelCommandExecutor`, `createKernelVfsAdapter`, host VFS fallback become internal
    - `SystemDriver` becomes a private internal type
 
-2. Merge `packages/runtime/wasmvm/` into a new `packages/secure-exec-wasmvm/`:
+2. Merge `packages/runtime/wasmvm/` into a new `packages/wasmvm/`:
    - Promote from source-only to publishable package
    - Move WASM binary build artifacts here
 
-3. Merge `packages/runtime/python/` into `packages/secure-exec-python/`:
+3. Merge `packages/runtime/python/` into `packages/python/`:
    - Combine with existing Pyodide driver code
 
 4. Merge `packages/os/node/` into `packages/secure-exec-node/`.
-5. Merge `packages/os/browser/` into `packages/secure-exec-browser/`.
+5. Merge `packages/os/browser/` into `packages/browser/`.
 
 **Risk:** Highest risk phase. Many file moves, import rewrites, and test relocations. Should be done as a series of smaller PRs per runtime.
 
@@ -455,9 +455,9 @@ Currently:
 - `packages/runtime/wasmvm/test/` — WasmVM tests
 
 After consolidation, tests should follow their code:
-- `packages/secure-exec-core/test/` — kernel tests
+- `packages/core/test/` — kernel tests
 - `packages/secure-exec-node/test/` — Node runtime + bridge tests
-- `packages/secure-exec-wasmvm/test/` — WasmVM tests
+- `packages/wasmvm/test/` — WasmVM tests
 - `packages/secure-exec/tests/` — lightweight integration/smoke tests only
 
 The shared test suites (`test-suite/node/`, `test-suite/python/`) that test generic `RuntimeDriver` behavior can stay in `packages/secure-exec/tests/` since they exercise the full stack through the kernel.

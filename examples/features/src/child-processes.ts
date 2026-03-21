@@ -3,8 +3,8 @@ import {
   allowAllChildProcess,
   createNodeDriver,
   createNodeRuntimeDriverFactory,
-  type CommandExecutor,
 } from "../../../packages/secure-exec/src/index.ts";
+import type { CommandExecutor } from "../../../packages/secure-exec/src/types.ts";
 import { spawn } from "node:child_process";
 
 const commandExecutor: CommandExecutor = {

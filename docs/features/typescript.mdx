@@ -19,7 +19,7 @@ import {
   createNodeDriver,
   createNodeRuntimeDriverFactory,
 } from "../../../packages/secure-exec/src/index.ts";
-import { createTypeScriptTools } from "../../../packages/secure-exec-typescript/src/index.ts";
+import { createTypeScriptTools } from "../../../packages/typescript/src/index.ts";
 
 const sourceText = `
   export const message: string = "hello from typescript";
@@ -119,7 +119,7 @@ const ts = createTypeScriptTools({
 | `runtimeDriverFactory` | `NodeRuntimeDriverFactory` | required | Creates the compiler sandbox |
 | `memoryLimit` | `number` | `512` | Compiler isolate memory cap in MB |
 | `cpuTimeLimitMs` | `number` | | Compiler CPU time budget in ms |
-| `compilerSpecifier` | `string` | `"typescript"` | Module specifier for the TypeScript compiler |
+| `compilerSpecifier` | `string` | `"/root/node_modules/typescript/lib/typescript.js"` | Module specifier for the TypeScript compiler |
 
 ## Type-check a source string
 

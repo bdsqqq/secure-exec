@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from "vitest";
 import type * as nodeChildProcess from "child_process";
-import bridgeChildProcess from "../../../secure-exec-core/src/bridge/child-process.js";
+import bridgeChildProcess from "../../../nodejs/src/bridge/child-process.js";
 import type { NodePartial } from "./_helpers.js";
 
 // Type-level assignability: bridge exports → NodePartial<node:child_process>

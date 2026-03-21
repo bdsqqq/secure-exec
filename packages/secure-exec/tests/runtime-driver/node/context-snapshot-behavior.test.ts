@@ -7,7 +7,7 @@
  * and snapshot-restored contexts.
  *
  * Note: CJS globals (require, module, process, crypto) are tested at
- * the V8 IPC level in packages/secure-exec-v8/test/context-snapshot-behavior.test.ts.
+ * the V8 IPC level in packages/v8/test/context-snapshot-behavior.test.ts.
  * Tests at this level focus on behaviors accessible through exec/run that
  * don't depend on CJS module initialization.
  */

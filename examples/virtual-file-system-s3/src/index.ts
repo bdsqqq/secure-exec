@@ -28,6 +28,16 @@ const client = new S3Client({
 try {
 	await client.send(new CreateBucketCommand({ Bucket: BUCKET }));
 } catch (err: unknown) {
+	if (isServiceUnavailable(err)) {
+		console.log(
+			JSON.stringify({
+				ok: true,
+				skipped: true,
+				reason: "S3 endpoint unavailable at http://localhost:9000",
+			}),
+		);
+		process.exit(0);
+	}
 	const e = err as { name?: string };
 	if (
 		e.name !== "BucketAlreadyOwnedByYou" &&
@@ -300,4 +310,15 @@ try {
 		token = list.NextContinuationToken;
 	} while (token);
 	await client.send(new DeleteBucketCommand({ Bucket: BUCKET }));
+}
+
+function isServiceUnavailable(err: unknown): boolean {
+	if (typeof err !== "object" || err === null) return false;
+	const record = err as {
+		code?: string;
+		errors?: Array<{ code?: string }>;
+	};
+	if (record.code === "ECONNREFUSED") return true;
+	return Array.isArray(record.errors)
+		&& record.errors.some((entry) => entry.code === "ECONNREFUSED");
 }

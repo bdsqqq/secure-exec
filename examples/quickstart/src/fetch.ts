@@ -1,29 +1,24 @@
 import {
-  NodeRuntime,
-  allowAllNetwork,
-  createNodeDriver,
-  createNodeRuntimeDriverFactory,
+  createKernel,
+  createInMemoryFileSystem,
+  createNodeRuntime,
 } from "secure-exec";
 
-const logs: string[] = [];
-const runtime = new NodeRuntime({
-  systemDriver: createNodeDriver({
-    useDefaultNetwork: true,
-    permissions: { ...allowAllNetwork },
-  }),
-  runtimeDriverFactory: createNodeRuntimeDriverFactory(),
+const kernel = createKernel({
+  filesystem: createInMemoryFileSystem(),
+  permissions: {
+    network: () => ({ allow: true }),
+  },
 });
+await kernel.mount(createNodeRuntime());
 
-await runtime.exec(`
+const result = await kernel.exec(`node -e "
   (async () => {
-    const response = await fetch("https://example.com");
+    const response = await fetch('https://example.com');
     console.log(response.status);
-  })().catch((error) => {
-    console.error(error);
-    process.exitCode = 1;
-  });
-`, {
-  onStdio: (event) => logs.push(`[${event.channel}] ${event.message}`),
-});
+  })();
+"`);
 
-console.log(logs); // ["[stdout] 200"]
+console.log(result.stdout); // "200\n"
+
+await kernel.dispose();

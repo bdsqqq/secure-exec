@@ -1,11 +1,10 @@
 import { describe } from "vitest";
+import { NodeRuntime, allowAllNetwork } from "../../src/index.js";
+import type { NodeRuntimeOptions } from "../../src/runtime.js";
 import {
-	NodeRuntime,
-	allowAllNetwork,
 	createBrowserDriver,
 	createBrowserRuntimeDriverFactory,
-} from "../../src/browser-runtime.js";
-import type { NodeRuntimeOptions } from "../../src/browser-runtime.js";
+} from "@secure-exec/browser";
 import { runNodeCryptoSuite } from "./node/crypto.js";
 import { runNodeNetworkSuite } from "./node/network.js";
 import { runNodePolyfillSuite } from "./node/polyfills.js";

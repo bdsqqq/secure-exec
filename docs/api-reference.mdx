@@ -7,8 +7,78 @@ description: Complete reference for all secure-exec exports.
 
 | Package | Contents |
 |---|---|
-| `secure-exec` | Main package — `NodeRuntime`, system drivers, execution environment factories, filesystem, network, and permissions |
+| `secure-exec` | Main package — `createKernel`, `createNodeRuntime`, `NodeRuntime`, system drivers, filesystem, network, and permissions |
+| `@secure-exec/core` | Kernel, types, VFS, permission helpers, shared utilities |
+| `@secure-exec/nodejs` | Node.js runtime driver, bridge, execution driver, system driver factory |
+| `@secure-exec/python` | Python/Pyodide runtime driver |
 | `@secure-exec/typescript` | Sandboxed TypeScript compiler tools |
+
+---
+
+## Kernel
+
+### `createKernel(options)`
+
+<sub>Exported from `secure-exec`</sub>
+
+Creates a kernel that manages a virtual filesystem, process table, file descriptor table, pipes, PTYs, and permissions. Mount runtime drivers to execute code.
+
+```ts
+createKernel(options: KernelOptions): Kernel
+```
+
+**`KernelOptions`**
+
+| Option | Type | Description |
+|---|---|---|
+| `filesystem` | `VirtualFileSystem` | Virtual filesystem for the kernel. **Required.** |
+| `permissions` | `Permissions` | Access control rules. Deny-by-default. |
+| `env` | `Record<string, string>` | Environment variables. |
+| `cwd` | `string` | Working directory. Default `"/root"`. |
+| `maxProcesses` | `number` | Maximum concurrent processes. |
+
+**`Kernel` methods**
+
+| Method | Returns | Description |
+|---|---|---|
+| `mount(driver)` | `Promise<void>` | Mount a runtime driver. |
+| `exec(command, options?)` | `Promise<KernelExecResult>` | Execute a command string through the shell. |
+| `spawn(command, args, options?)` | `ManagedProcess` | Spawn a process directly (no shell). |
+| `openShell(options?)` | `ShellHandle` | Open an interactive shell on a PTY. |
+| `connectTerminal(options?)` | `Promise<number>` | Wire a shell to process.stdin/stdout. |
+| `readFile(path)` | `Promise<Uint8Array>` | Read a file from VFS. |
+| `writeFile(path, content)` | `Promise<void>` | Write a file to VFS. |
+| `mkdir(path)` | `Promise<void>` | Create a directory. |
+| `readdir(path)` | `Promise<string[]>` | List directory entries. |
+| `stat(path)` | `Promise<VirtualStat>` | Get file metadata. |
+| `exists(path)` | `Promise<boolean>` | Check if a path exists. |
+| `dispose()` | `Promise<void>` | Dispose the kernel and all mounted drivers. |
+
+**`KernelExecResult`**
+
+```ts
+{ exitCode: number; stdout: string; stderr: string }
+```
+
+### `createNodeRuntime(options?)`
+
+<sub>Exported from `secure-exec`</sub>
+
+Creates a Node.js runtime driver that can be mounted into a kernel via `kernel.mount()`.
+
+```ts
+createNodeRuntime(options?: {
+  memoryLimit?: number;
+  moduleAccessPaths?: string[];
+  permissions?: Partial<Permissions>;
+}): RuntimeDriver
+```
+
+| Option | Type | Description |
+|---|---|---|
+| `memoryLimit` | `number` | Memory limit in MB for each V8 isolate. Default `128`. |
+| `moduleAccessPaths` | `string[]` | Host filesystem paths for module resolution. |
+| `permissions` | `Partial<Permissions>` | Bridge permissions for isolate processes. |
 
 ---
 
@@ -18,7 +88,7 @@ description: Complete reference for all secure-exec exports.
 
 <sub>Exported from `secure-exec`</sub>
 
-Sandboxed JavaScript runtime using a V8 isolate.
+Convenience class for direct JavaScript code execution in a V8 isolate. For the kernel-first approach, use `createKernel()` + `createNodeRuntime()` instead.
 
 ```ts
 new NodeRuntime(options: NodeRuntimeOptions)
@@ -66,7 +136,7 @@ createTypeScriptTools(options: TypeScriptToolsOptions)
 | `runtimeDriverFactory` | `NodeRuntimeDriverFactory` | Creates the compiler sandbox runtime. |
 | `memoryLimit` | `number` | Compiler sandbox isolate memory cap in MB. Default `512`. |
 | `cpuTimeLimitMs` | `number` | Compiler sandbox CPU time budget in ms. |
-| `compilerSpecifier` | `string` | Module specifier used to load the TypeScript compiler. Default `"typescript"`. |
+| `compilerSpecifier` | `string` | Module specifier used to load the TypeScript compiler. Default `"/root/node_modules/typescript/lib/typescript.js"`. |
 
 **Methods**
 
@@ -85,7 +155,7 @@ createTypeScriptTools(options: TypeScriptToolsOptions)
 
 <sub>Exported from `secure-exec`</sub>
 
-Creates a system driver for Node.js environments.
+Creates a system driver for Node.js environments. Used with `NodeRuntime`.
 
 ```ts
 createNodeDriver(options?: NodeDriverOptions): SystemDriver
@@ -104,52 +174,6 @@ createNodeDriver(options?: NodeDriverOptions): SystemDriver
 | `processConfig` | `ProcessConfig` | Process metadata (cwd, env, argv, etc.). |
 | `osConfig` | `OSConfig` | OS metadata (platform, arch, homedir, etc.). |
 
-### `createBrowserDriver(options?)`
-
-<sub>Exported from `secure-exec`</sub>
-
-Creates a system driver for browser environments. Returns a promise because OPFS initialization is async.
-
-```ts
-createBrowserDriver(options?: BrowserDriverOptions): Promise<SystemDriver>
-```
-
-**`BrowserDriverOptions`**
-
-| Option | Type | Description |
-|---|---|---|
-| `filesystem` | `"opfs" \| "memory"` | Filesystem backend. Default: `"opfs"`. |
-| `permissions` | `Permissions` | Access control rules. Deny-by-default. |
-| `useDefaultNetwork` | `boolean` | Enable browser fetch network adapter. |
-
----
-
-## Execution Environment Setup
-
-### `createNodeRuntimeDriverFactory(options?)`
-
-<sub>Re-exported from `secure-exec`</sub>
-
-Creates the execution environment factory for Node.js V8 isolates. Pass the result as the `runtimeDriverFactory` option when constructing a `NodeRuntime`.
-
-```ts
-createNodeRuntimeDriverFactory(options?: {
-  createIsolate?(memoryLimit: number): unknown;
-}): NodeRuntimeDriverFactory
-```
-
-### `createBrowserRuntimeDriverFactory(options?)`
-
-<sub>Re-exported from `secure-exec`</sub>
-
-Creates the execution environment factory for browser Worker-based sandboxes. Pass the result as the `runtimeDriverFactory` option when constructing a `NodeRuntime`.
-
-```ts
-createBrowserRuntimeDriverFactory(options?: {
-  workerUrl?: URL | string;
-}): NodeRuntimeDriverFactory
-```
-
 ---
 
 ## Filesystem
@@ -164,17 +188,9 @@ Creates a fully in-memory filesystem backed by Maps.
 createInMemoryFileSystem(): InMemoryFileSystem
 ```
 
-### `createOpfsFileSystem()`
+### `NodeFileSystem`
 
 <sub>Exported from `secure-exec`</sub>
-
-Creates an OPFS-backed filesystem (browser only).
-
-```ts
-createOpfsFileSystem(): Promise<VirtualFileSystem>
-```
-
-### `NodeFileSystem`
 
 Thin wrapper around Node.js `fs/promises`.
 
@@ -211,16 +227,6 @@ Creates a network adapter with real fetch, DNS, and HTTP support (Node.js only).
 
 ```ts
 createDefaultNetworkAdapter(): NetworkAdapter
-```
-
-### `createBrowserNetworkAdapter()`
-
-<sub>Exported from `secure-exec`</sub>
-
-Creates a fetch-only network adapter for browser environments. No DNS support.
-
-```ts
-createBrowserNetworkAdapter(): NetworkAdapter
 ```
 
 ### `NetworkAdapter` interface
@@ -266,7 +272,7 @@ Each field accepts a `PermissionCheck`, which is either a boolean or a function 
 
 ## Execution Types
 
-### `ExecOptions`
+### `ExecOptions` (NodeRuntime)
 
 | Option | Type | Description |
 |---|---|---|
@@ -278,7 +284,7 @@ Each field accepts a `PermissionCheck`, which is either a boolean or a function 
 | `timingMitigation` | `"off" \| "freeze"` | Timing mitigation override. |
 | `onStdio` | `StdioHook` | Per-execution stdio hook. |
 
-### `ExecResult`
+### `ExecResult` (NodeRuntime)
 
 ```ts
 { code: number; errorMessage?: string }
@@ -398,6 +404,8 @@ type StdioHook = (event: { channel: "stdout" | "stderr"; message: string }) => v
 | `hostname` | `string` | |
 
 ### `SystemDriver`
+
+Used internally by `NodeRuntime`. For the kernel-first approach, use `createKernel()` instead.
 
 ```ts
 type SystemDriver = {

@@ -108,10 +108,10 @@ packages/secure-exec/
 
 ```
 packages/
-├── secure-exec-core/         # @secure-exec/core
+├── core/         # @secure-exec/core
 ├── secure-exec-node/         # @secure-exec/node
-├── secure-exec-browser/      # @secure-exec/browser
-├── secure-exec-python/       # @secure-exec/python
+├── browser/      # @secure-exec/browser
+├── python/       # @secure-exec/python
 ├── secure-exec/              # secure-exec (barrel re-export)
 ├── runtime/
 │   ├── node/                 # @secure-exec/runtime-node (kernel adapter)
@@ -422,7 +422,7 @@ barrel's `package.json` must include all runtime packages.
 Or: continue importing from `secure-exec` barrel (no change needed, just
 heavier dependency).
 
-### `packages/secure-exec-typescript/`
+### `packages/typescript/`
 
 ```diff
 - import { NodeRuntime } from "secure-exec";
@@ -451,7 +451,7 @@ size.
 
 ### Phase 1: Extract `@secure-exec/core`
 
-1. Create `packages/secure-exec-core/` with the shared files.
+1. Create `packages/core/` with the shared files.
 2. Move build scripts (`build-polyfills`, `build-isolate-runtime`).
 3. Move `shared/`, `bridge/`, `generated/`, `isolate-runtime/`, types,
    facades, and module resolution code.
@@ -475,7 +475,7 @@ size.
 
 ### Phase 3: Extract `@secure-exec/browser`
 
-1. Create `packages/secure-exec-browser/`.
+1. Create `packages/browser/`.
 2. Move `browser/`.
 3. Update worker.ts imports to use `@secure-exec/core` subpaths.
 4. Have `secure-exec` depend on `@secure-exec/browser` and re-export via
@@ -484,7 +484,7 @@ size.
 
 ### Phase 4: Extract `@secure-exec/python`
 
-1. Create `packages/secure-exec-python/`.
+1. Create `packages/python/`.
 2. Move `python/` and `python-runtime.ts`.
 3. Update import of timeout constants to use `@secure-exec/core`.
 4. Have `secure-exec` depend on `@secure-exec/python` and re-export.
@@ -602,7 +602,7 @@ infrequently. Runtime packages only rebuild when their own code changes.
 The following contracts should be reviewed and potentially updated:
 
 - **`node-runtime`** — references `packages/secure-exec/isolate-runtime/src/`.
-  Update path to `packages/secure-exec-core/isolate-runtime/src/`.
+  Update path to `packages/core/isolate-runtime/src/`.
 - **`isolate-runtime-source-architecture`** — same path update.
 - **`compatibility-governance`** — may need to document the new package
   structure. The fixture matrix is unaffected (fixtures are black-box Node

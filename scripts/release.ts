@@ -99,7 +99,7 @@ function getPublishablePackages(): string[] {
     .map((p) => p.path);
 
   // Include v8 platform packages (not in pnpm workspace)
-  const platformDir = join(ROOT, "crates/v8-runtime/npm");
+  const platformDir = join(ROOT, "native/v8-runtime/npm");
   if (existsSync(platformDir)) {
     for (const entry of readdirSync(platformDir, { withFileTypes: true })) {
       if (entry.isDirectory()) {

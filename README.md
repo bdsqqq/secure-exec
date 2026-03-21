@@ -18,6 +18,24 @@
 npm install secure-exec
 ```
 
+## Example: Kernel-first code execution
+
+Create a kernel, mount a Node runtime, and execute code in an isolated V8 sandbox.
+
+```typescript
+import { createKernel, createInMemoryFileSystem, createNodeRuntime } from "secure-exec";
+
+const kernel = createKernel({
+  filesystem: createInMemoryFileSystem(),
+});
+await kernel.mount(createNodeRuntime());
+
+const result = await kernel.exec("node -e \"console.log('hello from secure-exec')\"");
+console.log(result.stdout); // "hello from secure-exec\n"
+
+await kernel.dispose();
+```
+
 ## Example: AI agent with secure code execution
 
 Give your agent the ability to write and run code safely. This example uses the Vercel AI SDK, but secure-exec works with any tool-use framework.
@@ -61,7 +79,7 @@ console.log(text);
 Give your AI agent the ability to write and run code safely.
 
 - **No infrastructure required** — No Docker daemon, no hypervisor, no orchestrator. Runs anywhere Node.js, Bun, or an HTML5 browser runs. Deploy to Lambda, a VPS, or a static site — your existing deployment works.
-- **Node.js & npm compatibility** — fs, child_process, http, dns, process, os — bridged to real host capabilities, not stubbed. Run Express, Hono, Next.js, and any npm package. [Compatibility matrix →](https://secureexec.dev/docs/node-compatability)
+- **Node.js & npm compatibility** — fs, child_process, http, dns, process, os — bridged to real host capabilities, not stubbed. Run Express, Hono, Next.js, and any npm package. [Compatibility matrix →](https://secureexec.dev/docs/nodejs-compatibility)
 - **Built for AI agents** — Give your AI agent the ability to write and run code safely. Works with the Vercel AI SDK, LangChain, and any tool-use framework.
 - **Deny-by-default permissions** — Filesystem, network, child processes, and env vars are all blocked unless explicitly allowed. Permissions are composable functions — grant read but not write, allow fetch but block spawn.
 - **Configurable resource limits** — CPU time budgets and memory caps. Runaway code is terminated deterministically with exit code 124 — no OOM crashes, no infinite loops, no host exhaustion.
@@ -218,7 +236,7 @@ Yes. For orchestrating stateful, long-running tasks, we recommend pairing Secure
 <details>
 <summary>Does this have Node.js compatibility?</summary>
 
-Yes. Most Node.js core modules work — including fs, child_process, http, dns, process, and os. These are bridged to real host capabilities, not stubbed. [Compatibility matrix →](https://secureexec.dev/docs/node-compatability)
+Yes. Most Node.js core modules work — including fs, child_process, http, dns, process, and os. These are bridged to real host capabilities, not stubbed. [Compatibility matrix →](https://secureexec.dev/docs/nodejs-compatibility)
 </details>
 
 <details>

@@ -278,7 +278,7 @@ When disabled, snapshots are created lazily on first Execute (same as the fallba
 
 ### Host-side changes
 
-**File: `packages/secure-exec-v8/src/runtime.ts`**
+**File: `packages/v8/src/runtime.ts`**
 
 After `ipcClient.authenticate()`, send the warm-up message:
 
@@ -296,7 +296,7 @@ Export a `composeBridgeCodeForWarmup()` function that produces the default (non-
 
 ### Rust-side changes
 
-**File: `crates/v8-runtime/src/main.rs`**
+**File: `native/v8-runtime/src/main.rs`**
 
 Handle `WarmSnapshot` in the connection handler (main thread, not a session thread):
 
@@ -397,7 +397,7 @@ With snapshots:
 
 ### Phase 1: External references
 
-**File: `crates/v8-runtime/src/bridge.rs`**
+**File: `native/v8-runtime/src/bridge.rs`**
 
 Add the static external references:
 
@@ -421,7 +421,7 @@ pub fn external_refs() -> &'static ExternalReferences {
 
 ### Phase 2: Snapshot creation and restore
 
-**File: `crates/v8-runtime/src/snapshot.rs` (new)**
+**File: `native/v8-runtime/src/snapshot.rs` (new)**
 
 ```rust
 use std::sync::{Arc, Mutex};
@@ -533,7 +533,7 @@ fn siphash(s: &str) -> u64 {
 
 ### Phase 3: Session thread changes
 
-**File: `crates/v8-runtime/src/session.rs`**
+**File: `native/v8-runtime/src/session.rs`**
 
 `SessionManager` owns a `SnapshotCache` (created with `max_entries: 4`).
 
@@ -580,7 +580,7 @@ Execute(bridge_code, user_code) →
 
 ### Phase 4: Tests
 
-**File: `crates/v8-runtime/src/snapshot.rs` (tests)**
+**File: `native/v8-runtime/src/snapshot.rs` (tests)**
 
 1. **Snapshot creation:** `create_snapshot()` returns a non-empty `StartupData`
 2. **Snapshot restore:** Isolate from snapshot executes code that references bridge globals

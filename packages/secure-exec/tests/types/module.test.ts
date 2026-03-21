@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from "vitest";
 import type * as nodeModule from "module";
-import bridgeModule from "../../../secure-exec-core/src/bridge/module.js";
+import bridgeModule from "../../../nodejs/src/bridge/module.js";
 import type { NodePartial } from "./_helpers.js";
 
 // Type-level assignability: bridge exports → NodePartial<node:module>

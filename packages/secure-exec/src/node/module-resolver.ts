@@ -1,8 +1,8 @@
-// Re-exported from @secure-exec/node — canonical source is packages/secure-exec-node/src/module-resolver.ts
+// Re-exported from @secure-exec/nodejs — canonical source is packages/nodejs/src/module-resolver.ts
 export {
 	getNearestPackageType,
 	getModuleFormat,
 	shouldRunAsESM,
 	resolveReferrerDirectory,
 	resolveESMPath,
-} from "@secure-exec/node/internal/module-resolver";
+} from "@secure-exec/nodejs/internal/module-resolver";

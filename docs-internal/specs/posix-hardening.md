@@ -513,7 +513,7 @@ Driver integration:
 
 ### 5.5 Python Bridge: os.stat, os.chmod, os.chown
 
-**Location:** `packages/secure-exec-python/src/driver.ts`
+**Location:** `packages/python/src/driver.ts`
 
 **Problem:** Python's `os.stat()`, `os.chmod()`, `os.chown()` don't work because Emscripten's WASI layer doesn't connect to our VFS. These are commonly used operations.
 
@@ -533,7 +533,7 @@ Driver integration:
 
 ### 5.6 Python Bridge: Subprocess stdout/stderr Capture
 
-**Location:** `packages/secure-exec-python/src/driver.ts`
+**Location:** `packages/python/src/driver.ts`
 
 **Problem:** `subprocess.Popen(cmd, stdout=PIPE).communicate()` returns empty bytes for stdout/stderr. The monkey-patched _KernelPopen discards output by design (to prevent unbounded buffering), but this breaks real-world Python scripts that need subprocess output.
 
@@ -625,7 +625,7 @@ Each test should:
 - `packages/runtime/wasmvm/src/kernel-worker.ts` — new RPC handlers
 
 ### Python:
-- `packages/secure-exec-python/src/driver.ts` — os.stat/chmod/chown bridge, subprocess capture
+- `packages/python/src/driver.ts` — os.stat/chmod/chown bridge, subprocess capture
 
 ### Tests:
 - `packages/kernel/test/` — new test files for each feature

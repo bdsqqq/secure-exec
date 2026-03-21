@@ -6,18 +6,52 @@ icon: "js"
 
 <Warning>This page documents experimental functionality. APIs, behavior, and docs may change without notice.</Warning>
 
-`NodeRuntime` runs JavaScript code in an isolated V8 isolate. The sandbox supports memory limits, CPU time budgets, and timing side-channel mitigation.
+The Node runtime runs JavaScript code in isolated V8 isolates. It supports memory limits, CPU time budgets, and timing side-channel mitigation.
 
-## Creating a runtime
+## Kernel-first approach
 
-A `NodeRuntime` requires a [system driver](/system-drivers/overview) and a runtime driver factory.
+Create a kernel and mount the Node runtime driver. This is the recommended approach for new projects.
+
+```ts
+import {
+  createKernel,
+  createInMemoryFileSystem,
+  createNodeRuntime,
+} from "secure-exec";
+
+const kernel = createKernel({
+  filesystem: createInMemoryFileSystem(),
+});
+await kernel.mount(createNodeRuntime());
+
+const result = await kernel.exec("node -e \"console.log('hello')\"");
+console.log(result.stdout); // "hello\n"
+
+await kernel.dispose();
+```
+
+### Runtime options
+
+Pass options to `createNodeRuntime()` to configure V8 isolate behavior.
+
+```ts
+await kernel.mount(createNodeRuntime({
+  memoryLimit: 128,        // 128 MB per isolate
+}));
+```
+
+These exports are also available directly from `@secure-exec/nodejs`.
+
+## NodeRuntime (convenience class)
+
+For direct code execution with typed return values, use the `NodeRuntime` class with a [system driver](/system-drivers/overview) and runtime driver factory.
 
 ```ts
 import {
   NodeRuntime,
   createNodeDriver,
   createNodeRuntimeDriverFactory,
-} from "@secure-exec/node";
+} from "secure-exec";
 
 const runtime = new NodeRuntime({
   systemDriver: createNodeDriver(),
@@ -26,7 +60,7 @@ const runtime = new NodeRuntime({
 ```
 
 <Note>
-  These exports are also available from `"secure-exec"` for backward compatibility.
+  These exports are also available from `@secure-exec/nodejs`.
 </Note>
 
 By default, all runtimes share a single V8 child process. You can pass a dedicated `V8Runtime` handle via `createNodeRuntimeDriverFactory({ v8Runtime })` to control crash blast radius and resource partitioning. See [Process Isolation](/process-isolation) for topology options and trade-offs.
@@ -92,7 +126,7 @@ import { createInMemoryFileSystem } from "@secure-exec/core";
 import {
   createNodeDriver,
   createNodeRuntimeDriverFactory,
-} from "@secure-exec/node";
+} from "@secure-exec/nodejs";
 import { createTypeScriptTools } from "@secure-exec/typescript";
 
 const filesystem = createInMemoryFileSystem();
@@ -155,7 +189,7 @@ console.log(result.diagnostics[0]?.message);
 Use `compileSource(...)` when you want to transpile one TypeScript source string and then hand the emitted JavaScript to `NodeRuntime`:
 
 ```ts
-import { NodeRuntime } from "@secure-exec/node";
+import { NodeRuntime } from "secure-exec";
 
 const compiled = await ts.compileSource({
   filePath: "/root/example.ts",

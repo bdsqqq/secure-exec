@@ -1,22 +1,26 @@
-// Re-exported from @secure-exec/core — canonical source is packages/secure-exec-core/src/types.ts
+// VFS and permission types — canonical source is @secure-exec/core
 export type {
 	ChildProcessAccessRequest,
-	CommandExecutor,
 	EnvAccessRequest,
 	FsAccessRequest,
 	NetworkAccessRequest,
+	PermissionCheck,
+	PermissionDecision,
+	Permissions,
+	VirtualDirEntry,
+	VirtualFileSystem,
+	VirtualStat,
+} from "@secure-exec/core";
+
+// Core-only types
+export type {
+	CommandExecutor,
 	NetworkAdapter,
 	NetworkServerAddress,
 	NetworkServerListenOptions,
 	NetworkServerRequest,
 	NetworkServerResponse,
-	PermissionCheck,
-	PermissionDecision,
-	Permissions,
 	SpawnedProcess,
-	VirtualDirEntry,
-	VirtualFileSystem,
-	VirtualStat,
 } from "@secure-exec/core";
 
 export type {

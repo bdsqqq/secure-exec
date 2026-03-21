@@ -19,16 +19,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
-    },
-    "./browser": {
-      "types": "./dist/browser-runtime.d.ts",
-      "import": "./dist/browser-runtime.js",
-      "default": "./dist/browser-runtime.js"
-    },
-    "./python": {
-      "types": "./dist/python-runtime.d.ts",
-      "import": "./dist/python-runtime.js",
-      "default": "./dist/python-runtime.js"
     }
   },
   "scripts": {
@@ -46,7 +36,7 @@
   },
   "dependencies": {
     "@secure-exec/core": "workspace:*",
-    "@secure-exec/node": "workspace:*"
+    "@secure-exec/nodejs": "workspace:*"
   },
   "optionalDependencies": {
     "@secure-exec/browser": "workspace:*",

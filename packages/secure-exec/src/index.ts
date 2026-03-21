@@ -2,24 +2,13 @@
 export { NodeRuntime } from "./runtime.js";
 export type { NodeRuntimeOptions } from "./runtime.js";
 export type { ResourceBudgets } from "./runtime-driver.js";
-// TODO: Re-enable once node-stdlib-browser ESM entry is fixed (mock/empty.js missing from published package).
-// export { PythonRuntime } from "./python-runtime.js";
-// export type { PythonRuntimeOptions } from "./python-runtime.js";
 
 // Re-export public types.
 export type {
-	CommandExecutor,
 	NodeRuntimeDriver,
 	NodeRuntimeDriverFactory,
 	NetworkAdapter,
 	Permissions,
-	// TODO: Re-enable once node-stdlib-browser ESM entry is fixed.
-	// PythonRuntimeDriver,
-	// PythonRuntimeDriverFactory,
-	RuntimeDriver,
-	RuntimeDriverFactory,
-	SharedRuntimeDriver,
-	SystemDriver,
 	VirtualFileSystem,
 } from "./types.js";
 export type { DirEntry, StatInfo } from "./fs-helpers.js";
@@ -30,9 +19,6 @@ export type {
 	ExecOptions,
 	ExecResult,
 	OSConfig,
-	// TODO: Re-enable once node-stdlib-browser ESM entry is fixed.
-	// PythonRunOptions,
-	// PythonRunResult,
 	ProcessConfig,
 	RunResult,
 	TimingMitigation,
@@ -45,30 +31,19 @@ export {
 	createNodeRuntimeDriverFactory,
 	NodeExecutionDriver,
 	NodeFileSystem,
-} from "@secure-exec/node";
+} from "@secure-exec/nodejs";
 export type {
 	ModuleAccessOptions,
 	NodeRuntimeDriverFactoryOptions,
-} from "@secure-exec/node";
+} from "@secure-exec/nodejs";
 
-// TODO: Re-enable once @secure-exec/python is a reliable optional dependency
-// export {
-// 	createPyodideRuntimeDriverFactory,
-// 	PyodideRuntimeDriver,
-// } from "@secure-exec/python";
+// Re-export kernel API.
+export { createKernel } from "@secure-exec/core";
+export type { Kernel, KernelInterface } from "@secure-exec/core";
 
-// TODO: Re-enable once @secure-exec/browser is a reliable optional dependency
-// export {
-// 	createBrowserDriver,
-// 	createBrowserNetworkAdapter,
-// 	createBrowserRuntimeDriverFactory,
-// 	createOpfsFileSystem,
-// } from "@secure-exec/browser";
-// export type {
-// 	BrowserDriverOptions,
-// 	BrowserRuntimeDriverFactoryOptions,
-// 	BrowserRuntimeSystemOptions,
-// } from "@secure-exec/browser";
+// Re-export kernel Node runtime factory.
+export { createNodeRuntime } from "@secure-exec/nodejs";
+export type { BindingTree, BindingFunction } from "@secure-exec/nodejs";
 
 export { createInMemoryFileSystem } from "./shared/in-memory-fs.js";
 export {

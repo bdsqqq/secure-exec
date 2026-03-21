@@ -5,8 +5,8 @@ dist
 target/
 scratch/
 .ralph/
-wasmvm/target/
-wasmvm/vendor/
+native/wasmvm/target/
+native/wasmvm/vendor/
 packages/secure-exec/src/generated/
 packages/playground/secure-exec-worker.js
 packages/playground/vendor/

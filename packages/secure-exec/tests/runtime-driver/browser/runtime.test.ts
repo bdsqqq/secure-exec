@@ -1,12 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { NodeRuntime, allowAllFs, allowAllNetwork } from "../../../src/index.js";
+import type { NodeRuntimeOptions } from "../../../src/runtime.js";
 import {
-	NodeRuntime,
-	allowAllFs,
-	allowAllNetwork,
 	createBrowserDriver,
 	createBrowserRuntimeDriverFactory,
-} from "../../../src/browser-runtime.js";
-import type { NodeRuntimeOptions } from "../../../src/browser-runtime.js";
+} from "@secure-exec/browser";
 
 const IS_BROWSER_ENV =
 	typeof window !== "undefined" && typeof Worker !== "undefined";

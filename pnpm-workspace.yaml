@@ -1,6 +1,4 @@
 packages:
   - "packages/*"
-  - "packages/os/*"
-  - "packages/runtime/*"
   - "examples/*"
   - "examples/*/*"

@@ -96,8 +96,8 @@ Tests that technically assert something but the assertions are too loose to catc
 Multiple tests only check `typeof driver.init === 'function'` or `toBeDefined()` without calling any method. Found in:
 - `node/test/driver.test.ts:166` — "createNodeRuntime returns a RuntimeDriver"
 - `python/test/driver.test.ts` — similar shape checks
-- `wasmvm/test/driver.test.ts:123` — "createWasmVmRuntime returns a RuntimeDriver"
-- `wasmvm/test/driver.test.ts:235` — "spawn returns DriverProcess with correct interface"
+- `packages/wasmvm/test/driver.test.ts:123` — "createWasmVmRuntime returns a RuntimeDriver"
+- `packages/wasmvm/test/driver.test.ts:235` — "spawn returns DriverProcess with correct interface"
 
 **Impact:** Low — TypeScript already catches shape mismatches. Consider deleting or inlining.
 
@@ -106,7 +106,7 @@ Multiple tests only check `typeof driver.init === 'function'` or `toBeDefined()`
 Calls dispose, asserts nothing about actual cleanup. Found in:
 - `node/test/driver.test.ts:208, 330`
 - `python/test/driver.test.ts:214, 358`
-- `wasmvm/test/driver.test.ts:213, 272`
+- `packages/wasmvm/test/driver.test.ts:213, 272`
 
 **Fix:** After dispose, attempt to spawn and verify it throws. Or spy on cleanup internals.
 

@@ -4,7 +4,7 @@ import {
   createNodeDriver,
   createNodeRuntimeDriverFactory,
 } from "../../../packages/secure-exec/src/index.ts";
-import { createTypeScriptTools } from "../../../packages/secure-exec-typescript/src/index.ts";
+import { createTypeScriptTools } from "../../../packages/typescript/src/index.ts";
 
 const sourceText = `
   export const message: string = "hello from typescript";

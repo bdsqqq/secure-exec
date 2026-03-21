@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from "vitest";
 import type * as nodeOs from "os";
-import bridgeOs from "../../../secure-exec-core/src/bridge/os.js";
+import bridgeOs from "../../../nodejs/src/bridge/os.js";
 
 // Type-level assignability: bridge exports → Partial<node:os>
 const _moduleCheck: Partial<typeof nodeOs> = bridgeOs;

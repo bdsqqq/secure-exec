@@ -4,26 +4,25 @@
     "build:bridge": {
       "outputs": ["dist/bridge.js"]
     },
-    "build:polyfills": {
-      "outputs": ["src/generated/polyfills.ts"]
-    },
-    "build:isolate-runtime": {
-      "outputs": ["dist/isolate-runtime/**", "src/generated/isolate-runtime.ts"]
+    "build:polyfills": {},
+    "build:isolate-runtime": {},
+    "build:generated": {
+      "dependsOn": ["build:bridge", "build:polyfills", "build:isolate-runtime"]
     },
     "build:wasm": {
       "dependsOn": [],
-      "inputs": ["wasmvm/**/*.rs", "wasmvm/Cargo.toml", "wasmvm/patches/**"],
-      "outputs": ["wasmvm/target/wasm32-wasip1/release/multicall.opt.wasm"]
+      "inputs": ["native/wasmvm/**/*.rs", "native/wasmvm/Cargo.toml", "native/wasmvm/patches/**"],
+      "outputs": ["native/wasmvm/target/wasm32-wasip1/release/multicall.opt.wasm"]
     },
     "build": {
-      "dependsOn": ["^build", "build:bridge", "build:polyfills", "build:isolate-runtime"],
+      "dependsOn": ["^build", "build:generated"],
       "outputs": ["dist/**"]
     },
     "check-types": {
-      "dependsOn": ["^build", "build:polyfills", "build:isolate-runtime"]
+      "dependsOn": ["^build", "build:generated"]
     },
     "test": {
-      "dependsOn": ["^build", "build:polyfills", "build:isolate-runtime"]
+      "dependsOn": ["^build", "build:generated"]
     },
     "test:watch": {
       "cache": false,

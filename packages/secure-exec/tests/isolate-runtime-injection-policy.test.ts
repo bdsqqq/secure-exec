@@ -7,7 +7,7 @@ import {
 import {
 	getIsolateRuntimeSource,
 	type IsolateRuntimeSourceId,
-} from "../../secure-exec-core/src/generated/isolate-runtime.js";
+} from "../../core/src/generated/isolate-runtime.js";
 
 type CapturedConsoleEvent = {
 	channel: "stdout" | "stderr";

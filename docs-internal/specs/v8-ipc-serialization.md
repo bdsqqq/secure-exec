@@ -229,7 +229,7 @@ The connection handler only needs to read **byte 5 through 5+N** (the session_id
 - All `#[serde(tag = "type")]`, `#[serde(with = "serde_bytes")]` annotations
 
 ### JS code removed
-- `@msgpack/msgpack` dependency from `packages/secure-exec-v8/`
+- `@msgpack/msgpack` dependency from `packages/v8/`
 - `ipc-client.ts`: MessagePack encode/decode replaced with binary header + `v8.serialize()`
 - `runtime.ts`: `decode(msg.args)` / `encode(result)` replaced with `v8.deserialize()` / `v8.serialize()`
 - `ipc-types.ts`: discriminated union types replaced with simpler typed interfaces
