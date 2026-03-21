@@ -9,6 +9,6 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/rivet-dev/secure-exec.git",
-    "directory": "crates/v8-runtime/npm/darwin-arm64"
+    "directory": "native/v8-runtime/npm/darwin-arm64"
   }
 }

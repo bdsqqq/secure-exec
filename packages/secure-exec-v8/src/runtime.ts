@@ -71,13 +71,13 @@ function resolveBinaryPath(): string {
 	// 3. Try cargo-built binary at crate target path (development)
 	const crateRelative = resolve(
 		__dirname,
-		"../../../crates/v8-runtime/target/release/secure-exec-v8",
+		"../../../native/v8-runtime/target/release/secure-exec-v8",
 	);
 	if (existsSync(crateRelative)) return crateRelative;
 
 	const crateDebug = resolve(
 		__dirname,
-		"../../../crates/v8-runtime/target/debug/secure-exec-v8",
+		"../../../native/v8-runtime/target/debug/secure-exec-v8",
 	);
 	if (existsSync(crateDebug)) return crateDebug;
 

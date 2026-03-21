@@ -19,12 +19,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const BINARY_PATH = (() => {
 	const release = resolve(
 		__dirname,
-		"../../../crates/v8-runtime/target/release/secure-exec-v8",
+		"../../../native/v8-runtime/target/release/secure-exec-v8",
 	);
 	if (existsSync(release)) return release;
 	const debug = resolve(
 		__dirname,
-		"../../../crates/v8-runtime/target/debug/secure-exec-v8",
+		"../../../native/v8-runtime/target/debug/secure-exec-v8",
 	);
 	if (existsSync(debug)) return debug;
 	return undefined;

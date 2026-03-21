@@ -37,8 +37,8 @@ function hasPlatformBinary() {
 function hasLocalBinary() {
 	// Check crate target paths (development)
 	const paths = [
-		join(__dirname, "../../crates/v8-runtime/target/release/secure-exec-v8"),
-		join(__dirname, "../../crates/v8-runtime/target/debug/secure-exec-v8"),
+		join(__dirname, "../../native/v8-runtime/target/release/secure-exec-v8"),
+		join(__dirname, "../../native/v8-runtime/target/debug/secure-exec-v8"),
 	];
 	return paths.some((p) => existsSync(p));
 }
@@ -50,7 +50,7 @@ async function downloadFallback() {
 	if (!pkg) {
 		console.warn(
 			`@secure-exec/v8: No prebuilt binary available for ${process.platform}-${process.arch}. ` +
-				"Build from source: cd crates/v8-runtime && cargo build --release",
+				"Build from source: cd native/v8-runtime && cargo build --release",
 		);
 		return;
 	}
@@ -100,7 +100,7 @@ async function downloadFallback() {
 	} catch (err) {
 		console.warn(
 			`@secure-exec/v8: Failed to download binary: ${err.message}. ` +
-				"Build from source: cd crates/v8-runtime && cargo build --release",
+				"Build from source: cd native/v8-runtime && cargo build --release",
 		);
 	}
 }
