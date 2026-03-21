@@ -393,7 +393,7 @@ MessagePack handles binary data natively as `bin` format. No more base64 encodin
 ## Rust Crate Structure
 
 ```
-crates/v8-runtime/
+native/v8-runtime/
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs              # Binary entry point, UDS listener
@@ -534,7 +534,7 @@ Expected binary size: ~40-60MB per platform (V8 is large).
 ## Migration Plan
 
 ### Phase 1: Build the Rust binary
-- Implement `crates/v8-runtime/` with IPC protocol
+- Implement `native/v8-runtime/` with IPC protocol
 - Basic isolate lifecycle: create, execute script, destroy
 - Host function injection for sync bridge calls
 

@@ -146,7 +146,7 @@ docs-internal/specs/cli-tool-e2e.md
   - Adapt the chosen suite to run inside WasmVM (may need to compile test harness to WASM or run as shell scripts through brush-shell).
   - Integrate as a CI-runnable test target that produces a compliance scorecard (pass/fail/skip counts per POSIX category).
   - Track results in `docs/posix-compatibility.md` and use regressions as P0 bugs.
-  - Files: `packages/runtime/wasmvm/test/`, `wasmvm/c/programs/`, `docs/posix-compatibility.md`
+  - Files: `packages/secure-exec-wasmvm/test/`, `native/wasmvm/c/programs/`, `docs/posix-compatibility.md`
 
 ## Priority 3: Examples, Validation Breadth, and Product Direction
 
@@ -187,12 +187,12 @@ See `docs-internal/specs/v8-perf-research.md` for detailed profiling data and an
 - [ ] Code-cache the post-restore script (save 0.1–0.3ms per execution)
   - Post-restore script is compiled from source on every execution (~200 bytes, 0.1–0.4ms)
   - Reuse `BridgeCodeCache` pattern: hash the script string, consume cached bytecode on match
-  - Files: `crates/v8-runtime/src/session.rs`, `crates/v8-runtime/src/execution.rs`
+  - Files: `native/v8-runtime/src/session.rs`, `native/v8-runtime/src/execution.rs`
 
 - [ ] Merge InjectGlobals into Execute message (save 0.1–0.2ms per execution)
   - Currently two IPC messages per execution: InjectGlobals + Execute
   - Include globals payload in Execute frame to save one UDS round-trip
-  - Files: `crates/v8-runtime/src/ipc_binary.rs`, `crates/v8-runtime/src/session.rs`, `packages/secure-exec-v8/src/ipc-binary.ts`, `packages/secure-exec-v8/src/runtime.ts`
+  - Files: `native/v8-runtime/src/ipc_binary.rs`, `native/v8-runtime/src/session.rs`, `packages/secure-exec-v8/src/ipc-binary.ts`, `packages/secure-exec-v8/src/runtime.ts`
 
 ### P2 — Medium Effort
 
@@ -200,7 +200,7 @@ See `docs-internal/specs/v8-perf-research.md` for detailed profiling data and an
   - Pre-create pool of ready-to-execute contexts (snapshot-cloned, bridge fns replaced)
   - On execute(), pick a context from pool instead of creating one
   - Risk: context reuse may leak state — must verify complete isolation
-  - Files: `crates/v8-runtime/src/session.rs`
+  - Files: `native/v8-runtime/src/session.rs`
 
 - [ ] Reduce snapshot blob size (save 0.1–0.6ms context clone time)
   - Minimize bridge IIFE state footprint: lazy-init large data structures, compact representations
@@ -211,12 +211,12 @@ See `docs-internal/specs/v8-perf-research.md` for detailed profiling data and an
 
 - [ ] Per-session sockets (one UDS per session instead of shared)
   - Only relevant for concurrent sessions with large payloads (head-of-line blocking)
-  - Files: `crates/v8-runtime/src/main.rs`, `packages/secure-exec-v8/src/runtime.ts`
+  - Files: `native/v8-runtime/src/main.rs`, `packages/secure-exec-v8/src/runtime.ts`
 
 - [ ] V8 code caching for user code (save <0.2ms, only for repeated executions)
   - User code compilation is already 0.02–0.08ms for typical scripts
   - Only helps when same code is executed repeatedly within a session
-  - Files: `crates/v8-runtime/src/execution.rs`
+  - Files: `native/v8-runtime/src/execution.rs`
 
 ### Not Recommended
 
@@ -248,11 +248,11 @@ See `docs-internal/specs/v8-perf-research.md` for detailed profiling data and an
 
 - [ ] Automated rusty_v8 version update PR
   - CI job (weekly cron or manual trigger) checks for new `v8` crate releases on crates.io
-  - If a newer version exists, opens a PR that bumps the `v8` version in `crates/v8-runtime/Cargo.toml`, runs `cargo update -p v8`, and runs the full test suite
+  - If a newer version exists, opens a PR that bumps the `v8` version in `native/v8-runtime/Cargo.toml`, runs `cargo update -p v8`, and runs the full test suite
   - PR title: `chore(deps): bump rusty_v8 to vX.Y.Z`
   - PR body includes changelog link and diff of V8 engine version (e.g. V8 13.0 → 13.2)
   - Job fails (no PR opened) if `cargo test` or TypeScript tests fail — prevents broken updates from being proposed
-  - Files: `.github/workflows/v8-update.yml`, `crates/v8-runtime/Cargo.toml`
+  - Files: `.github/workflows/v8-update.yml`, `native/v8-runtime/Cargo.toml`
 
 ## WasmVM: Test Fixes (pre-existing on main)
 
@@ -270,11 +270,11 @@ See `docs-internal/specs/v8-perf-research.md` for detailed profiling data and an
 
 - [ ] Fix crossterm vendor patch auto-apply in patch-vendor.sh.
   - `patch -R --dry-run` gives false positives for patches that add new files. Forward-apply check should run first.
-  - Files: `wasmvm/scripts/patch-vendor.sh`
+  - Files: `native/wasmvm/scripts/patch-vendor.sh`
 
 - [ ] Fix C parity test WASM exit code 17 for non-patched programs.
   - All C programs compiled against patched wasi-libc import host_user.isatty. Verify host_user imports are provided correctly for C-built WASM binaries and isatty signature matches between C sysroot patch and kernel-worker.ts.
-  - Files: `packages/runtime/wasmvm/src/kernel-worker.ts`, `wasmvm/c/Makefile`, `wasmvm/patches/wasi-libc/`
+  - Files: `packages/secure-exec-wasmvm/src/kernel-worker.ts`, `native/wasmvm/c/Makefile`, `native/wasmvm/patches/wasi-libc/`
 
 - [ ] Fix secure-exec main test suite failures from build cascade.
   - UpgradeSocket bridge refs fix (already committed) should resolve most failures. Verify after rebuild. Remaining failures may be Node runtime driver issues (above) or missing pyodide.
@@ -310,7 +310,7 @@ See `docs-internal/specs/v8-perf-research.md` for detailed profiling data and an
 ## WasmVM: Codex (rivet-dev/codex fork)
 
 - [ ] Delete fake codex stubs and fork real codex-rs to rivet-dev/codex.
-  - Existing `wasmvm/crates/commands/codex/` and `codex-exec/` are fake stubs that print "agent loop is under development". Delete them. Fork `openai/codex` to `rivet-dev/codex`.
+  - Existing `native/wasmvm/crates/commands/codex/` and `codex-exec/` are fake stubs that print "agent loop is under development". Delete them. Fork `openai/codex` to `rivet-dev/codex`.
 
 - [ ] Add WASI cfg gates to codex-rs fork — core dependencies.
   - Gate tokio process/signal/rt-multi-thread, portable-pty, reqwest, landlock/seccompiler behind `cfg(not(target_os = "wasi"))`.
@@ -340,7 +340,7 @@ See `docs-internal/specs/v8-perf-research.md` for detailed profiling data and an
   - Verify real codex UI elements, not "Welcome to Codex on WasmVM" placeholder.
 
 - [ ] Update docs for real codex WasmVM integration.
-  - Document rivet-dev/codex fork as Tier 3 in wasmvm/CLAUDE.md with all WASI patches.
+  - Document rivet-dev/codex fork as Tier 3 in native/wasmvm/CLAUDE.md with all WASI patches.
 
 ## Spec-Hardening Cross-References (items 29-42)
 

@@ -332,7 +332,7 @@ Split `composeBridgeCode()` into:
 
 ### Phase 4: Add stub bridge context
 
-**File: `crates/v8-runtime/src/bridge.rs`**
+**File: `native/v8-runtime/src/bridge.rs`**
 
 Add `BridgeCallContext::stub()` — a no-op context that panics if `sync_call` or `async_send` is called. Used during snapshot creation.
 
@@ -340,7 +340,7 @@ Add `register_stub_bridge_fns(scope, sync_fns, async_fns)` — registers all 38 
 
 ### Phase 5: Context snapshot creation
 
-**File: `crates/v8-runtime/src/snapshot.rs`**
+**File: `native/v8-runtime/src/snapshot.rs`**
 
 Update `create_snapshot()` to:
 1. Register stub bridge functions
@@ -351,7 +351,7 @@ Update `create_snapshot()` to:
 
 ### Phase 6: Context restore in session thread
 
-**File: `crates/v8-runtime/src/session.rs`**
+**File: `native/v8-runtime/src/session.rs`**
 
 On Execute, instead of:
 ```

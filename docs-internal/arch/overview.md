@@ -132,7 +132,7 @@ Manages the Rust V8 child process and provides the session API.
 - IPC uses length-prefixed MessagePack (64 MB max); binary data uses msgpack `bin` format (no base64)
 - Bridge args/results are double-encoded: inner msgpack blobs inside outer msgpack IPC messages
 
-### Rust binary (`crates/v8-runtime/`)
+### Rust binary (`native/v8-runtime/`)
 
 The Rust V8 runtime process. One OS thread per session, each owning a `v8::Isolate`.
 
@@ -222,4 +222,4 @@ Wraps each adapter with allow/deny checks before calls reach the host.
 
 ---
 
-> **Kernel packages** (`packages/kernel/`, `packages/runtime/`, `packages/os/`) are experimental and not part of the public API. See `wasmvm/CLAUDE.md` for kernel and WasmVM architecture details.
+> **Kernel packages** (`packages/kernel/`, `packages/runtime/`, `packages/os/`) are experimental and not part of the public API. See `native/wasmvm/CLAUDE.md` for kernel and WasmVM architecture details.

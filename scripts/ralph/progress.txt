@@ -31,6 +31,8 @@
 - Browser imports use @secure-exec/browser (not secure-exec/browser — subpath removed in US-011)
 - createNodeRuntime is re-exported from secure-exec barrel (packages/secure-exec/src/index.ts) for kernel-first API convenience
 - Docs compatibility link slug is nodejs-compatibility (not node-compatability)
+- WasmVM native code (Rust, C, patches) canonical location is native/wasmvm/ (alongside native/v8-runtime/)
+- Test files in packages/secure-exec-wasmvm/test/ use ../../../native/wasmvm/target/ for WASM binary paths (3 levels up from test/ to repo root)
 
 # Ralph Progress Log
 Started: Sat Mar 21 02:49:43 AM PDT 2026
@@ -405,4 +407,73 @@ Started: Sat Mar 21 02:49:43 AM PDT 2026
   - The `secure-exec/browser` and `secure-exec/python` subpaths were removed in US-011 — all browser imports should use `@secure-exec/browser` directly
   - README compatibility link had a typo (`node-compatability`) — CLAUDE.md specifies the correct slug is `nodejs-compatibility`
   - Landing page Hero code block has hand-crafted JSX syntax highlighting — updating it requires changing both codeRaw string and all <span> elements
+---
+
+## 2026-03-21 06:20 - US-014
+- Moved crates/v8-runtime/ to native/v8-runtime/ via git mv
+- Updated @secure-exec/v8 package references:
+  - postinstall.js: local binary paths and build instructions
+  - postinstall.cjs: local binary paths and build instructions
+  - src/runtime.ts: cargo target path resolution
+  - All 7 test files: binary path resolution
+- Updated native/v8-runtime/npm/*/package.json: repository.directory fields
+- Updated scripts/release.ts: platformDir path
+- Deleted empty crates/ directory
+- Verified cargo check succeeds from native/v8-runtime/
+- Typecheck passes (only pre-existing sqlite VFS example failure)
+- Files changed:
+  - crates/v8-runtime/ → native/v8-runtime/ (git mv, 30 files)
+  - packages/secure-exec-v8/postinstall.js, postinstall.cjs, src/runtime.ts
+  - packages/secure-exec-v8/test/*.test.ts (7 test files)
+  - native/v8-runtime/npm/*/package.json (5 platform packages)
+  - scripts/release.ts
+- **Learnings for future iterations:**
+  - The v8 platform npm packages (darwin-arm64, linux-x64-gnu, etc.) have repository.directory fields that reference crates/v8-runtime — easy to miss
+  - Test files in packages/secure-exec-v8/test/ also have hardcoded binary paths for development fallback — not just runtime source
+  - cargo check works from the new location without any Cargo.toml changes since there are no path dependencies
+  - The v8 package has no turbo build/check-types/test tasks — use direct tsc --noEmit to verify
+---
+
+## 2026-03-21 06:35 - US-015
+- Moved wasmvm/ to native/wasmvm/ via git mv (473 files)
+- Updated 14 test files in packages/secure-exec-wasmvm/test/ to reference ../../../native/wasmvm/target/ for WASM binary paths
+- Also updated c-parity.test.ts C_BUILD_DIR and NATIVE_DIR paths to native/wasmvm/c/build/
+- Updated human-readable skip messages (make wasm, make -C commands) to reference native/wasmvm/
+- Updated turbo.json build:wasm inputs/outputs from wasmvm/** to native/wasmvm/**
+- Top-level wasmvm/ directory deleted by git mv
+- Typecheck passes: 30/31 (1 pre-existing sqlite VFS example failure)
+- Files changed:
+  - wasmvm/ → native/wasmvm/ (473 files renamed)
+  - packages/secure-exec-wasmvm/test/*.test.ts (14 test files — WASM binary path updates)
+  - turbo.json (build:wasm inputs/outputs)
+- **Learnings for future iterations:**
+  - Test files in packages/secure-exec-wasmvm/test/ previously used ../../../../wasmvm/ which was broken (4 levels up goes above repo root) — the tests only passed because they skip when binaries aren't found
+  - The correct relative path from packages/secure-exec-wasmvm/test/ to repo root is ../../../ (3 levels: test → secure-exec-wasmvm → packages → root)
+  - shell-terminal.test.ts uses double-quoted strings while all other test files use single quotes — sed with single-quote patterns misses it
+  - native/wasmvm/.gitignore already has /target and /vendor rules, so root .gitignore entries (wasmvm/target/, wasmvm/vendor/) become stale but harmless — cleanup deferred to US-016
+  - scripts/shell.ts still references ../wasmvm/ — also deferred to US-016 scope
+---
+
+## 2026-03-21 - US-016
+- Updated all path references for native/ restructure — eliminated stale `crates/v8-runtime` and top-level `wasmvm/` references
+- Root CLAUDE.md: updated 6 sections (C Library Vendoring, WASM Binary, WasmVM Syscall Coverage) from `wasmvm/` → `native/wasmvm/`, `packages/runtime/wasmvm/` → `packages/secure-exec-wasmvm/`
+- native/wasmvm/CLAUDE.md: fixed self-referencing paths (`wasmvm/crates/` → `crates/`), updated TS host runtime path, build command
+- .github/workflows/ci.yml: all `wasmvm/` → `native/wasmvm/` (cache paths, build commands, hash inputs)
+- .github/workflows/rust.yml: all `crates/v8-runtime` → `native/v8-runtime` (path triggers, cache, working-directory, artifact uploads)
+- .github/workflows/release.yml: `crates/v8-runtime` → `native/v8-runtime` (Docker build, npm publish loop)
+- .github/workflows/pkg-pr-new.yaml: `crates/v8-runtime` → `native/v8-runtime` (Docker build)
+- .gitignore: `wasmvm/target/` → `native/wasmvm/target/`, `wasmvm/vendor/` → `native/wasmvm/vendor/`
+- docs-internal/arch/overview.md: `crates/v8-runtime/` → `native/v8-runtime/`, `wasmvm/CLAUDE.md` → `native/wasmvm/CLAUDE.md`
+- docs-internal/todo.md: 9 path updates (v8 src files, wasmvm scripts, C programs, codex stubs)
+- docs-internal/test-audit.md: `wasmvm/test/` → `packages/secure-exec-wasmvm/test/`
+- docs-internal/spec-hardening.md: `wasmvm/target/` → `native/wasmvm/target/`, `packages/runtime/wasmvm/` → `packages/secure-exec-wasmvm/`
+- docs-internal/specs/v8-runtime.md, v8-context-snapshot.md, v8-startup-snapshot.md: all `crates/v8-runtime/` → `native/v8-runtime/`
+- packages/secure-exec/tests/kernel/helpers.ts: error message path updated
+- Verified zero remaining stale references via comprehensive grep
+- Typecheck passes: 30/31 (1 pre-existing sqlite VFS example failure)
+- **Learnings for future iterations:**
+  - `docs/wasmvm/` is a docs section directory (not the native source), so `wasmvm/supported-commands.md` links in docs are correct
+  - Historical/proposal docs (kernel-integration.md, proposal-kernel-consolidation.md) describe migration plans and reference old paths intentionally — update active reference docs, not historical narratives
+  - `packages/runtime/wasmvm` references are about old package structure (cleaned up in US-017), not the native/ restructure (US-016)
+  - .gitignore had stale `wasmvm/target/` and `wasmvm/vendor/` that were deferred from US-015
 ---

@@ -21,17 +21,17 @@ Standalone WebAssembly binaries providing a comprehensive Unix userland, paired 
 ## Naming
 - The project is called **wasmVM**
 - The internal component is **WasmCore** — the WASM runtime subsystem
-- `wasmvm/crates/` contains Rust workspace crates
-- `wasmvm/crates/commands/` contains standalone binary crates
-- `wasmvm/crates/libs/` contains shared library crates
-- `packages/runtime/wasmvm/` contains the TypeScript host runtime
+- `crates/` contains Rust workspace crates (within `native/wasmvm/`)
+- `crates/commands/` contains standalone binary crates
+- `crates/libs/` contains shared library crates
+- `packages/secure-exec-wasmvm/` contains the TypeScript host runtime
 
 ## Build
 - Targets `wasm32-wasip1`
 - Uses Rust nightly pinned in `rust-toolchain.toml` (pin to `nightly-2026-03-01` or later)
 - Build with `-Z build-std=std,panic_abort` for custom std patches
 - Pin the nightly version everywhere possible to avoid breakage
-- Build command: `cd wasmvm && make wasm`
+- Build command: `cd native/wasmvm && make wasm`
 - Output: standalone binaries in `target/wasm32-wasip1/release/commands/`
 - Each binary is optimized with `wasm-opt -O3 --strip-debug` and has no `.wasm` extension
 - Symlinks for aliases are created automatically by the Makefile

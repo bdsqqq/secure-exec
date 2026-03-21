@@ -80,7 +80,7 @@ export async function createIntegrationKernel(
 export function skipUnlessWasmBuilt(): string | false {
   return existsSync(COMMANDS_DIR)
     ? false
-    : 'WASM binaries not built (run make wasm in wasmvm/)';
+    : 'WASM binaries not built (run make wasm in native/wasmvm/)';
 }
 
 /**
