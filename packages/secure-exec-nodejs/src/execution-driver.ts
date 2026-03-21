@@ -73,7 +73,7 @@ import type {
 	ProcessConfig,
 } from "@secure-exec/core/internal/shared/api-types";
 import type { BudgetState } from "./isolate-bootstrap.js";
-import { type FlattenedBinding, flattenBindingTree } from "./bindings.js";
+import { type FlattenedBinding, flattenBindingTree, BINDING_PREFIX } from "./bindings.js";
 
 export { NodeExecutionDriverOptions };
 
@@ -558,6 +558,9 @@ export class NodeExecutionDriver implements RuntimeDriver {
 			const bridgeCode = buildFullBridgeCode();
 
 			// Build post-restore script with per-execution config
+			const bindingKeys = this.flattenedBindings
+				? this.flattenedBindings.map((b) => b.key.slice(BINDING_PREFIX.length))
+				: [];
 			const postRestoreScript = buildPostRestoreScript(
 				execProcessConfig,
 				s.osConfig,
@@ -573,6 +576,7 @@ export class NodeExecutionDriver implements RuntimeDriver {
 				frozenTimeMs,
 				options.mode,
 				options.filePath,
+				bindingKeys,
 			);
 
 			// Execute in V8 session
@@ -726,6 +730,7 @@ function buildPostRestoreScript(
 	frozenTimeMs: number,
 	mode: "run" | "exec",
 	filePath?: string,
+	bindingKeys?: string[],
 ): string {
 	const parts: string[] = [];
 
@@ -803,6 +808,9 @@ function buildPostRestoreScript(
 	})};`);
 	parts.push(getIsolateRuntimeSource("applyCustomGlobalPolicy"));
 
+	// Inflate SecureExec.bindings from flattened __bind.* globals
+	parts.push(buildBindingsInflationSnippet(bindingKeys ?? []));
+
 	return parts.join("\n");
 }
 
@@ -819,3 +827,24 @@ function getHardenedGlobals(): string[] { return HARDENED_NODE_CUSTOM_GLOBALS; }
 function getMutableGlobals(): string[] { return MUTABLE_NODE_CUSTOM_GLOBALS; }
 function getProcessConfigGlobalKey(): string { return HOST_BRIDGE_GLOBAL_KEYS.processConfig; }
 function getOsConfigGlobalKey(): string { return HOST_BRIDGE_GLOBAL_KEYS.osConfig; }
+
+/** Build the JS snippet that inflates __bind.* globals into a frozen SecureExec.bindings tree. */
+function buildBindingsInflationSnippet(bindingKeys: string[]): string {
+	return `(function(){
+var __bindingKeys__=${JSON.stringify(bindingKeys)};
+var tree={};
+for(var i=0;i<__bindingKeys__.length;i++){
+var parts=__bindingKeys__[i].split(".");
+var node=tree;
+for(var j=0;j<parts.length-1;j++){node[parts[j]]=node[parts[j]]||{};node=node[parts[j]];}
+node[parts[parts.length-1]]=globalThis["__bind."+__bindingKeys__[i]];
+}
+function deepFreeze(obj){
+var vals=Object.values(obj);
+for(var k=0;k<vals.length;k++){if(typeof vals[k]==="object"&&vals[k]!==null)deepFreeze(vals[k]);}
+return Object.freeze(obj);
+}
+Object.defineProperty(globalThis,"SecureExec",{value:Object.freeze({bindings:deepFreeze(tree)}),writable:false,enumerable:true,configurable:false});
+for(var i=0;i<__bindingKeys__.length;i++){delete globalThis["__bind."+__bindingKeys__[i]];}
+})();`;
+}

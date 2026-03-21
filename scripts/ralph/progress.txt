@@ -34,6 +34,8 @@
 - Docs compatibility link slug is nodejs-compatibility (not node-compatability)
 - WasmVM native code (Rust, C, patches) canonical location is native/wasmvm/ (alongside native/v8-runtime/)
 - Test files in packages/secure-exec-wasmvm/test/ use ../../../native/wasmvm/target/ for WASM binary paths (3 levels up from test/ to repo root)
+- Custom bindings types/validation/flattening live in secure-exec-nodejs/src/bindings.ts — flattened __bind.* keys merge into bridgeHandlers Record
+- BridgeHandler = (...args: unknown[]) => unknown | Promise<unknown> — both sync and async handlers work through the same V8 IPC bridge
 
 # Ralph Progress Log
 Started: Sat Mar 21 02:49:43 AM PDT 2026
@@ -524,4 +526,47 @@ Started: Sat Mar 21 02:49:43 AM PDT 2026
   - Historical/proposal docs in docs-internal/ intentionally reference old paths (migration plans, specs) — only update active reference docs and contracts
   - CI workflow had a stale `cd wasmvm` that was missed in US-016's path update sweep — always verify CI with `grep -r` after path moves
   - packages/secure-exec-node/ (old name) still has a stale dist/ directory — harmless but cruft
+---
+
+## 2026-03-21 06:25 - US-019
+- Implemented custom bindings core plumbing for host-to-sandbox function bridge
+- Created bindings.ts with BindingTree/BindingFunction types, validation, and flattenBindingTree()
+- Added bindings?: BindingTree to NodeRuntimeOptions (kernel-runtime.ts)
+- Added bindings?: BindingTree to NodeExecutionDriverOptions (isolate-bootstrap.ts)
+- Threaded bindings through NodeRuntimeDriver → NodeExecutionDriver constructor
+- Flattened bindings merged into bridgeHandlers with __bind. prefix in executeInternal()
+- Validation rejects: invalid JS identifiers, keys starting with _, nesting > 4, leaf count > 64
+- Sync/async detection via AsyncFunction instanceof check
+- Exported BindingTree, BindingFunction, BINDING_PREFIX from @secure-exec/nodejs and secure-exec barrel
+- Files changed:
+  - packages/secure-exec-nodejs/src/bindings.ts (new — types, validation, flattening)
+  - packages/secure-exec-nodejs/src/kernel-runtime.ts (bindings option + threading)
+  - packages/secure-exec-nodejs/src/isolate-bootstrap.ts (NodeExecutionDriverOptions.bindings)
+  - packages/secure-exec-nodejs/src/execution-driver.ts (flattenedBindings field, merge into bridgeHandlers)
+  - packages/secure-exec-nodejs/src/index.ts (re-exports)
+  - packages/secure-exec/src/index.ts (barrel re-exports)
+- **Learnings for future iterations:**
+  - bridgeHandlers is a simple Record<string, BridgeHandler> — any key added to this map becomes callable from sandbox via V8 IPC bridge (no Rust changes needed)
+  - Internal bridge names all start with single _ (e.g., _fsReadFile, _log) — custom bindings use __bind. prefix to avoid collision
+  - NodeExecutionDriverOptions extends RuntimeDriverOptions (from core), but bindings are Node-specific so extend at the node level only
+  - AsyncFunction detection: `Object.getPrototypeOf(async function () {}).constructor` — instanceof check works for all async functions
+  - Validation runs once at construction time, flattened result cached — merge into bridgeHandlers is per-execution
+---
+
+## 2026-03-21 06:36 - US-020
+- Implemented sandbox-side SecureExec.bindings injection in execution-driver.ts
+- Added buildBindingsInflationSnippet() function that generates the inflation JS snippet
+- Inflation snippet: builds nested object tree from __bind.* globals, deep-freezes it, sets as globalThis.SecureExec
+- SecureExec is non-writable, non-configurable via Object.defineProperty
+- Raw __bind.* globals deleted from globalThis after inflation
+- SecureExec.bindings is always present (empty frozen object when no bindings registered)
+- Binding keys extracted from flattenedBindings by stripping BINDING_PREFIX, passed as JSON literal to snippet
+- Files changed:
+  - packages/secure-exec-nodejs/src/execution-driver.ts (30 LOC added — buildBindingsInflationSnippet function, binding keys extraction, parameter threading)
+- **Learnings for future iterations:**
+  - buildPostRestoreScript() is the right injection point for per-execution sandbox setup code — it runs after bridge code snapshot phase so bridge calls work
+  - Inflation snippet must use var (not const/let) for broader V8 compatibility in the injected context
+  - BINDING_PREFIX ("__bind.") is the separator — binding keys stored without prefix in the inflation snippet, prefixed when looking up globals
+  - Object.defineProperty with writable:false, configurable:false ensures sandbox code cannot delete or overwrite SecureExec
+  - deepFreeze recursion only freezes objects, not functions — leaf binding functions remain callable but their container objects are frozen
 ---

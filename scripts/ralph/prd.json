@@ -320,7 +320,7 @@
         "Typecheck passes"
       ],
       "priority": 20,
-      "passes": false,
+      "passes": true,
       "notes": "Custom bindings Phase 2. ~15-20 LOC for the inflation snippet. Depends on US-019."
     },
     {
