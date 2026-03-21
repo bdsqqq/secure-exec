@@ -1,29 +1,34 @@
 ## Codebase Patterns
-- The Rust V8 runtime binary has a fixed set of native bridge globals; newer handlers must be dispatched through `_loadPolyfill` with a `__bd:` prefix
-- Bridge code runs in a V8 snapshot phase where bridge calls are muted; console/require setup must go in `postRestoreScript`
-- The V8 runtime doesn't provide SharedArrayBuffer, TextEncoder, URL, etc. — polyfills must be prepended to bridgeCode
-- ivm.Reference methods (applySync, applySyncPromise, derefInto) must be shimmed on plain bridge functions for compatibility with @secure-exec/core bridge code
-- `NodeExecutionDriver` creates a shared `V8Runtime` (Rust process) lazily, reusing it across all instances
+- Kernel VFS (packages/kernel/src/vfs.ts) is the superset VFS interface — includes realpath, pread, full VirtualStat (ino, nlink, uid, gid)
+- Core VFS (packages/secure-exec-core/src/types.ts) is deprecated — use kernel types
+- When creating VFS adapters/wrappers, always include realpath and pread pass-through
+- VirtualStat must always include ino, nlink, uid, gid fields (kernel canonical type)
+- Permission types (Permissions, FsAccessRequest, etc.) canonical source is @secure-exec/kernel
+- NetworkAccessRequest.op includes "connect" (used by net socket bridge)
+- Core's RuntimeDriver (runtime-driver.ts) is NOT the same as kernel's RuntimeDriver (types.ts) — don't confuse them
+- PTY resource-exhaustion test "single large write (1MB+)" is a pre-existing flaky failure on main
 
 # Ralph Progress Log
-Started: Sat Mar 21 12:56:24 AM PDT 2026
+Started: Sat Mar 21 02:49:43 AM PDT 2026
 ---
 
-## 2026-03-21 01:55 PDT - US-014
-- Migrated from isolated-vm to @secure-exec/v8 (Rust-based V8 runtime)
-- Rewrote NodeExecutionDriver to use V8Session API
-- Ported all bridge handlers to plain functions in bridge-handlers.ts
-- Added V8 polyfills for missing Web APIs
-- Added bridge dispatch mechanism for handlers not in the V8 binary
-- Added ivm.Reference compatibility shim
-- Deleted: isolate.ts, execution.ts, execution-lifecycle.ts, esm-compiler.ts
-- Cleaned: bridge-setup.ts, isolate-bootstrap.ts, index.ts, package.json
-- Updated all "isolated-vm" comment references
-- Files changed: 31 files, +1761/-3188 lines
+## 2026-03-21 03:07 - US-001
+- Made kernel types the canonical source of truth for VFS and permission types
+- Re-exported VirtualFileSystem, VirtualStat, VirtualDirEntry, Permissions, PermissionCheck, FsAccessRequest from @secure-exec/kernel through @secure-exec/core
+- Added @deprecated JSDoc to core's own duplicate type definitions
+- Updated all internal imports across the monorepo to use kernel types
+- Updated all VFS implementations to satisfy kernel VFS interface (added realpath, pread, full VirtualStat fields)
+- Added "connect" op to kernel's NetworkAccessRequest for parity with core
+- Files changed:
+  - packages/kernel/src/types.ts
+  - packages/secure-exec-core/src/index.ts, types.ts, runtime-driver.ts, shared/permissions.ts, shared/in-memory-fs.ts, package.json
+  - packages/secure-exec-node/src/driver.ts, execution-driver.ts, isolate-bootstrap.ts, module-access.ts, package.json
+  - packages/secure-exec-browser/src/driver.ts, worker.ts, package.json
+  - packages/secure-exec/src/types.ts, package.json
+  - packages/runtime/node/src/driver.ts
 - **Learnings for future iterations:**
-  - The Rust V8 binary (`@secure-exec/v8-linux-x64-gnu`) has a hardcoded list of bridge globals. New bridge handlers must be dispatched through existing globals (like `_loadPolyfill`) using a serialization protocol
-  - V8 snapshot phase (bridgeCode) mutes all bridge calls — anything that needs bridge communication must go in postRestoreScript
-  - The bridge IIFE (679KB) uses SharedArrayBuffer, TextEncoder, URL, etc. that bare V8 doesn't provide — must polyfill before the IIFE runs
-  - The @secure-exec/core bridge code uses ivm.Reference patterns (applySync, applySyncPromise) — these need shimming on plain functions
-  - The Rust V8 runtime writes console.log to stdout via IPC Log messages, not through bridge handlers — console setup code must override this
+  - Kernel and core VFS types were NOT structurally identical despite PRD notes — kernel VFS has extra methods (realpath, pread) and VirtualStat has extra fields (ino, nlink, uid, gid)
+  - Core's RuntimeDriver (SDK facade) is completely different from kernel's RuntimeDriver (mount interface) — same name, different types
+  - When updating VFS interface, must update ALL implementations: InMemoryFileSystem, NodeFileSystem, ModuleAccessFileSystem, OpfsFileSystem, createKernelVfsAdapter, createHostFallbackVfs, wrapFileSystem, createFsStub
+  - PTY resource-exhaustion test "single large write (1MB+)" is a pre-existing failure on main
 ---
