@@ -178,6 +178,11 @@ export type NetworkHttpServerListenResult = { address: { address: string; family
 export type NetworkHttpServerListenRawBridgeRef = (optionsJson: string) => Promise<NetworkHttpServerListenResult>;
 export type NetworkHttpServerCloseRawBridgeRef = (serverId: number) => Promise<void>;
 
+// Upgrade socket (WebSocket relay) boundary contracts.
+export type UpgradeSocketWriteRawBridgeRef = (socketId: number, dataBase64: string) => void;
+export type UpgradeSocketEndRawBridgeRef = (socketId: number) => void;
+export type UpgradeSocketDestroyRawBridgeRef = (socketId: number) => void;
+
 // PTY boundary contracts.
 export type PtySetRawModeBridgeRef = (mode: boolean) => void;
 

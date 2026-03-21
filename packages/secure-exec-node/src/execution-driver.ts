@@ -16,10 +16,10 @@ async function getSharedV8Runtime(): Promise<V8Runtime> {
 	if (!sharedV8RuntimePromise) {
 		sharedV8RuntimePromise = createV8Runtime({
 			warmupBridgeCode: composeBridgeCodeForWarmup(),
-		}).then((r) => {
+		}).then((r: V8Runtime) => {
 			sharedV8Runtime = r;
 			return r;
-		}).catch((err) => {
+		}).catch((err: unknown) => {
 			// Reset on failure so next call retries instead of returning cached rejection
 			sharedV8RuntimePromise = null;
 			sharedV8Runtime = null;
@@ -446,7 +446,7 @@ export class NodeExecutionDriver implements RuntimeDriver {
 					arch: osConfig.arch ?? process.arch,
 				},
 				bridgeHandlers,
-				onStreamCallback: (_callbackType, _payload) => {
+				onStreamCallback: (_callbackType: string, _payload: unknown) => {
 					// Handle stream callbacks from V8 (e.g., HTTP server responses)
 				},
 			});
