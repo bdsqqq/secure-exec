@@ -17,6 +17,7 @@ function valuesOf<T extends Record<string, string>>(object: T): Array<ValueOf<T>
 
 /** Globals injected by the host before the bridge bundle executes. */
 export const HOST_BRIDGE_GLOBAL_KEYS = {
+	/** Browser-only fallback — V8-backed execution uses native import() (US-023). */
 	dynamicImport: "_dynamicImport",
 	loadPolyfill: "_loadPolyfill",
 	resolveModule: "_resolveModule",

@@ -17,6 +17,10 @@ export function isESM(code: string, filePath?: string): boolean {
 
 /**
  * Transform dynamic import() calls to __dynamicImport() calls.
+ *
+ * Browser-only fallback: V8-backed execution handles import() natively via
+ * HostImportModuleDynamicallyCallback (US-023). This transform is only needed
+ * by the browser worker which doesn't use the V8 sidecar.
  */
 export function transformDynamicImport(code: string): string {
 	return code.replace(/(?<![a-zA-Z_$])import\s*\(/g, "__dynamicImport(");

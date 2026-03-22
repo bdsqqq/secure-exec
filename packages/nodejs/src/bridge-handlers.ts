@@ -35,7 +35,7 @@ import {
 } from "@secure-exec/core";
 import { normalizeBuiltinSpecifier } from "./builtin-modules.js";
 import { resolveModule, loadFile } from "./package-bundler.js";
-import { transformDynamicImport, isESM } from "@secure-exec/core/internal/shared/esm-utils";
+import { isESM, wrapCJSForESMWithModulePath } from "@secure-exec/core/internal/shared/esm-utils";
 import { bundlePolyfill, hasPolyfill } from "./polyfills.js";
 import { getStaticBuiltinWrapperSource, getEmptyBuiltinESMWrapper } from "./esm-compiler.js";
 import {
@@ -1171,16 +1171,16 @@ export function buildModuleResolutionBridgeHandlers(
 	};
 
 	// Sync file read — translates sandbox path and reads via readFileSync.
-	// Transforms dynamic import() to __dynamicImport() and converts ESM to CJS
-	// for npm packages so require() can load ESM-only dependencies.
+	// Converts ESM to CJS for npm packages so require() can load ESM-only
+	// dependencies. V8 handles import() natively via dynamic_import_callback
+	// (US-023), so no transformDynamicImport is needed here.
 	handlers[K.loadFileSync] = (filePath: unknown) => {
 		const sandboxPath = String(filePath);
 		const hostPath = deps.sandboxToHostPath(sandboxPath) ?? sandboxPath;
 
 		try {
-			let source = readFileSync(hostPath, "utf-8");
-			source = convertEsmToCjs(source, hostPath);
-			return transformDynamicImport(source);
+			const source = readFileSync(hostPath, "utf-8");
+			return convertEsmToCjs(source, hostPath);
 		} catch {
 			return null;
 		}
@@ -1345,8 +1345,9 @@ export function buildModuleLoadingBridgeHandlers(
 	};
 
 	// Dynamic import bridge — returns null to fall back to require() in the sandbox.
-	// V8 ESM module mode handles static imports natively via module_resolve_callback;
-	// this handler covers the __dynamicImport() path used in exec mode.
+	// No longer exercised for V8-backed execution since V8 handles import()
+	// natively via HostImportModuleDynamicallyCallback (US-023). Retained for
+	// browser worker backward compatibility where __dynamicImport() is still used.
 	handlers[K.dynamicImport] = async (): Promise<null> => null;
 
 	// Async file read + dynamic import transform.
@@ -1365,9 +1366,14 @@ export function buildModuleLoadingBridgeHandlers(
 			return `const _p = (function(){var module={exports:{}};var exports=module.exports;${code};return module.exports})();\nexport default _p;\n` +
 				`for(const[k,v]of Object.entries(_p)){if(k!=='default'&&/^[A-Za-z_$]/.test(k))globalThis['__esm_'+k]=v;}\n`;
 		}
-		// Regular file — keep source intact for V8 module system
-		// V8 handles import() natively via dynamic_import_callback (US-023)
+		// Regular file — V8 handles import() natively via dynamic_import_callback (US-023)
 		const source = await loadFile(p, deps.filesystem);
+		if (source === null) return null;
+		// Wrap CJS files as ESM so V8's module system can import them correctly
+		// (CJS uses module.exports which isn't available in ESM context)
+		if (!isESM(source, p)) {
+			return wrapCJSForESMWithModulePath(source, p);
+		}
 		return source;
 	};
 
