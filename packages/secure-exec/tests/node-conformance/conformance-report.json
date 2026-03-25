@@ -5,13 +5,13 @@
   "generatedAt": "2026-03-25",
   "summary": {
     "total": 3532,
-    "pass": 738,
-    "genuinePass": 704,
+    "pass": 764,
+    "genuinePass": 730,
     "vacuousPass": 34,
-    "fail": 2723,
+    "fail": 2697,
     "skip": 71,
-    "passRate": "20.9%",
-    "genuinePassRate": "19.9%"
+    "passRate": "21.6%",
+    "genuinePassRate": "20.7%"
   },
   "modules": {
     "abortcontroller": {
@@ -247,9 +247,9 @@
     },
     "crypto": {
       "total": 99,
-      "pass": 16,
+      "pass": 42,
       "vacuousPass": 13,
-      "fail": 83,
+      "fail": 57,
       "skip": 0
     },
     "cwd": {
@@ -1472,7 +1472,7 @@
     }
   },
   "categories": {
-    "implementation-gap": 1422,
+    "implementation-gap": 1396,
     "native-addon": 3,
     "requires-exec-path": 200,
     "requires-v8-flags": 239,

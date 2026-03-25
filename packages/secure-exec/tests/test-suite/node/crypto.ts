@@ -825,6 +825,87 @@ export function runNodeCryptoSuite(context: NodeSuiteContext): void {
 		expect(exports.valid).toBe(true);
 	});
 
+	it("createPrivateKey preserves metadata for encrypted PEM and accepts passphrase buffers", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+				modulusLength: 1024,
+				publicKeyEncoding: { type: 'spki', format: 'pem' },
+				privateKeyEncoding: {
+					type: 'pkcs8',
+					format: 'pem',
+					cipher: 'aes-256-cbc',
+					passphrase: '',
+				},
+			});
+			const imported = crypto.createPrivateKey({
+				key: privateKey,
+				passphrase: Buffer.alloc(0),
+			});
+			const data = Buffer.from('metadata-roundtrip');
+			const signature = crypto.sign('sha256', data, {
+				key: privateKey,
+				passphrase: '',
+			});
+			module.exports = {
+				keyType: imported.type,
+				asymmetricKeyType: imported.asymmetricKeyType,
+				valid: crypto.verify('sha256', data, publicKey, signature),
+			};
+		`);
+		expect(result.code).toBe(0);
+		expect(result.errorMessage).toBeUndefined();
+		expect(result.exports).toEqual({
+			keyType: "private",
+			asymmetricKeyType: "rsa",
+			valid: true,
+		});
+	});
+
+	it("publicEncrypt/privateDecrypt accept DER options bags and sandbox KeyObjects", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const pairWithKeyObject = crypto.generateKeyPairSync('rsa', {
+				modulusLength: 1024,
+				privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+			});
+			const derPair = crypto.generateKeyPairSync('rsa', {
+				modulusLength: 1024,
+				publicKeyEncoding: { type: 'pkcs1', format: 'der' },
+				privateKeyEncoding: {
+					type: 'pkcs1',
+					format: 'pem',
+					cipher: 'aes-256-cbc',
+					passphrase: 'secret',
+				},
+			});
+			const plaintext = Buffer.from('encrypt-roundtrip');
+			const encryptedWithKeyObject = crypto.publicEncrypt(pairWithKeyObject.publicKey, plaintext);
+			const decryptedWithKeyObject = crypto.privateDecrypt(pairWithKeyObject.privateKey, encryptedWithKeyObject);
+			const encryptedWithDer = crypto.publicEncrypt({
+				key: derPair.publicKey,
+				type: 'pkcs1',
+				format: 'der',
+			}, plaintext);
+			const decryptedWithDer = crypto.privateDecrypt({
+				key: derPair.privateKey,
+				passphrase: 'secret',
+			}, encryptedWithDer);
+			module.exports = {
+				keyObjectRoundTrip: decryptedWithKeyObject.toString(),
+				derRoundTrip: decryptedWithDer.toString(),
+			};
+		`);
+		expect(result.code).toBe(0);
+		expect(result.errorMessage).toBeUndefined();
+		expect(result.exports).toEqual({
+			keyObjectRoundTrip: "encrypt-roundtrip",
+			derRoundTrip: "encrypt-roundtrip",
+		});
+	});
+
 	it("KeyObject.export returns PEM by default", async () => {
 		const runtime = await context.createRuntime();
 		const result = await runtime.run(`

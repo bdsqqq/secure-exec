@@ -1941,18 +1941,8 @@
       "category": "unsupported-module",
       "expected": "fail"
     },
-    "test-crypto-key-objects-to-crypto-key.js": {
-      "reason": "KeyObject.toCryptoKey() method not implemented in bridge — cannot convert KeyObject to WebCrypto CryptoKey",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
     "test-crypto-key-objects.js": {
       "reason": "fs.readFileSync encoding argument handled as path component — test reads fixture PEM keys which fail to load",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-dsa-key-object.js": {
-      "reason": "DSA key generation fails — OpenSSL 'bad ffc parameters' error for DSA modulusLength/divisorLength combinations",
       "category": "implementation-gap",
       "expected": "fail"
     },
@@ -1961,93 +1951,13 @@
       "category": "implementation-gap",
       "expected": "fail"
     },
-    "test-crypto-keygen-async-elliptic-curve-jwk-ec.js": {
-      "reason": "generateKeyPair with JWK encoding returns key as string instead of parsed object — bridge does not parse JWK output",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-elliptic-curve-jwk-rsa.js": {
-      "reason": "generateKeyPair with JWK encoding returns key as string instead of parsed object — bridge does not parse JWK output",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-elliptic-curve-jwk.js": {
-      "reason": "generateKeyPair with JWK encoding returns key as string instead of parsed object — bridge does not parse JWK output",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-encrypted-private-key-der.js": {
-      "reason": "generateKeyPair with encrypted DER private key encoding produces invalid output — key validation fails",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
     "test-crypto-keygen-async-encrypted-private-key.js": {
       "reason": "generateKeyPair with encrypted PEM private key encoding produces invalid output — key validation fails",
       "category": "implementation-gap",
       "expected": "fail"
     },
-    "test-crypto-keygen-async-explicit-elliptic-curve-encrypted-p256.js": {
-      "reason": "generateKeyPair returns KeyObject with undefined asymmetricKeyType — assertion helper fails checking key properties",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-explicit-elliptic-curve-encrypted.js.js": {
-      "reason": "generateKeyPair returns KeyObject with undefined asymmetricKeyType — assertion helper fails checking key properties",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-explicit-elliptic-curve.js": {
-      "reason": "generateKeyPair returns KeyObject with undefined asymmetricKeyType — assertion helper fails checking key properties",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-named-elliptic-curve-encrypted-p256.js": {
-      "reason": "generateKeyPair returns KeyObject with undefined asymmetricKeyType — assertion helper fails checking key properties",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-named-elliptic-curve-encrypted.js": {
-      "reason": "generateKeyPair returns KeyObject with undefined asymmetricKeyType — assertion helper fails checking key properties",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-named-elliptic-curve.js": {
-      "reason": "generateKeyPair returns KeyObject with undefined asymmetricKeyType — assertion helper fails checking key properties",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-rsa.js": {
-      "reason": "generateKeyPair RSA key output validation fails — exported key format does not match expected PEM structure",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-bit-length.js": {
-      "reason": "KeyObject.asymmetricKeyDetails is undefined — bridge does not populate modulusLength, publicExponent on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-deprecation.js": {
-      "reason": "KeyObject.asymmetricKeyType is undefined — bridge does not set type metadata (rsa, rsa-pss, ec, etc.) on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-dh-classic.js": {
-      "reason": "KeyObject.asymmetricKeyType is undefined — bridge does not set type metadata on DH generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-duplicate-deprecated-option.js": {
-      "reason": "KeyObject.asymmetricKeyType is undefined — bridge does not set type metadata on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
     "test-crypto-keygen-eddsa.js": {
       "reason": "generateKeyPair callback invocation broken for ed25519/ed448 key types — callback not called correctly",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-empty-passphrase-no-prompt.js": {
-      "reason": "KeyObject.asymmetricKeyType is undefined — bridge does not set type metadata on generated keys",
       "category": "implementation-gap",
       "expected": "fail"
     },
@@ -2058,46 +1968,6 @@
     },
     "test-crypto-keygen-invalid-parameter-encoding-ec.js": {
       "reason": "generateKeyPairSync does not throw for invalid EC parameter encoding — error validation missing",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-key-object-without-encoding.js": {
-      "reason": "KeyObject.asymmetricKeyType is undefined — bridge does not set type metadata on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-key-objects.js": {
-      "reason": "KeyObject.asymmetricKeyType is undefined — bridge does not set type metadata on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-no-rsassa-pss-params.js": {
-      "reason": "KeyObject.asymmetricKeyDetails is undefined — bridge does not populate modulusLength, publicExponent, hash details on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-non-standard-public-exponent.js": {
-      "reason": "KeyObject.asymmetricKeyType is undefined — bridge does not set type metadata on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-rfc8017-9-1.js": {
-      "reason": "KeyObject.asymmetricKeyDetails is undefined — bridge does not populate RSA-PSS key details (modulusLength, hashAlgorithm, mgf1HashAlgorithm, saltLength)",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-rfc8017-a-2-3.js": {
-      "reason": "KeyObject.asymmetricKeyDetails is undefined — bridge does not populate RSA-PSS key details (modulusLength, hashAlgorithm, mgf1HashAlgorithm, saltLength)",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-rsa-pss.js": {
-      "reason": "KeyObject.asymmetricKeyType is undefined — bridge does not set type metadata on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-sync.js": {
-      "reason": "generateKeyPairSync returns KeyObject with undefined asymmetricKeyType — assertion helper fails checking key properties",
       "category": "implementation-gap",
       "expected": "fail"
     },

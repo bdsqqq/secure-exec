@@ -12,10 +12,10 @@ description: Node.js v22 test/parallel/ conformance results for the secure-exec 
 | Node.js version | 22.14.0 |
 | Source | v22.14.0 (test/parallel/) |
 | Total tests | 3532 |
-| Passing (genuine) | 704 (19.9%) |
+| Passing (genuine) | 730 (20.7%) |
 | Passing (vacuous self-skip) | 34 |
-| Passing (total) | 738 (20.9%) |
-| Expected fail | 2723 |
+| Passing (total) | 764 (21.6%) |
+| Expected fail | 2697 |
 | Skip | 71 |
 | Last updated | 2026-03-25 |
 
@@ -23,7 +23,7 @@ description: Node.js v22 test/parallel/ conformance results for the secure-exec 
 
 | Category | Tests |
 | --- | --- |
-| implementation-gap | 1422 |
+| implementation-gap | 1396 |
 | unsupported-module | 737 |
 | requires-v8-flags | 239 |
 | requires-exec-path | 200 |
@@ -70,7 +70,7 @@ description: Node.js v22 test/parallel/ conformance results for the secure-exec 
 | constants | 1 | 0 | 1 | 0 | 0.0% |
 | corepack | 1 | 0 | 1 | 0 | 0.0% |
 | coverage | 1 | 0 | 1 | 0 | 0.0% |
-| crypto | 99 | 16 (13 vacuous) | 83 | 0 | 16.2% |
+| crypto | 99 | 42 (13 vacuous) | 57 | 0 | 42.4% |
 | cwd | 3 | 0 | 3 | 0 | 0.0% |
 | data | 1 | 0 | 1 | 0 | 0.0% |
 | datetime | 1 | 0 | 1 | 0 | 0.0% |
@@ -245,11 +245,11 @@ description: Node.js v22 test/parallel/ conformance results for the secure-exec 
 | wrap | 4 | 0 | 4 | 0 | 0.0% |
 | x509 | 1 | 0 | 1 | 0 | 0.0% |
 | zlib | 53 | 17 | 33 | 3 | 34.0% |
-| **Total** | **3532** | **738** | **2723** | **71** | **21.3%** |
+| **Total** | **3532** | **764** | **2697** | **71** | **22.1%** |
 
 ## Expectations Detail
 
-### implementation-gap (741 entries)
+### implementation-gap (715 entries)
 
 **Glob patterns:**
 
@@ -260,7 +260,7 @@ description: Node.js v22 test/parallel/ conformance results for the secure-exec 
 - `test-https-*.js` — https depends on tls — most tests fail on missing TLS fixture files or crypto API gaps
 - `test-http2-*.js` — http2 module bridged via kernel — most tests fail on API gaps, missing fixtures, or protocol handling
 
-*735 individual tests — see expectations.json for full list.*
+*709 individual tests — see expectations.json for full list.*
 
 ### unsupported-module (190 entries)
 

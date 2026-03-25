@@ -26,6 +26,11 @@ import {
 	generateKeyPairSync,
 	createPrivateKey,
 	createPublicKey,
+	createSecretKey,
+	publicEncrypt,
+	privateDecrypt,
+	privateEncrypt,
+	publicDecrypt,
 	timingSafeEqual,
 	type Cipher,
 	type Decipher,
@@ -89,10 +94,254 @@ export interface CryptoBridgeResult {
 	dispose: () => void;
 }
 
+type SerializedKeyValue =
+	| {
+		kind: "string";
+		value: string;
+	}
+	| {
+		kind: "buffer";
+		value: string;
+	}
+	| {
+		kind: "keyObject";
+		value: SerializedSandboxKeyObject;
+	}
+	| {
+		kind: "object";
+		value: Record<string, unknown>;
+	};
+
+interface SerializedSandboxKeyObject {
+	type: "public" | "private" | "secret";
+	pem?: string;
+	raw?: string;
+	asymmetricKeyType?: string;
+	asymmetricKeyDetails?: Record<string, unknown>;
+	jwk?: Record<string, unknown>;
+}
+
+type SerializedBridgeValue =
+	| null
+	| boolean
+	| number
+	| string
+	| {
+			__type: "buffer";
+			value: string;
+	  }
+	| {
+			__type: "bigint";
+			value: string;
+	  }
+	| {
+			__type: "keyObject";
+			value: SerializedSandboxKeyObject;
+	  }
+	| SerializedBridgeValue[]
+	| {
+			[key: string]: SerializedBridgeValue;
+	  };
+
 /** Stateful cipher/decipher session stored between bridge calls. */
 interface CipherSession {
 	cipher: Cipher | Decipher;
 	algorithm: string;
+}
+
+function serializeKeyDetails(details: unknown): Record<string, unknown> | undefined {
+	if (!details || typeof details !== "object") {
+		return undefined;
+	}
+
+	return Object.fromEntries(
+		Object.entries(details).map(([key, value]) => [
+			key,
+			typeof value === "bigint"
+				? { __type: "bigint", value: value.toString() }
+				: value,
+		]),
+	);
+}
+
+function serializeKeyValue(value: unknown): SerializedKeyValue {
+	if (Buffer.isBuffer(value)) {
+		return {
+			kind: "buffer",
+			value: value.toString("base64"),
+		};
+	}
+
+	if (typeof value === "string") {
+		return {
+			kind: "string",
+			value,
+		};
+	}
+
+	if (
+		value &&
+		typeof value === "object" &&
+		"type" in value &&
+		((value as { type?: unknown }).type === "public" ||
+			(value as { type?: unknown }).type === "private") &&
+		typeof (value as { export?: unknown }).export === "function"
+	) {
+		return {
+			kind: "keyObject",
+			value: serializeSandboxKeyObject(value as any),
+		};
+	}
+
+	return {
+		kind: "object",
+		value: value as Record<string, unknown>,
+	};
+}
+
+function exportAsPem(keyObject: ReturnType<typeof createPrivateKey> | ReturnType<typeof createPublicKey>): string {
+	return keyObject.type === "private"
+		? (keyObject.export({ type: "pkcs8", format: "pem" }) as string)
+		: (keyObject.export({ type: "spki", format: "pem" }) as string);
+}
+
+function serializeSandboxKeyObject(
+	keyObject: ReturnType<typeof createPrivateKey> | ReturnType<typeof createPublicKey>,
+): SerializedSandboxKeyObject {
+	let jwk: Record<string, unknown> | undefined;
+	try {
+		jwk = keyObject.export({ format: "jwk" }) as Record<string, unknown>;
+	} catch {
+		jwk = undefined;
+	}
+
+	return {
+		type: keyObject.type,
+		pem: exportAsPem(keyObject),
+		asymmetricKeyType: keyObject.asymmetricKeyType ?? undefined,
+		asymmetricKeyDetails: serializeKeyDetails(keyObject.asymmetricKeyDetails),
+		jwk,
+	};
+}
+
+function serializeAnyKeyObject(keyObject: any): SerializedSandboxKeyObject {
+	if (keyObject.type === "secret") {
+		return {
+			type: "secret",
+			raw: Buffer.from(keyObject.export()).toString("base64"),
+		};
+	}
+
+	return serializeSandboxKeyObject(keyObject);
+}
+
+function serializeBridgeValue(value: unknown): SerializedBridgeValue {
+	if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+		return value;
+	}
+
+	if (typeof value === "bigint") {
+		return {
+			__type: "bigint",
+			value: value.toString(),
+		};
+	}
+
+	if (Buffer.isBuffer(value)) {
+		return {
+			__type: "buffer",
+			value: value.toString("base64"),
+		};
+	}
+
+	if (value instanceof ArrayBuffer) {
+		return {
+			__type: "buffer",
+			value: Buffer.from(value).toString("base64"),
+		};
+	}
+
+	if (ArrayBuffer.isView(value)) {
+		return {
+			__type: "buffer",
+			value: Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString("base64"),
+		};
+	}
+
+	if (Array.isArray(value)) {
+		return value.map((entry) => serializeBridgeValue(entry));
+	}
+
+	if (
+		value &&
+		typeof value === "object" &&
+		"type" in value &&
+		(((value as { type?: unknown }).type === "public" ||
+			(value as { type?: unknown }).type === "private" ||
+			(value as { type?: unknown }).type === "secret")) &&
+		typeof (value as { export?: unknown }).export === "function"
+	) {
+		return {
+			__type: "keyObject",
+			value: serializeAnyKeyObject(value as any),
+		};
+	}
+
+	if (value && typeof value === "object") {
+		return Object.fromEntries(
+			Object.entries(value).flatMap(([key, entry]) =>
+				entry === undefined ? [] : [[key, serializeBridgeValue(entry)]],
+			),
+		);
+	}
+
+	return String(value);
+}
+
+function deserializeSandboxKeyObject(serialized: SerializedSandboxKeyObject): any {
+	if (serialized.type === "secret") {
+		return createSecretKey(Buffer.from(serialized.raw || "", "base64"));
+	}
+
+	if (serialized.type === "private") {
+		return createPrivateKey(String(serialized.pem || ""));
+	}
+
+	return createPublicKey(String(serialized.pem || ""));
+}
+
+function deserializeBridgeValue(value: SerializedBridgeValue): unknown {
+	if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+		return value;
+	}
+
+	if (Array.isArray(value)) {
+		return value.map((entry) => deserializeBridgeValue(entry));
+	}
+
+	if ("__type" in value) {
+		if (value.__type === "buffer") {
+			return Buffer.from((value as { value: string }).value, "base64");
+		}
+		if (value.__type === "bigint") {
+			return BigInt((value as { value: string }).value);
+		}
+		if (value.__type === "keyObject") {
+			return deserializeSandboxKeyObject((value as { value: SerializedSandboxKeyObject }).value);
+		}
+	}
+
+	return Object.fromEntries(
+		Object.entries(value).map(([key, entry]) => [key, deserializeBridgeValue(entry)]),
+	);
+}
+
+function normalizeBridgeAlgorithm(algorithm: unknown): string | null {
+	if (algorithm === null || algorithm === undefined || algorithm === "") {
+		return null;
+	}
+
+	return String(algorithm);
 }
 
 /**
@@ -289,11 +538,11 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 	handlers[K.cryptoSign] = (
 		algorithm: unknown,
 		dataBase64: unknown,
-		keyPem: unknown,
+		keyJson: unknown,
 	) => {
 		const data = Buffer.from(String(dataBase64), "base64");
-		const key = createPrivateKey(String(keyPem));
-		const signature = sign(String(algorithm) || null, data, key);
+		const key = deserializeBridgeValue(JSON.parse(String(keyJson)) as SerializedBridgeValue) as any;
+		const signature = sign(normalizeBridgeAlgorithm(algorithm), data, key);
 		return signature.toString("base64");
 	};
 
@@ -301,31 +550,80 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 	handlers[K.cryptoVerify] = (
 		algorithm: unknown,
 		dataBase64: unknown,
-		keyPem: unknown,
+		keyJson: unknown,
 		signatureBase64: unknown,
 	) => {
 		const data = Buffer.from(String(dataBase64), "base64");
-		const key = createPublicKey(String(keyPem));
+		const key = deserializeBridgeValue(JSON.parse(String(keyJson)) as SerializedBridgeValue) as any;
 		const signature = Buffer.from(String(signatureBase64), "base64");
-		return verify(String(algorithm) || null, data, key, signature);
+		return verify(normalizeBridgeAlgorithm(algorithm), data, key, signature);
 	};
 
-	// generateKeyPairSync — host generates key pair, returns PEM strings as JSON.
+	// Asymmetric encrypt/decrypt — use real Node crypto so DER inputs, encrypted
+	// PEM options bags, and sandbox KeyObject handles all follow host semantics.
+	handlers[K.cryptoAsymmetricOp] = (
+		operation: unknown,
+		keyJson: unknown,
+		dataBase64: unknown,
+	) => {
+		const key = deserializeBridgeValue(JSON.parse(String(keyJson)) as SerializedBridgeValue) as any;
+		const data = Buffer.from(String(dataBase64), "base64");
+		switch (String(operation)) {
+			case "publicEncrypt":
+				return publicEncrypt(key, data).toString("base64");
+			case "privateDecrypt":
+				return privateDecrypt(key, data).toString("base64");
+			case "privateEncrypt":
+				return privateEncrypt(key, data).toString("base64");
+			case "publicDecrypt":
+				return publicDecrypt(key, data).toString("base64");
+			default:
+				throw new Error(`Unsupported asymmetric crypto operation: ${String(operation)}`);
+		}
+	};
+
+	// createPublicKey/createPrivateKey — import through host crypto so metadata
+	// like asymmetricKeyType/asymmetricKeyDetails survives reconstruction.
+	handlers[K.cryptoCreateKeyObject] = (
+		operation: unknown,
+		keyJson: unknown,
+	) => {
+		const key = deserializeBridgeValue(JSON.parse(String(keyJson)) as SerializedBridgeValue) as any;
+		switch (String(operation)) {
+			case "createPrivateKey":
+				return JSON.stringify(serializeAnyKeyObject(createPrivateKey(key)));
+			case "createPublicKey":
+				return JSON.stringify(serializeAnyKeyObject(createPublicKey(key)));
+			default:
+				throw new Error(`Unsupported key creation operation: ${String(operation)}`);
+		}
+	};
+
+	// generateKeyPairSync — host generates key pair, preserving requested encodings.
+	// For KeyObject output, serialize PEM + metadata so the isolate can recreate a
+	// Node-compatible KeyObject surface.
 	handlers[K.cryptoGenerateKeyPairSync] = (
 		type: unknown,
 		optionsJson: unknown,
 	) => {
 		const options = JSON.parse(String(optionsJson));
-		const genOptions = {
-			...options,
-			publicKeyEncoding: { type: "spki" as const, format: "pem" as const },
-			privateKeyEncoding: { type: "pkcs8" as const, format: "pem" as const },
-		};
-		const { publicKey, privateKey } = generateKeyPairSync(
-			type as any,
-			genOptions as any,
-		);
-		return JSON.stringify({ publicKey, privateKey });
+		const hasExplicitEncoding =
+			options &&
+			typeof options === "object" &&
+			(options.publicKeyEncoding || options.privateKeyEncoding);
+		const { publicKey, privateKey } = generateKeyPairSync(type as any, options as any);
+
+		if (hasExplicitEncoding) {
+			return JSON.stringify({
+				publicKey: serializeKeyValue(publicKey as unknown),
+				privateKey: serializeKeyValue(privateKey as unknown),
+			});
+		}
+
+		return JSON.stringify({
+			publicKey: serializeSandboxKeyObject(publicKey as any),
+			privateKey: serializeSandboxKeyObject(privateKey as any),
+		});
 	};
 
 	// crypto.subtle — single dispatcher for all Web Crypto API operations.

@@ -244,6 +244,16 @@ export const NODE_CUSTOM_GLOBAL_INVENTORY: readonly CustomGlobalInventoryEntry[]
 		rationale: "Host crypto verify bridge reference.",
 	},
 	{
+		name: "_cryptoAsymmetricOp",
+		classification: "hardened",
+		rationale: "Host asymmetric crypto operation bridge reference.",
+	},
+	{
+		name: "_cryptoCreateKeyObject",
+		classification: "hardened",
+		rationale: "Host asymmetric key import bridge reference.",
+	},
+	{
 		name: "_cryptoGenerateKeyPairSync",
 		classification: "hardened",
 		rationale: "Host crypto key-pair generation bridge reference.",
