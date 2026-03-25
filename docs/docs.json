@@ -126,6 +126,7 @@
             "pages": [
               "posix-compatibility",
               "posix-conformance-report",
+              "nodejs-conformance-report",
               "python-compatibility"
             ]
           }

@@ -43,8 +43,10 @@ declare const _childProcessSpawnSync:
 declare const _registerHandle: RegisterHandleBridgeFn;
 declare const _unregisterHandle: UnregisterHandleBridgeFn;
 
-// Active children registry - maps session ID to ChildProcess
-const activeChildren = new Map<number, ChildProcess>();
+// Child process instances — routes stream events from host to ChildProcess objects.
+// Process state (running/exited) is tracked by the kernel process table; this Map
+// is only for dispatching stdout/stderr/exit events to the sandbox-side objects.
+const childProcessInstances = new Map<number, ChildProcess>();
 
 /**
  * Global dispatcher invoked by the host when child process data arrives.
@@ -56,7 +58,7 @@ const childProcessDispatch = (
   type: "stdout" | "stderr" | "exit",
   data: Uint8Array | number
 ): void => {
-  const child = activeChildren.get(sessionId);
+  const child = childProcessInstances.get(sessionId);
   if (!child) return;
 
   if (type === "stdout") {
@@ -73,7 +75,7 @@ const childProcessDispatch = (
     child.stderr.emit("end");
     child.emit("close", data, null);
     child.emit("exit", data, null);
-    activeChildren.delete(sessionId);
+    childProcessInstances.delete(sessionId);
     // Unregister handle - allows sandbox to exit if no other handles remain
     // See: docs-internal/node/ACTIVE_HANDLES.md
     if (typeof _unregisterHandle === "function") {
@@ -560,7 +562,7 @@ function spawn(
       JSON.stringify({ cwd: effectiveCwd, env: opts.env }),
     ]);
 
-    activeChildren.set(sessionId, child);
+    childProcessInstances.set(sessionId, child);
 
     // Register handle to keep sandbox alive until child exits
     // See: docs-internal/node/ACTIVE_HANDLES.md

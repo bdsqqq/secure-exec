@@ -42,6 +42,9 @@
   - **host-side assertion verification**: periodically run assert-heavy conformance tests through host Node.js to verify the assert polyfill isn't masking failures
 - never inflate conformance numbers — if a test self-skips (exits 0 without testing anything), mark it `vacuous-skip` in expectations.json, not as a real pass
 - every entry in `expectations.json` must have a specific, verifiable reason — no vague "fails in sandbox" reasons
+- after changing expectations.json or adding/removing test files, regenerate both the JSON report and docs page: `pnpm tsx scripts/generate-node-conformance-report.ts`
+- the script produces `packages/secure-exec/tests/node-conformance/conformance-report.json` (machine-readable) and `docs/nodejs-conformance-report.mdx` (docs page) — commit both
+- to run the actual conformance suite: `pnpm vitest run packages/secure-exec/tests/node-conformance/runner.test.ts`
 
 ## Tooling
 
@@ -97,6 +100,7 @@
 - C patches in `native/wasmvm/patches/wasi-libc/` must be kept in sync with wasi-ext — ABI drift between C, Rust, and JS is a P0 bug
 - permission tier enforcement must cover ALL write/spawn/kill/pipe/dup operations — audit `packages/wasmvm/src/kernel-worker.ts` when adding new syscalls
 - `PATCHED_PROGRAMS` in `native/wasmvm/c/Makefile` must include all programs that use `host_process` or `host_user` imports (programs linking the patched sysroot)
+- WasmVM `host_net` socket option payloads cross the worker RPC boundary as little-endian byte buffers; decode/encode them in `packages/wasmvm/src/driver.ts` and keep `packages/wasmvm/src/kernel-worker.ts` as a thin memory marshal layer
 
 ## Terminology
 
@@ -112,7 +116,11 @@
 - **all sandbox I/O routes through the virtual kernel** — user code never touches the host OS directly
 - the kernel provides: VFS (virtual file system), process table (spawn/signals/exit), network stack (TCP/HTTP/DNS/UDP), and a deny-by-default permissions engine
 - **network calls are kernel-mediated**: `http.createServer()` registers a virtual listener in the kernel's network stack; `http.request()` to localhost routes through the kernel without real TCP — the kernel connects virtual server to virtual client directly; external requests go through the host adapter after permission checks
+- when kernel `bind()` assigns an internal ephemeral port for `port: 0`, preserve that original ephemeral intent on the socket so external host-backed listeners can still call the host adapter with `port: 0` and then rewrite `localAddr` to the real host-assigned port
 - **the VFS is not the host file system** — files written by sandbox code live in the VFS (in-memory by default); host filesystem is accessible only through explicit read-only overlays (e.g., `node_modules`) configured by the embedder
+- when the kernel uses `InMemoryFileSystem`, rebind it to the shared `kernel.inodeTable` before wrapping it with devices/permissions; deferred-unlink FD I/O must use inode-based helpers on the raw in-memory FS, not pathname lookups
+- deferred unlink must stay inode-backed: once a pathname is removed, new path lookups must fail immediately, but existing FDs must keep working through `FileDescription.inode` until the last reference closes
+- `KernelInterface.fdOpen()` is synchronous, so open-time file semantics (`O_CREAT`, `O_EXCL`, `O_TRUNC`) must go through sync-capable VFS hooks threaded through the device and permission wrappers — do not move those checks into async read/write paths
 - **embedders provide host adapters** that implement actual I/O — a Node.js embedder provides real `fs` and `net`; a browser embedder provides `fetch`-based networking and no file system; sandbox code doesn't know which adapter backs the kernel
 - when implementing new I/O features (e.g., UDP, TCP servers, fs.watch), they MUST route through the kernel — never bypass it to hit the host directly
 - see `docs/nodejs-compatibility.mdx` for the architecture diagram
@@ -143,7 +151,9 @@
 - `node -e <code>` must produce stdout/stderr visible to the user, both through `kernel.exec()` and in the interactive shell PTY — identical to running `node -e` on a real Linux terminal
 - `node -e <invalid>` must display the error (SyntaxError/ReferenceError) on stderr, not silently swallow it
 - commands that only read stdin when stdin is a TTY (e.g. `tree`, `cat` with no args) must not hang when run from the shell; commands must detect whether stdin is a real data source vs an empty pipe/PTY
+- blocking pipe writes must preserve partial progress and wait for new capacity via the kernel wait path; wake blocked writers from both read drains and read-end closes so pipe writes never hang after the consumer disappears
 - Ctrl+C (SIGINT) must interrupt the foreground process group within 1 second, matching POSIX `isig` + `VINTR` behavior — this applies to all runtimes (WasmVM, Node, Python)
+- PTY bulk writes in raw mode must still apply `icrnl` atomically before buffer-limit checks; oversized writes must fail with `EAGAIN` without partially buffering input
 - signal delivery through the PTY line discipline → kernel process table → driver kill() chain must be end-to-end tested
 - when adding or fixing process/signal/PTY behavior, always verify against the equivalent behavior on a real Linux system
 

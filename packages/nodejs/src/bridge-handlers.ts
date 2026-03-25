@@ -4,10 +4,13 @@
 // Handler names match HOST_BRIDGE_GLOBAL_KEYS from the bridge contract.
 
 import * as net from "node:net";
+import * as http from "node:http";
 import * as tls from "node:tls";
+import { Duplex } from "node:stream";
 import { readFileSync, realpathSync, existsSync } from "node:fs";
 import { dirname as pathDirname, join as pathJoin, resolve as pathResolve } from "node:path";
 import { createRequire } from "node:module";
+import { serialize } from "node:v8";
 import {
 	randomFillSync,
 	randomUUID,
@@ -32,17 +35,30 @@ import {
 } from "./bridge-contract.js";
 import {
 	mkdir,
+	FDTableManager,
+	O_RDONLY,
+	O_WRONLY,
+	O_RDWR,
+	O_CREAT,
+	O_TRUNC,
+	O_APPEND,
+	FILETYPE_REGULAR_FILE,
 } from "@secure-exec/core";
 import { normalizeBuiltinSpecifier } from "./builtin-modules.js";
 import { resolveModule, loadFile } from "./package-bundler.js";
 import { transformDynamicImport, isESM } from "@secure-exec/core/internal/shared/esm-utils";
 import { bundlePolyfill, hasPolyfill } from "./polyfills.js";
-import { getStaticBuiltinWrapperSource, getEmptyBuiltinESMWrapper } from "./esm-compiler.js";
+import {
+	createBuiltinESMWrapper,
+	getStaticBuiltinWrapperSource,
+	getEmptyBuiltinESMWrapper,
+} from "./esm-compiler.js";
 import {
 	checkBridgeBudget,
 	assertPayloadByteLength,
 	assertTextPayloadSize,
 	getBase64EncodedByteLength,
+	getHostBuiltinNamedExports,
 	parseJsonWithLimit,
 	polyfillCodeCache,
 	RESOURCE_BUDGET_ERROR_CODE,
@@ -778,6 +794,10 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 export interface NetSocketBridgeDeps {
 	/** Dispatch a socket event back to the guest (socketId, event, data?). */
 	dispatch: (socketId: number, event: string, data?: string) => void;
+	/** Kernel socket table — when provided, routes through kernel instead of host TCP. */
+	socketTable?: import("@secure-exec/core").SocketTable;
+	/** Process ID for kernel socket ownership. Required when socketTable is set. */
+	pid?: number;
 }
 
 /** Result of building net socket bridge handlers — includes dispose for cleanup. */
@@ -789,163 +809,228 @@ export interface NetSocketBridgeResult {
 /**
  * Build net socket bridge handlers.
  *
- * Creates handlers for TCP socket operations (connect, write, end, destroy).
- * The host creates real net.Socket instances and dispatches events (connect,
- * data, end, error, close) back to the guest via the provided dispatch function.
+ * All TCP operations route through kernel sockets (loopback or external via
+ * the host adapter).
  * Call dispose() when the execution ends to destroy all open sockets.
  */
 export function buildNetworkSocketBridgeHandlers(
 	deps: NetSocketBridgeDeps,
 ): NetSocketBridgeResult {
+	const { socketTable, pid } = deps;
+	if (!socketTable || pid === undefined) {
+		throw new Error("buildNetworkSocketBridgeHandlers requires a kernel socketTable and pid");
+	}
+	return buildKernelSocketBridgeHandlers(deps.dispatch, socketTable, pid);
+}
+
+/**
+ * Build bridge handlers that route net socket operations through the
+ * kernel SocketTable. Data flows through kernel send/recv, connections
+ * route through loopback (paired sockets) or external (host adapter).
+ */
+function buildKernelSocketBridgeHandlers(
+	dispatch: NetSocketBridgeDeps["dispatch"],
+	socketTable: import("@secure-exec/core").SocketTable,
+	pid: number,
+): NetSocketBridgeResult {
+	const {
+		AF_INET, SOCK_STREAM,
+	} = require("@secure-exec/core") as typeof import("@secure-exec/core");
 	const handlers: BridgeHandlers = {};
 	const K = HOST_BRIDGE_GLOBAL_KEYS;
 
-	// Track open sockets per execution for cleanup on dispose.
-	const sockets = new Map<number, net.Socket>();
-	let nextSocketId = 1;
+	// Track active kernel socket IDs for cleanup
+	const activeSocketIds = new Set<number>();
+	// Track TLS-upgraded sockets that bypass kernel recv (host-side TLS)
+	const tlsSockets = new Map<number, net.Socket>();
 
-	// Connect — create a real TCP socket on the host.
-	// Returns socketId; events are dispatched via deps.dispatch.
+	/** Background read pump: polls kernel recv() and dispatches data/end/close. */
+	function startReadPump(socketId: number): void {
+		const pump = async () => {
+			try {
+				while (activeSocketIds.has(socketId)) {
+					// Try to read data
+					let data: Uint8Array | null;
+					try {
+						data = socketTable.recv(socketId, 65536, 0);
+					} catch {
+						// Socket closed or error — stop pump
+						break;
+					}
+
+					if (data !== null) {
+						dispatch(socketId, "data", Buffer.from(data).toString("base64"));
+						continue;
+					}
+
+					// No data — check if EOF
+					const socket = socketTable.get(socketId);
+					if (!socket) break;
+					if (socket.state === "closed" || socket.state === "read-closed") {
+						dispatch(socketId, "end");
+						break;
+					}
+					if (socket.peerWriteClosed || (socket.peerId === undefined && !socket.external)) {
+						dispatch(socketId, "end");
+						break;
+					}
+					// For external sockets, check hostSocket EOF via readBuffer state
+					if (socket.external && socket.readBuffer.length === 0 && socket.peerWriteClosed) {
+						dispatch(socketId, "end");
+						break;
+					}
+
+					// Wait for data to arrive
+					const handle = socket.readWaiters.enqueue();
+					await handle.wait();
+				}
+			} catch {
+				// Socket destroyed during pump — expected
+			}
+			// Dispatch close if socket was active
+			if (activeSocketIds.delete(socketId)) {
+				dispatch(socketId, "close");
+			}
+		};
+		pump();
+	}
+
+	// Connect — create kernel socket and start async connect + read pump
 	handlers[K.netSocketConnectRaw] = (host: unknown, port: unknown) => {
-		const socketId = nextSocketId++;
-		const socket = net.connect({ host: String(host), port: Number(port) });
-		sockets.set(socketId, socket);
+		const socketId = socketTable.create(AF_INET, SOCK_STREAM, 0, pid);
+		activeSocketIds.add(socketId);
 
-		socket.on("connect", () => deps.dispatch(socketId, "connect"));
-		socket.on("data", (chunk: Buffer) =>
-			deps.dispatch(socketId, "data", chunk.toString("base64")),
-		);
-		socket.on("end", () => deps.dispatch(socketId, "end"));
-		socket.on("error", (err: Error) =>
-			deps.dispatch(socketId, "error", err.message),
-		);
-		socket.on("close", () => {
-			sockets.delete(socketId);
-			deps.dispatch(socketId, "close");
-		});
+		// Async connect — dispatch 'connect' on success, 'error' on failure
+		socketTable.connect(socketId, { host: String(host), port: Number(port) })
+			.then(() => {
+				if (!activeSocketIds.has(socketId)) return;
+				dispatch(socketId, "connect");
+				startReadPump(socketId);
+			})
+			.catch((err: Error) => {
+				if (!activeSocketIds.has(socketId)) return;
+				dispatch(socketId, "error", err.message);
+				activeSocketIds.delete(socketId);
+				dispatch(socketId, "close");
+			});
 
 		return socketId;
 	};
 
-	// Write — send data to an open socket.
+	// Write — send data through kernel socket
 	handlers[K.netSocketWriteRaw] = (
 		socketId: unknown,
 		dataBase64: unknown,
 	) => {
-		const socket = sockets.get(Number(socketId));
-		if (!socket) throw new Error(`Socket ${socketId} not found`);
-		socket.write(Buffer.from(String(dataBase64), "base64"));
-	};
-
-	// End — half-close the socket (send FIN).
-	handlers[K.netSocketEndRaw] = (socketId: unknown) => {
-		sockets.get(Number(socketId))?.end();
-	};
-
-	// Destroy — forcefully tear down the socket.
-	handlers[K.netSocketDestroyRaw] = (socketId: unknown) => {
 		const id = Number(socketId);
-		const socket = sockets.get(id);
-		if (socket) {
-			socket.destroy();
-			sockets.delete(id);
+		// TLS-upgraded sockets write directly to host TLS socket
+		const tlsSocket = tlsSockets.get(id);
+		if (tlsSocket) {
+			tlsSocket.write(Buffer.from(String(dataBase64), "base64"));
+			return;
+		}
+		const data = Buffer.from(String(dataBase64), "base64");
+		socketTable.send(id, new Uint8Array(data), 0);
+	};
+
+	// End — half-close write side
+	handlers[K.netSocketEndRaw] = (socketId: unknown) => {
+		const id = Number(socketId);
+		const tlsSocket = tlsSockets.get(id);
+		if (tlsSocket) {
+			tlsSocket.end();
+			return;
+		}
+		try {
+			socketTable.shutdown(id, "write");
+		} catch {
+			// Socket may already be closed
 		}
 	};
 
-	// TLS upgrade — wrap existing TCP socket with tls.TLSSocket.
-	// Re-wires events through the same dispatch mechanism with secureConnect event.
+	// Destroy — close kernel socket
+	handlers[K.netSocketDestroyRaw] = (socketId: unknown) => {
+		const id = Number(socketId);
+		const tlsSocket = tlsSockets.get(id);
+		if (tlsSocket) {
+			tlsSocket.destroy();
+			tlsSockets.delete(id);
+		}
+		if (activeSocketIds.has(id)) {
+			activeSocketIds.delete(id);
+			try {
+				socketTable.close(id, pid);
+			} catch {
+				// Already closed
+			}
+		}
+	};
+
+	// TLS upgrade — for external kernel sockets, unwrap the host socket
+	// and wrap with TLS. Loopback sockets cannot be TLS-upgraded (no real TCP).
 	handlers[K.netSocketUpgradeTlsRaw] = (
 		socketId: unknown,
 		optionsJson: unknown,
 	) => {
 		const id = Number(socketId);
-		const socket = sockets.get(id);
+		const socket = socketTable.get(id);
 		if (!socket) throw new Error(`Socket ${id} not found for TLS upgrade`);
+
+		// TLS only works for external sockets with a real host socket
+		if (!socket.external || !socket.hostSocket) {
+			throw new Error(`Socket ${id} cannot be TLS-upgraded (loopback socket)`);
+		}
 
 		const options = optionsJson ? JSON.parse(String(optionsJson)) : {};
 
-		// Remove existing listeners before wrapping — TLS socket will emit its own events
-		socket.removeAllListeners();
+		// Access the underlying net.Socket from the host adapter
+		const hostSocket = socket.hostSocket as unknown as { socket?: net.Socket };
+		const realSocket = (hostSocket as any).socket as net.Socket | undefined;
+		if (!realSocket) {
+			throw new Error(`Socket ${id} has no underlying TCP socket for TLS upgrade`);
+		}
+
+		// Detach the kernel read pump by clearing the host socket ref
+		socket.hostSocket = undefined;
 
 		const tlsSocket = tls.connect({
-			socket,
+			socket: realSocket,
 			rejectUnauthorized: options.rejectUnauthorized ?? false,
 			servername: options.servername,
 			...( options.minVersion ? { minVersion: options.minVersion } : {}),
 			...( options.maxVersion ? { maxVersion: options.maxVersion } : {}),
 		});
 
-		// Replace in map so write/end/destroy operate on the TLS socket
-		sockets.set(id, tlsSocket as unknown as net.Socket);
+		// Track TLS socket for write/end/destroy bypass
+		tlsSockets.set(id, tlsSocket as unknown as net.Socket);
 
-		tlsSocket.on("secureConnect", () =>
-			deps.dispatch(id, "secureConnect"),
-		);
+		tlsSocket.on("secureConnect", () => dispatch(id, "secureConnect"));
 		tlsSocket.on("data", (chunk: Buffer) =>
-			deps.dispatch(id, "data", chunk.toString("base64")),
+			dispatch(id, "data", chunk.toString("base64")),
 		);
-		tlsSocket.on("end", () => deps.dispatch(id, "end"));
+		tlsSocket.on("end", () => dispatch(id, "end"));
 		tlsSocket.on("error", (err: Error) =>
-			deps.dispatch(id, "error", err.message),
+			dispatch(id, "error", err.message),
 		);
 		tlsSocket.on("close", () => {
-			sockets.delete(id);
-			deps.dispatch(id, "close");
+			tlsSockets.delete(id);
+			activeSocketIds.delete(id);
+			dispatch(id, "close");
 		});
 	};
 
 	const dispose = () => {
-		for (const socket of sockets.values()) {
+		for (const id of activeSocketIds) {
+			try { socketTable.close(id, pid); } catch { /* best effort */ }
+		}
+		activeSocketIds.clear();
+		for (const socket of tlsSockets.values()) {
 			socket.destroy();
 		}
-		sockets.clear();
+		tlsSockets.clear();
 	};
 
 	return { handlers, dispose };
-}
-
-/** Dependencies for building upgrade socket bridge handlers. */
-export interface UpgradeSocketBridgeDeps {
-	/** Write data to an upgrade socket. */
-	write: (socketId: number, dataBase64: string) => void;
-	/** End an upgrade socket. */
-	end: (socketId: number) => void;
-	/** Destroy an upgrade socket. */
-	destroy: (socketId: number) => void;
-}
-
-/**
- * Build upgrade socket bridge handlers.
- *
- * Creates handlers for HTTP upgrade socket operations (write, end, destroy).
- * These forward to the NetworkAdapter's upgrade socket methods for
- * bidirectional WebSocket relay.
- */
-export function buildUpgradeSocketBridgeHandlers(
-	deps: UpgradeSocketBridgeDeps,
-): BridgeHandlers {
-	const handlers: BridgeHandlers = {};
-	const K = HOST_BRIDGE_GLOBAL_KEYS;
-
-	// Write data to an upgrade socket.
-	handlers[K.upgradeSocketWriteRaw] = (
-		socketId: unknown,
-		dataBase64: unknown,
-	) => {
-		deps.write(Number(socketId), String(dataBase64));
-	};
-
-	// End an upgrade socket.
-	handlers[K.upgradeSocketEndRaw] = (socketId: unknown) => {
-		deps.end(Number(socketId));
-	};
-
-	// Destroy an upgrade socket.
-	handlers[K.upgradeSocketDestroyRaw] = (socketId: unknown) => {
-		deps.destroy(Number(socketId));
-	};
-
-	return handlers;
 }
 
 /** Dependencies for building sync module resolution bridge handlers. */
@@ -1092,7 +1177,11 @@ function convertEsmToCjs(source: string, filePath: string): string {
  * Resolve a package specifier by walking up directories and reading package.json exports.
  * Handles both root imports ('pkg') and subpath imports ('pkg/sub').
  */
-function resolvePackageExport(req: string, startDir: string): string | null {
+function resolvePackageExport(
+	req: string,
+	startDir: string,
+	mode: "require" | "import" = "require",
+): string | null {
 	// Split into package name and subpath
 	const parts = req.startsWith("@") ? req.split("/") : [req.split("/")[0], ...req.split("/").slice(1)];
 	const pkgName = req.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
@@ -1109,7 +1198,17 @@ function resolvePackageExport(req: string, startDir: string): string | null {
 			if (pkg.exports) {
 				const exportEntry = pkg.exports[subpath];
 				if (typeof exportEntry === "string") entry = exportEntry;
-				else if (exportEntry) entry = exportEntry.import ?? exportEntry.default;
+				else if (exportEntry) {
+					const conditionalEntry = exportEntry as {
+						import?: string;
+						require?: string;
+						default?: string;
+					};
+					entry =
+						mode === "import"
+							? conditionalEntry.import ?? conditionalEntry.default ?? conditionalEntry.require
+							: conditionalEntry.require ?? conditionalEntry.default ?? conditionalEntry.import;
+				}
 			}
 			if (!entry && subpath === ".") entry = pkg.main;
 			if (entry) return pathResolve(pathDirname(pkgJsonPath), entry);
@@ -1137,8 +1236,16 @@ export function buildModuleResolutionBridgeHandlers(
 
 	// Sync require.resolve — translates sandbox paths and uses Node.js resolution.
 	// Falls back to realpath + manual package.json resolution for pnpm/ESM packages.
-	handlers[K.resolveModuleSync] = (request: unknown, fromDir: unknown) => {
+	handlers[K.resolveModuleSync] = (
+		request: unknown,
+		fromDir: unknown,
+		requestedMode?: unknown,
+	) => {
 		const req = String(request);
+		const resolveMode =
+			requestedMode === "require" || requestedMode === "import"
+				? requestedMode
+				: "require";
 
 		// Builtins don't need filesystem resolution
 		const builtin = normalizeBuiltinSpecifier(req);
@@ -1147,6 +1254,15 @@ export function buildModuleResolutionBridgeHandlers(
 		// Translate sandbox fromDir to host path for resolution context
 		const sandboxDir = String(fromDir);
 		const hostDir = deps.sandboxToHostPath(sandboxDir) ?? sandboxDir;
+		const resolveFromExports = (dir: string) => {
+			const resolved = resolvePackageExport(req, dir, resolveMode);
+			return resolved ? deps.hostToSandboxPath(resolved) : null;
+		};
+
+		if (resolveMode === "import") {
+			const resolved = resolveFromExports(hostDir);
+			if (resolved) return resolved;
+		}
 
 		// Try require.resolve first
 		try {
@@ -1158,14 +1274,18 @@ export function buildModuleResolutionBridgeHandlers(
 		try {
 			let realDir: string;
 			try { realDir = realpathSync(hostDir); } catch { realDir = hostDir; }
+			if (resolveMode === "import") {
+				const resolved = resolveFromExports(realDir);
+				if (resolved) return resolved;
+			}
 			// Try require.resolve from real path
 			try {
 				const resolved = hostRequire.resolve(req, { paths: [realDir] });
 				return deps.hostToSandboxPath(resolved);
 			} catch { /* ESM-only, manual resolution */ }
 			// Manual package.json resolution for ESM packages
-			const resolved = resolvePackageExport(req, realDir);
-			if (resolved) return deps.hostToSandboxPath(resolved);
+			const resolved = resolveFromExports(realDir);
+			if (resolved) return resolved;
 		} catch { /* fallback failed */ }
 		return null;
 	};
@@ -1262,6 +1382,7 @@ export function buildConsoleBridgeHandlers(deps: ConsoleBridgeDeps): BridgeHandl
 export interface ModuleLoadingBridgeDeps {
 	filesystem: VirtualFileSystem;
 	resolutionCache: ResolutionCache;
+	resolveMode?: "require" | "import";
 	/** Convert sandbox path to host path for pnpm/symlink resolution fallback. */
 	sandboxToHostPath?: (sandboxPath: string) => string | null;
 }
@@ -1317,8 +1438,16 @@ export function buildModuleLoadingBridgeHandlers(
 	// V8 ESM module resolve sends the full file path as referrer, not a directory.
 	// Extract dirname when the referrer looks like a file path.
 	// Falls back to Node.js require.resolve() with realpath for pnpm compatibility.
-	handlers[K.resolveModule] = async (request: unknown, fromDir: unknown): Promise<string | null> => {
+	handlers[K.resolveModule] = async (
+		request: unknown,
+		fromDir: unknown,
+		requestedMode?: unknown,
+	): Promise<string | null> => {
 		const req = String(request);
+		const resolveMode =
+			requestedMode === "require" || requestedMode === "import"
+				? requestedMode
+				: (deps.resolveMode ?? "require");
 		const builtin = normalizeBuiltinSpecifier(req);
 		if (builtin) return builtin;
 		let dir = String(fromDir);
@@ -1326,19 +1455,29 @@ export function buildModuleLoadingBridgeHandlers(
 			const lastSlash = dir.lastIndexOf("/");
 			if (lastSlash > 0) dir = dir.slice(0, lastSlash);
 		}
-		const vfsResult = await resolveModule(req, dir, deps.filesystem, "require", deps.resolutionCache);
+		const vfsResult = await resolveModule(
+			req,
+			dir,
+			deps.filesystem,
+			resolveMode,
+			deps.resolutionCache,
+		);
 		if (vfsResult) return vfsResult;
 		// Fallback: resolve through real host paths for pnpm symlink compatibility.
 		const hostDir = deps.sandboxToHostPath?.(dir) ?? dir;
 		try {
 			let realDir: string;
 			try { realDir = realpathSync(hostDir); } catch { realDir = hostDir; }
+			if (resolveMode === "import") {
+				const resolvedImport = resolvePackageExport(req, realDir, "import");
+				if (resolvedImport) return resolvedImport;
+			}
 			// Try require.resolve (works for CJS packages)
 			try {
 				return hostRequire.resolve(req, { paths: [realDir] });
 			} catch { /* ESM-only, try manual resolution */ }
 			// Manual package.json resolution for ESM packages
-			const resolved = resolvePackageExport(req, realDir);
+			const resolved = resolvePackageExport(req, realDir, resolveMode);
 			if (resolved) return resolved;
 		} catch { /* resolution failed */ }
 		return null;
@@ -1352,22 +1491,32 @@ export function buildModuleLoadingBridgeHandlers(
 	// Async file read + dynamic import transform.
 	// Also serves ESM wrappers for built-in modules (fs, path, etc.) when
 	// used from V8's ES module system which calls _loadFile after _resolveModule.
-	handlers[K.loadFile] = async (path: unknown): Promise<string | null> => {
+	handlers[K.loadFile] = async (
+		path: unknown,
+		requestedMode?: unknown,
+	): Promise<string | null> => {
 		const p = String(path);
+		const loadMode =
+			requestedMode === "require" || requestedMode === "import"
+				? requestedMode
+				: (deps.resolveMode ?? "require");
 		// Built-in module ESM wrappers (V8 module system resolves 'fs' then loads it)
 		const bare = p.replace(/^node:/, "");
 		const builtin = getStaticBuiltinWrapperSource(bare);
 		if (builtin) return builtin;
 		// Polyfill-backed builtins (crypto, zlib, etc.)
 		if (hasPolyfill(bare)) {
-			const code = await bundlePolyfill(bare);
-			// Wrap polyfill CJS bundle as ESM: export default + named re-exports
-			return `const _p = (function(){var module={exports:{}};var exports=module.exports;${code};return module.exports})();\nexport default _p;\n` +
-				`for(const[k,v]of Object.entries(_p)){if(k!=='default'&&/^[A-Za-z_$]/.test(k))globalThis['__esm_'+k]=v;}\n`;
+			return createBuiltinESMWrapper(
+				`globalThis._requireFrom(${JSON.stringify(bare)}, "/")`,
+				getHostBuiltinNamedExports(bare),
+			);
 		}
-		// Regular file — keep ESM source intact for V8 module system
-		const source = await loadFile(p, deps.filesystem);
+		// Regular files load differently for CommonJS require() vs V8's ESM loader.
+		let source = await loadFile(p, deps.filesystem);
 		if (source === null) return null;
+		if (loadMode === "require") {
+			source = convertEsmToCjs(source, p);
+		}
 		return transformDynamicImport(source);
 	};
 
@@ -1395,6 +1544,150 @@ export function buildTimerBridgeHandlers(deps: TimerBridgeDeps): BridgeHandlers 
 			}, Number(delayMs));
 			deps.activeHostTimers.add(id);
 		});
+	};
+
+	return handlers;
+}
+
+export interface KernelTimerDispatchDeps {
+	timerTable: import("@secure-exec/core").TimerTable;
+	pid: number;
+	budgetState: BudgetState;
+	maxBridgeCalls?: number;
+	activeHostTimers: Set<ReturnType<typeof setTimeout>>;
+	sendStreamEvent(eventType: string, payload: Uint8Array): void;
+}
+
+export function buildKernelTimerDispatchHandlers(
+	deps: KernelTimerDispatchDeps,
+): BridgeHandlers {
+	const handlers: BridgeHandlers = {};
+
+	handlers.kernelTimerCreate = (delayMs: unknown, repeat: unknown) => {
+		checkBridgeBudget(deps);
+		const normalizedDelay = Number(delayMs);
+		return deps.timerTable.createTimer(
+			deps.pid,
+			Number.isFinite(normalizedDelay) && normalizedDelay > 0
+				? Math.floor(normalizedDelay)
+				: 0,
+			Boolean(repeat),
+			() => {},
+		);
+	};
+
+	handlers.kernelTimerArm = (timerId: unknown) => {
+		checkBridgeBudget(deps);
+		const timer = deps.timerTable.get(Number(timerId));
+		if (!timer || timer.pid !== deps.pid || timer.cleared) {
+			return;
+		}
+
+		const dispatchFire = () => {
+			const activeTimer = deps.timerTable.get(timer.id);
+			if (!activeTimer || activeTimer.pid !== deps.pid || activeTimer.cleared) {
+				return;
+			}
+
+			activeTimer.hostHandle = undefined;
+			if (!activeTimer.repeat) {
+				deps.timerTable.clearTimer(activeTimer.id, deps.pid);
+			}
+			deps.sendStreamEvent(
+				"timer",
+				Buffer.from(JSON.stringify({ timerId: activeTimer.id })),
+			);
+		};
+
+		if (timer.delayMs <= 0) {
+			queueMicrotask(dispatchFire);
+			return;
+		}
+
+		const hostHandle = globalThis.setTimeout(() => {
+			deps.activeHostTimers.delete(hostHandle);
+			dispatchFire();
+		}, timer.delayMs);
+
+		timer.hostHandle = hostHandle;
+		deps.activeHostTimers.add(hostHandle);
+	};
+
+	handlers.kernelTimerClear = (timerId: unknown) => {
+		checkBridgeBudget(deps);
+		const timer = deps.timerTable.get(Number(timerId));
+		if (!timer || timer.pid !== deps.pid) return;
+
+		if (timer.hostHandle !== undefined) {
+			clearTimeout(timer.hostHandle as ReturnType<typeof setTimeout>);
+			deps.activeHostTimers.delete(
+				timer.hostHandle as ReturnType<typeof setTimeout>,
+			);
+			timer.hostHandle = undefined;
+		}
+		deps.timerTable.clearTimer(timer.id, deps.pid);
+	};
+
+	return handlers;
+}
+
+export interface KernelHandleDispatchDeps {
+	processTable?: import("@secure-exec/core").ProcessTable;
+	pid: number;
+	budgetState: BudgetState;
+	maxBridgeCalls?: number;
+}
+
+export function buildKernelHandleDispatchHandlers(
+	deps: KernelHandleDispatchDeps,
+): BridgeHandlers {
+	const handlers: BridgeHandlers = {};
+
+	handlers.kernelHandleRegister = (id: unknown, description: unknown) => {
+		checkBridgeBudget(deps);
+		if (!deps.processTable) return;
+
+		const handleId = String(id);
+		let activeHandles: Map<string, string>;
+		try {
+			activeHandles = deps.processTable.getHandles(deps.pid);
+		} catch {
+			return;
+		}
+		if (activeHandles.has(handleId)) {
+			try {
+				deps.processTable.unregisterHandle(deps.pid, handleId);
+			} catch {
+				// Process exit races turn re-register into a no-op.
+			}
+		}
+		deps.processTable.registerHandle(deps.pid, handleId, String(description));
+	};
+
+	handlers.kernelHandleUnregister = (id: unknown) => {
+		checkBridgeBudget(deps);
+		if (!deps.processTable) return 0;
+
+		try {
+			deps.processTable.unregisterHandle(deps.pid, String(id));
+		} catch {
+			// Unknown handles already behave like a no-op at the bridge layer.
+		}
+		try {
+			return deps.processTable.getHandles(deps.pid).size;
+		} catch {
+			return 0;
+		}
+	};
+
+	handlers.kernelHandleList = () => {
+		checkBridgeBudget(deps);
+		if (!deps.processTable) return [];
+		try {
+			return Array.from(deps.processTable.getHandles(deps.pid).entries());
+		} catch {
+			return [];
+		}
 	};
 
 	return handlers;
@@ -1445,7 +1738,9 @@ export function buildFsBridgeHandlers(deps: FsBridgeDeps): BridgeHandlers {
 
 	handlers[K.fsReadDir] = async (path: unknown) => {
 		checkBridgeBudget(deps);
-		const entries = await fs.readDirWithTypes(String(path));
+		const entries = (await fs.readDirWithTypes(String(path))).filter(
+			(entry) => entry.name !== "." && entry.name !== "..",
+		);
 		const json = JSON.stringify(entries);
 		assertTextPayloadSize(`fs.readDir ${path}`, json, jsonLimit);
 		return json;
@@ -1540,6 +1835,10 @@ export interface ChildProcessBridgeDeps {
 	activeChildProcesses: Map<number, SpawnedProcess>;
 	/** Push child process events into the V8 isolate. */
 	sendStreamEvent: (eventType: string, payload: Uint8Array) => void;
+	/** Kernel process table — when provided, child processes are registered for cross-runtime visibility. */
+	processTable?: import("@secure-exec/core").ProcessTable;
+	/** Parent process PID for kernel process table registration. */
+	parentPid?: number;
 }
 
 /** Build child process bridge handlers. */
@@ -1549,6 +1848,23 @@ export function buildChildProcessBridgeHandlers(deps: ChildProcessBridgeDeps): B
 	const jsonLimit = deps.isolateJsonPayloadLimitBytes;
 	let nextSessionId = 1;
 	const sessions = deps.activeChildProcesses;
+	const { processTable, parentPid } = deps;
+
+	// Map sessionId → kernel PID for kernel-registered processes
+	const sessionToPid = new Map<number, number>();
+
+	/** Wrap a SpawnedProcess as a kernel DriverProcess (adds callback stubs). */
+	function wrapAsDriverProcess(proc: SpawnedProcess) {
+		return {
+			writeStdin: (data: Uint8Array) => proc.writeStdin(data),
+			closeStdin: () => proc.closeStdin(),
+			kill: (signal: number) => proc.kill(signal),
+			wait: () => proc.wait(),
+			onStdout: null as ((data: Uint8Array) => void) | null,
+			onStderr: null as ((data: Uint8Array) => void) | null,
+			onExit: null as ((code: number) => void) | null,
+		};
+	}
 
 	// Serialize a child process event and push it into the V8 isolate
 	const dispatchEvent = (sessionId: number, type: string, data?: Uint8Array | number) => {
@@ -1579,7 +1895,26 @@ export function buildChildProcessBridgeHandlers(deps: ChildProcessBridgeDeps): B
 			onStderr: (data) => dispatchEvent(sessionId, "stderr", data),
 		});
 
+		// Register with kernel process table for cross-runtime visibility
+		if (processTable && parentPid !== undefined) {
+			const childPid = processTable.allocatePid();
+			processTable.register(childPid, "node", String(command), args, {
+				pid: childPid,
+				ppid: parentPid,
+				env: childEnv ?? {},
+				cwd: options.cwd ?? deps.processConfig.cwd ?? "/",
+				fds: { stdin: 0, stdout: 1, stderr: 2 },
+			}, wrapAsDriverProcess(proc));
+			sessionToPid.set(sessionId, childPid);
+		}
+
 		proc.wait().then((code) => {
+			// Mark exited in kernel process table
+			const childPid = sessionToPid.get(sessionId);
+			if (childPid !== undefined && processTable) {
+				try { processTable.markExited(childPid, code); } catch { /* already exited */ }
+				sessionToPid.delete(sessionId);
+			}
 			dispatchEvent(sessionId, "exit", code);
 			sessions.delete(sessionId);
 		});
@@ -1598,7 +1933,14 @@ export function buildChildProcessBridgeHandlers(deps: ChildProcessBridgeDeps): B
 	};
 
 	handlers[K.childProcessKill] = (sessionId: unknown, signal: unknown) => {
-		sessions.get(Number(sessionId))?.kill(Number(signal));
+		const id = Number(sessionId);
+		// Route through kernel process table when available
+		const childPid = sessionToPid.get(id);
+		if (childPid !== undefined && processTable) {
+			try { processTable.kill(childPid, Number(signal)); } catch { /* already dead */ }
+			return;
+		}
+		sessions.get(id)?.kill(Number(signal));
 	};
 
 	handlers[K.childProcessSpawnSync] = async (command: unknown, argsJson: unknown, optionsJson: unknown): Promise<string> => {
@@ -1645,7 +1987,26 @@ export function buildChildProcessBridgeHandlers(deps: ChildProcessBridgeDeps): B
 			},
 		});
 
+		// Register sync child with kernel process table
+		let syncChildPid: number | undefined;
+		if (processTable && parentPid !== undefined) {
+			syncChildPid = processTable.allocatePid();
+			processTable.register(syncChildPid, "node", String(command), args, {
+				pid: syncChildPid,
+				ppid: parentPid,
+				env: childEnv ?? {},
+				cwd: options.cwd ?? deps.processConfig.cwd ?? "/",
+				fds: { stdin: 0, stdout: 1, stderr: 2 },
+			}, wrapAsDriverProcess(proc));
+		}
+
 		const exitCode = await proc.wait();
+
+		// Mark exited in kernel
+		if (syncChildPid !== undefined && processTable) {
+			try { processTable.markExited(syncChildPid, exitCode); } catch { /* already exited */ }
+		}
+
 		const decoder = new TextDecoder();
 		const stdout = stdoutChunks.map((c) => decoder.decode(c)).join("");
 		const stderr = stderrChunks.map((c) => decoder.decode(c)).join("");
@@ -1662,27 +2023,242 @@ export interface NetworkBridgeDeps {
 	maxBridgeCalls?: number;
 	isolateJsonPayloadLimitBytes: number;
 	activeHttpServerIds: Set<number>;
+	activeHttpServerClosers: Map<number, () => Promise<void>>;
+	pendingHttpServerStarts: { count: number };
 	/** Push HTTP server/upgrade events into the V8 isolate. */
 	sendStreamEvent: (eventType: string, payload: Uint8Array) => void;
+	/** Kernel socket table for all bridge-managed HTTP server routing. */
+	socketTable?: import("@secure-exec/core").SocketTable;
+	/** Process ID for kernel socket ownership. */
+	pid?: number;
+}
+
+/** Result of building network bridge handlers — includes dispose for cleanup. */
+export interface NetworkBridgeResult {
+	handlers: BridgeHandlers;
+	dispose: () => Promise<void>;
+}
+
+/** Restrict HTTP server hostname to loopback interfaces. */
+function normalizeLoopbackHostname(hostname?: string): string {
+	if (!hostname || hostname === "localhost") return "127.0.0.1";
+	if (hostname === "127.0.0.1" || hostname === "::1") return hostname;
+	if (hostname === "0.0.0.0" || hostname === "::") return "127.0.0.1";
+	throw new Error(
+		`Sandbox HTTP servers are restricted to loopback interfaces. Received hostname: ${hostname}`,
+	);
+}
+
+/** State for a kernel-routed HTTP server. */
+interface KernelHttpServerState {
+	listenSocketId: number;
+	httpServer: http.Server;
+	acceptLoopActive: boolean;
+	closedPromise: Promise<void>;
+	resolveClosed: () => void;
+	pendingRequests: number;
+	closeRequested: boolean;
+	transportClosed: boolean;
+}
+
+function debugHttpBridge(...args: unknown[]): void {
+	if (process.env.SECURE_EXEC_DEBUG_HTTP_BRIDGE === "1") {
+		console.error("[secure-exec http bridge]", ...args);
+	}
+}
+
+/**
+ * Create a Duplex stream backed by a kernel socket.
+ * Readable side reads from kernel socket readBuffer; writable side writes via send().
+ */
+function createKernelSocketDuplex(
+	socketId: number,
+	socketTable: import("@secure-exec/core").SocketTable,
+	pid: number,
+): Duplex {
+	let readPumpStarted = false;
+
+	const duplex = new Duplex({
+		read() {
+			if (readPumpStarted) return;
+			readPumpStarted = true;
+			runReadPump();
+		},
+		write(
+			chunk: Buffer | string | Uint8Array,
+			encoding: BufferEncoding,
+			callback: (error?: Error | null) => void,
+		) {
+			try {
+				const data = typeof chunk === "string"
+					? Buffer.from(chunk, encoding)
+					: Buffer.isBuffer(chunk)
+						? chunk
+						: Buffer.from(chunk);
+				debugHttpBridge("socket write", socketId, data.length);
+				socketTable.send(socketId, new Uint8Array(data), 0);
+				callback();
+			} catch (err) {
+				debugHttpBridge("socket write error", socketId, err);
+				callback(err instanceof Error ? err : new Error(String(err)));
+			}
+		},
+		final(callback: (error?: Error | null) => void) {
+			try { socketTable.shutdown(socketId, "write"); } catch { /* already closed */ }
+			callback();
+		},
+		destroy(err: Error | null, callback: (error?: Error | null) => void) {
+			try { socketTable.close(socketId, pid); } catch { /* already closed */ }
+			callback(err);
+		},
+	});
+
+	// Socket-like properties for Node http module
+	(duplex as any).remoteAddress = "127.0.0.1";
+	(duplex as any).remotePort = 0;
+	(duplex as any).localAddress = "127.0.0.1";
+	(duplex as any).localPort = 0;
+	(duplex as any).encrypted = false;
+	(duplex as any).setNoDelay = () => duplex;
+	(duplex as any).setKeepAlive = () => duplex;
+	(duplex as any).setTimeout = (ms: number, cb?: () => void) => {
+		if (cb) duplex.once("timeout", cb);
+		return duplex;
+	};
+	(duplex as any).ref = () => duplex;
+	(duplex as any).unref = () => duplex;
+
+	async function runReadPump(): Promise<void> {
+		try {
+			while (true) {
+				let data: Uint8Array | null;
+				try {
+					data = socketTable.recv(socketId, 65536, 0);
+				} catch {
+					break; // socket closed or error
+				}
+
+				if (data !== null) {
+					debugHttpBridge("socket read", socketId, data.length);
+					if (!duplex.push(Buffer.from(data))) {
+						// Backpressure — wait for drain before continuing
+						readPumpStarted = false;
+						return;
+					}
+					continue;
+				}
+
+				// Check for EOF
+				const sock = socketTable.get(socketId);
+				if (!sock) break;
+				if (sock.state === "closed" || sock.state === "read-closed") break;
+				if (sock.peerWriteClosed || (sock.peerId === undefined && !sock.external)) break;
+				if (sock.external && sock.readBuffer.length === 0 && sock.peerWriteClosed) break;
+
+				// Wait for data
+				const handle = sock.readWaiters.enqueue();
+				await handle.wait();
+			}
+		} catch {
+			// Socket destroyed during pump
+		}
+		duplex.push(null); // EOF
+	}
+
+	return duplex;
 }
 
 /** Build network bridge handlers (fetch, httpRequest, dnsLookup, httpServer). */
-export function buildNetworkBridgeHandlers(deps: NetworkBridgeDeps): BridgeHandlers {
+export function buildNetworkBridgeHandlers(deps: NetworkBridgeDeps): NetworkBridgeResult {
+	if (!deps.socketTable || deps.pid === undefined) {
+		throw new Error("buildNetworkBridgeHandlers requires a kernel socketTable and pid");
+	}
+
 	const handlers: BridgeHandlers = {};
 	const K = HOST_BRIDGE_GLOBAL_KEYS;
 	const adapter = deps.networkAdapter;
 	const jsonLimit = deps.isolateJsonPayloadLimitBytes;
 	const ownedHttpServers = new Set<number>();
+	const { socketTable, pid } = deps;
 
-	handlers[K.networkFetchRaw] = (url: unknown, optionsJson: unknown): Promise<string> => {
+	// Track kernel HTTP servers for cleanup
+	const kernelHttpServers = new Map<number, KernelHttpServerState>();
+	const kernelUpgradeSockets = new Map<number, Duplex>();
+	let nextKernelUpgradeSocketId = 1;
+	const loopbackAwareAdapter = adapter as NetworkAdapter & {
+		__setLoopbackPortChecker?: (checker: (hostname: string, port: number) => boolean) => void;
+	};
+
+	// Let host-side runtime.network.fetch/httpRequest reach only the HTTP
+	// listeners owned by this execution.
+	loopbackAwareAdapter.__setLoopbackPortChecker?.((_hostname, port) => {
+		for (const state of kernelHttpServers.values()) {
+			const socket = socketTable.get(state.listenSocketId);
+			const localAddr = socket?.localAddr;
+			if (localAddr && typeof localAddr === "object" && "port" in localAddr) {
+				if (localAddr.port === port) {
+					return true;
+				}
+			}
+		}
+		return false;
+	});
+
+	const registerKernelUpgradeSocket = (socket: Duplex): number => {
+		const socketId = nextKernelUpgradeSocketId++;
+		kernelUpgradeSockets.set(socketId, socket);
+
+		socket.on("data", (chunk) => {
+			deps.sendStreamEvent("upgradeSocketData", Buffer.from(JSON.stringify({
+				socketId,
+				dataBase64: Buffer.from(chunk).toString("base64"),
+			})));
+		});
+		socket.on("end", () => {
+			deps.sendStreamEvent("upgradeSocketEnd", Buffer.from(JSON.stringify({ socketId })));
+		});
+		socket.on("close", () => {
+			kernelUpgradeSockets.delete(socketId);
+		});
+
+		return socketId;
+	};
+
+	const finalizeKernelServerClose = (serverId: number, state: KernelHttpServerState): void => {
+		debugHttpBridge("finalize close check", serverId, state.closeRequested, state.pendingRequests);
+		if (!state.closeRequested || state.pendingRequests > 0) {
+			return;
+		}
+		if (!state.transportClosed) {
+			state.acceptLoopActive = false;
+			state.transportClosed = true;
+			try { socketTable?.close(state.listenSocketId, pid!); } catch { /* already closed */ }
+			try { state.httpServer.close(); } catch { /* parser server is never bound */ }
+		}
+		debugHttpBridge("finalize close", serverId);
+		state.resolveClosed();
+		kernelHttpServers.delete(serverId);
+		ownedHttpServers.delete(serverId);
+		deps.activeHttpServerIds.delete(serverId);
+		deps.activeHttpServerClosers.delete(serverId);
+	};
+
+	const closeKernelServer = async (serverId: number): Promise<void> => {
+		const state = kernelHttpServers.get(serverId);
+		if (!state) return;
+		debugHttpBridge("close requested", serverId, state.pendingRequests);
+		state.closeRequested = true;
+		finalizeKernelServerClose(serverId, state);
+	};
+
+	handlers[K.networkFetchRaw] = async (url: unknown, optionsJson: unknown): Promise<string> => {
 		checkBridgeBudget(deps);
 		const options = parseJsonWithLimit<{ method?: string; headers?: Record<string, string>; body?: string | null }>(
 			"network.fetch options", String(optionsJson), jsonLimit);
-		return adapter.fetch(String(url), options).then((result) => {
-			const json = JSON.stringify(result);
-			assertTextPayloadSize("network.fetch response", json, jsonLimit);
-			return json;
-		});
+		const result = await adapter.fetch(String(url), options);
+		const json = JSON.stringify(result);
+		assertTextPayloadSize("network.fetch response", json, jsonLimit);
+		return json;
 	};
 
 	handlers[K.networkDnsLookupRaw] = async (hostname: unknown): Promise<string> => {
@@ -1691,80 +2267,248 @@ export function buildNetworkBridgeHandlers(deps: NetworkBridgeDeps): BridgeHandl
 		return JSON.stringify(result);
 	};
 
-	handlers[K.networkHttpRequestRaw] = (url: unknown, optionsJson: unknown): Promise<string> => {
+	handlers[K.networkHttpRequestRaw] = async (url: unknown, optionsJson: unknown): Promise<string> => {
 		checkBridgeBudget(deps);
 		const options = parseJsonWithLimit<{ method?: string; headers?: Record<string, string>; body?: string | null; rejectUnauthorized?: boolean }>(
 			"network.httpRequest options", String(optionsJson), jsonLimit);
-		return adapter.httpRequest(String(url), options).then((result) => {
-			const json = JSON.stringify(result);
-			assertTextPayloadSize("network.httpRequest response", json, jsonLimit);
-			return json;
-		});
+		const result = await adapter.httpRequest(String(url), options);
+		const json = JSON.stringify(result);
+		assertTextPayloadSize("network.httpRequest response", json, jsonLimit);
+		return json;
 	};
 
-	handlers[K.networkHttpServerListenRaw] = (optionsJson: unknown): Promise<string> => {
-		if (!adapter.httpServerListen) {
-			throw new Error("http.createServer requires NetworkAdapter.httpServerListen support");
+	handlers[K.networkHttpServerRespondRaw] = (
+		serverId: unknown,
+		requestId: unknown,
+		responseJson: unknown,
+	): void => {
+		const numericServerId = Number(serverId);
+		debugHttpBridge("respond callback", numericServerId, requestId);
+		resolveHttpServerResponse({
+			serverId: numericServerId,
+			requestId: Number(requestId),
+			responseJson: String(responseJson),
+		});
+		const state = kernelHttpServers.get(numericServerId);
+		if (!state) {
+			return;
 		}
+		state.pendingRequests = Math.max(0, state.pendingRequests - 1);
+		finalizeKernelServerClose(numericServerId, state);
+	};
+
+	handlers[K.networkHttpServerWaitRaw] = async (serverId: unknown): Promise<void> => {
+		const numericServerId = Number(serverId);
+		debugHttpBridge("wait start", numericServerId);
+		const state = kernelHttpServers.get(numericServerId);
+		if (!state) {
+			debugHttpBridge("wait missing", numericServerId);
+			return;
+		}
+		await state.closedPromise;
+		debugHttpBridge("wait resolved", numericServerId);
+	};
+
+	// HTTP server listen — always route through the kernel socket table
+	handlers[K.networkHttpServerListenRaw] = (optionsJson: unknown): Promise<string> => {
 		const options = parseJsonWithLimit<{ serverId: number; port?: number; hostname?: string }>(
 			"network.httpServer.listen options", String(optionsJson), jsonLimit);
+		deps.pendingHttpServerStarts.count += 1;
 
 		return (async () => {
-			const result = await adapter.httpServerListen!({
-				serverId: options.serverId,
-				port: options.port,
-				hostname: options.hostname,
-				onRequest: async (request) => {
-					const requestJson = JSON.stringify(request);
-					const responsePromise = new Promise<string>((resolve) => {
-						pendingHttpResponses.set(options.serverId, resolve);
+			try {
+				const {
+					AF_INET, SOCK_STREAM,
+				} = require("@secure-exec/core") as typeof import("@secure-exec/core");
+
+				const host = normalizeLoopbackHostname(options.hostname);
+				debugHttpBridge("listen start", options.serverId, host, options.port ?? 0);
+				const listenSocketId = socketTable.create(AF_INET, SOCK_STREAM, 0, pid);
+				await socketTable.bind(listenSocketId, { host, port: options.port ?? 0 });
+				await socketTable.listen(listenSocketId, 128, { external: true });
+
+				// Get actual bound address (may differ for ephemeral port)
+				const listenSocket = socketTable.get(listenSocketId);
+				const addr = listenSocket?.localAddr as { host: string; port: number } | undefined;
+				const address = addr ? {
+					address: addr.host,
+					family: addr.host.includes(":") ? "IPv6" : "IPv4",
+					port: addr.port,
+				} : null;
+
+			// Create local HTTP server for parsing (not bound to any port)
+			const httpServer = http.createServer(async (req, res) => {
+				try {
+					debugHttpBridge("request start", options.serverId, req.method, req.url);
+					const chunks: Buffer[] = [];
+					for await (const chunk of req) {
+						chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+					}
+
+					const headers: Record<string, string> = {};
+					Object.entries(req.headers).forEach(([key, value]) => {
+						if (typeof value === "string") headers[key] = value;
+						else if (Array.isArray(value)) headers[key] = value[0] ?? "";
 					});
-					deps.sendStreamEvent("httpServerRequest", Buffer.from(JSON.stringify({
-						serverId: options.serverId, request: requestJson,
-					})));
+					if (!headers.host && addr) {
+						headers.host = `${addr.host}:${addr.port}`;
+					}
+
+					const requestJson = JSON.stringify({
+						method: req.method || "GET",
+						url: req.url || "/",
+						headers,
+						rawHeaders: req.rawHeaders || [],
+						bodyBase64: chunks.length > 0
+							? Buffer.concat(chunks).toString("base64")
+							: undefined,
+					});
+
+					const requestId = nextHttpRequestId++;
+
+					// Send request to sandbox and wait for response
+					const responsePromise = new Promise<string>((resolve) => {
+						registerPendingHttpResponse(options.serverId, requestId, resolve);
+					});
+					state.pendingRequests += 1;
+					deps.sendStreamEvent("http_request", serialize({
+						requestId,
+						serverId: options.serverId,
+						request: requestJson,
+					}));
 					const responseJson = await responsePromise;
-					return parseJsonWithLimit<{
+					const response = parseJsonWithLimit<{
 						status: number;
 						headers?: Array<[string, string]>;
 						body?: string;
 						bodyEncoding?: "utf8" | "base64";
 					}>("network.httpServer response", responseJson, jsonLimit);
-				},
-				onUpgrade: (request, head, socketId) => {
-					deps.sendStreamEvent("httpServerUpgrade", Buffer.from(JSON.stringify({
-						serverId: options.serverId,
-						request: JSON.stringify(request),
-						head,
-						socketId,
-					})));
-				},
-				onUpgradeSocketData: (socketId, dataBase64) => {
-					deps.sendStreamEvent("upgradeSocketData", Buffer.from(JSON.stringify({
-						socketId, dataBase64,
-					})));
-				},
-				onUpgradeSocketEnd: (socketId) => {
-					deps.sendStreamEvent("upgradeSocketEnd", Buffer.from(JSON.stringify({ socketId })));
-				},
+
+					res.statusCode = response.status || 200;
+					for (const [key, value] of response.headers || []) {
+						res.setHeader(key, value);
+					}
+
+					if (response.body !== undefined) {
+						if (response.bodyEncoding === "base64") {
+							debugHttpBridge("response end", options.serverId, response.status, "base64", response.body.length);
+							res.end(Buffer.from(response.body, "base64"));
+						} else {
+							debugHttpBridge("response end", options.serverId, response.status, "utf8", response.body.length);
+							res.end(response.body);
+						}
+					} else {
+						debugHttpBridge("response end", options.serverId, response.status, "empty", 0);
+						res.end();
+					}
+				} catch {
+					debugHttpBridge("request error", options.serverId, req.method, req.url);
+					res.statusCode = 500;
+					res.end("Internal Server Error");
+				}
 			});
-			ownedHttpServers.add(options.serverId);
-			deps.activeHttpServerIds.add(options.serverId);
-			return JSON.stringify(result);
+
+			// Handle HTTP upgrades through kernel sockets
+			httpServer.on("upgrade", (req, socket, head) => {
+				const upgradeHeaders: Record<string, string> = {};
+				Object.entries(req.headers).forEach(([key, value]) => {
+					if (typeof value === "string") upgradeHeaders[key] = value;
+					else if (Array.isArray(value)) upgradeHeaders[key] = value[0] ?? "";
+				});
+				const upgradeSocketId = registerKernelUpgradeSocket(socket as Duplex);
+				deps.sendStreamEvent("httpServerUpgrade", Buffer.from(JSON.stringify({
+					serverId: options.serverId,
+					request: JSON.stringify({
+						method: req.method || "GET",
+						url: req.url || "/",
+						headers: upgradeHeaders,
+						rawHeaders: req.rawHeaders || [],
+					}),
+					head: head.toString("base64"),
+					socketId: upgradeSocketId,
+				})));
+			});
+
+				let resolveClosed!: () => void;
+				const closedPromise = new Promise<void>((resolve) => {
+					resolveClosed = resolve;
+				});
+				const state: KernelHttpServerState = {
+					listenSocketId,
+					httpServer,
+					acceptLoopActive: true,
+					closedPromise,
+					resolveClosed,
+					pendingRequests: 0,
+					closeRequested: false,
+					transportClosed: false,
+				};
+				debugHttpBridge("listen ready", options.serverId, address);
+				kernelHttpServers.set(options.serverId, state);
+				ownedHttpServers.add(options.serverId);
+				deps.activeHttpServerIds.add(options.serverId);
+				deps.activeHttpServerClosers.set(
+					options.serverId,
+					() => closeKernelServer(options.serverId),
+				);
+
+				// Start accept loop (fire-and-forget)
+				void startKernelHttpAcceptLoop(state, socketTable, pid);
+
+				return JSON.stringify({ address });
+			} finally {
+				deps.pendingHttpServerStarts.count -= 1;
+			}
 		})();
 	};
 
+	// HTTP server close — kernel-owned servers only
 	handlers[K.networkHttpServerCloseRaw] = (serverId: unknown): Promise<void> => {
 		const id = Number(serverId);
-		if (!adapter.httpServerClose) {
-			throw new Error("http.createServer close requires NetworkAdapter.httpServerClose support");
-		}
+		debugHttpBridge("close bridge call", id);
 		if (!ownedHttpServers.has(id)) {
 			throw new Error(`Cannot close server ${id}: not owned by this execution context`);
 		}
-		return adapter.httpServerClose(id).then(() => {
-			ownedHttpServers.delete(id);
-			deps.activeHttpServerIds.delete(id);
-		});
+
+		const kernelState = kernelHttpServers.get(id);
+		if (!kernelState) {
+			throw new Error(`Cannot close server ${id}: kernel server state missing`);
+		}
+		return closeKernelServer(id);
+	};
+
+	handlers[K.upgradeSocketWriteRaw] = (
+		socketId: unknown,
+		dataBase64: unknown,
+	) => {
+		const id = Number(socketId);
+		const socket = kernelUpgradeSockets.get(id);
+		if (socket) {
+			socket.write(Buffer.from(String(dataBase64), "base64"));
+			return;
+		}
+		adapter.upgradeSocketWrite?.(id, String(dataBase64));
+	};
+
+	handlers[K.upgradeSocketEndRaw] = (socketId: unknown) => {
+		const id = Number(socketId);
+		const socket = kernelUpgradeSockets.get(id);
+		if (socket) {
+			socket.end();
+			return;
+		}
+		adapter.upgradeSocketEnd?.(id);
+	};
+
+	handlers[K.upgradeSocketDestroyRaw] = (socketId: unknown) => {
+		const id = Number(socketId);
+		const socket = kernelUpgradeSockets.get(id);
+		if (socket) {
+			kernelUpgradeSockets.delete(id);
+			socket.destroy();
+			return;
+		}
+		adapter.upgradeSocketDestroy?.(id);
 	};
 
 	// Register upgrade socket callbacks for httpRequest client-side upgrades
@@ -1777,19 +2521,135 @@ export function buildNetworkBridgeHandlers(deps: NetworkBridgeDeps): BridgeHandl
 		},
 	});
 
-	return handlers;
+	// Dispose: close all kernel HTTP servers
+	const dispose = async (): Promise<void> => {
+		for (const serverId of Array.from(kernelHttpServers.keys())) {
+			await closeKernelServer(serverId);
+		}
+		for (const socket of kernelUpgradeSockets.values()) {
+			socket.destroy();
+		}
+		kernelUpgradeSockets.clear();
+	};
+
+	return { handlers, dispose };
 }
 
-// Pending HTTP server response callbacks, keyed by serverId
-const pendingHttpResponses = new Map<number, (response: string) => void>();
+/** Accept loop: dequeue connections from kernel listener and feed to http.Server. */
+async function startKernelHttpAcceptLoop(
+	state: KernelHttpServerState,
+	socketTable: import("@secure-exec/core").SocketTable,
+	pid: number,
+): Promise<void> {
+	try {
+		while (state.acceptLoopActive) {
+			const listenSocket = socketTable.get(state.listenSocketId);
+			if (!listenSocket || listenSocket.state !== "listening") break;
+
+			const acceptedId = socketTable.accept(state.listenSocketId);
+			if (acceptedId !== null) {
+				debugHttpBridge("accept backlog", state.listenSocketId, acceptedId);
+				// Wrap kernel socket in Duplex and hand off to http.Server
+				const duplex = createKernelSocketDuplex(acceptedId, socketTable, pid);
+				state.httpServer.emit("connection", duplex);
+				continue;
+			}
+
+			// Avoid a lost wake-up if a connection arrives between accept() and enqueue().
+			const handle = listenSocket.acceptWaiters.enqueue();
+			const acceptedAfterEnqueue = socketTable.accept(state.listenSocketId);
+			if (acceptedAfterEnqueue !== null) {
+				handle.wake();
+				debugHttpBridge("accept after enqueue", state.listenSocketId, acceptedAfterEnqueue);
+				const duplex = createKernelSocketDuplex(
+					acceptedAfterEnqueue,
+					socketTable,
+					pid,
+				);
+				state.httpServer.emit("connection", duplex);
+				continue;
+			}
+
+			// No pending connections — wait for accept waker
+			await handle.wait();
+		}
+	} catch {
+		// Listener closed — expected
+	}
+}
+
+type PendingHttpResponse = {
+	serverId: number;
+	resolve: (response: string) => void;
+};
+
+// Track request IDs directly, but also keep per-server FIFO queues so older
+// callbacks that only report serverId still resolve the correct pending waiters.
+const pendingHttpResponses = new Map<number, PendingHttpResponse>();
+const pendingHttpResponsesByServer = new Map<number, number[]>();
+let nextHttpRequestId = 1;
+
+function registerPendingHttpResponse(
+	serverId: number,
+	requestId: number,
+	resolve: (response: string) => void,
+): void {
+	pendingHttpResponses.set(requestId, { serverId, resolve });
+	const queue = pendingHttpResponsesByServer.get(serverId);
+	if (queue) {
+		queue.push(requestId);
+	} else {
+		pendingHttpResponsesByServer.set(serverId, [requestId]);
+	}
+}
+
+function removePendingHttpResponse(serverId: number, requestId: number): PendingHttpResponse | undefined {
+	const pending = pendingHttpResponses.get(requestId);
+	if (!pending) return undefined;
+
+	pendingHttpResponses.delete(requestId);
+
+	const queue = pendingHttpResponsesByServer.get(serverId);
+	if (queue) {
+		const index = queue.indexOf(requestId);
+		if (index !== -1) queue.splice(index, 1);
+		if (queue.length === 0) pendingHttpResponsesByServer.delete(serverId);
+	}
+
+	return pending;
+}
+
+function takePendingHttpResponseByServer(serverId: number): PendingHttpResponse | undefined {
+	const queue = pendingHttpResponsesByServer.get(serverId);
+	if (!queue || queue.length === 0) return undefined;
+
+	const requestId = queue.shift()!;
+	if (queue.length === 0) pendingHttpResponsesByServer.delete(serverId);
+
+	const pending = pendingHttpResponses.get(requestId);
+	if (pending) {
+		pendingHttpResponses.delete(requestId);
+	}
+
+	return pending;
+}
 
 /** Resolve a pending HTTP server response (called from stream callback handler). */
-export function resolveHttpServerResponse(serverId: number, responseJson: string): void {
-	const resolve = pendingHttpResponses.get(serverId);
-	if (resolve) {
-		pendingHttpResponses.delete(serverId);
-		resolve(responseJson);
-	}
+export function resolveHttpServerResponse(options: {
+	requestId?: number;
+	serverId?: number;
+	responseJson: string;
+}): void {
+	const pending =
+		options.requestId !== undefined
+			? removePendingHttpResponse(
+				options.serverId ?? pendingHttpResponses.get(options.requestId)?.serverId ?? -1,
+				options.requestId,
+			)
+			: options.serverId !== undefined
+				? takePendingHttpResponseByServer(options.serverId)
+				: undefined;
+	pending?.resolve(options.responseJson);
 }
 
 /** Dependencies for PTY bridge handlers. */
@@ -1810,6 +2670,226 @@ export function buildPtyBridgeHandlers(deps: PtyBridgeDeps): BridgeHandlers {
 	}
 
 	return handlers;
+}
+
+/** Dependencies for kernel FD table bridge handlers. */
+export interface KernelFdBridgeDeps {
+	filesystem: VirtualFileSystem;
+	budgetState: BudgetState;
+	maxBridgeCalls?: number;
+}
+
+/** Result of building kernel FD bridge handlers — includes dispose for cleanup. */
+export interface KernelFdBridgeResult {
+	handlers: BridgeHandlers;
+	dispose: () => void;
+}
+
+const O_ACCMODE = 3;
+
+function canRead(flags: number): boolean {
+	const access = flags & O_ACCMODE;
+	return access === O_RDONLY || access === O_RDWR;
+}
+
+function canWrite(flags: number): boolean {
+	const access = flags & O_ACCMODE;
+	return access === O_WRONLY || access === O_RDWR;
+}
+
+/**
+ * Build kernel FD table bridge handlers.
+ *
+ * Creates a ProcessFDTable per execution and routes all FD operations
+ * (open, close, read, write, fstat, ftruncate, fsync) through it.
+ * The FD table tracks file descriptors, cursor positions, and flags.
+ * Actual file I/O is delegated to the VirtualFileSystem.
+ */
+export function buildKernelFdBridgeHandlers(deps: KernelFdBridgeDeps): KernelFdBridgeResult {
+	const handlers: BridgeHandlers = {};
+	const K = HOST_BRIDGE_GLOBAL_KEYS;
+	const vfs = deps.filesystem;
+
+	// Create a per-execution FD table via the kernel FDTableManager
+	const fdManager = new FDTableManager();
+	const pid = 1;
+	const fdTable = fdManager.create(pid);
+
+	// fdOpen(path, flags, mode?) → fd number
+	handlers[K.fdOpen] = async (path: unknown, flags: unknown, mode: unknown) => {
+		checkBridgeBudget(deps);
+		const pathStr = String(path);
+		const numFlags = Number(flags);
+		const numMode = mode !== undefined && mode !== null ? Number(mode) : undefined;
+
+		const exists = await vfs.exists(pathStr);
+
+		// O_CREAT: create if doesn't exist
+		if ((numFlags & O_CREAT) && !exists) {
+			await vfs.writeFile(pathStr, "");
+		} else if (!exists && !(numFlags & O_CREAT)) {
+			throw new Error(`ENOENT: no such file or directory, open '${pathStr}'`);
+		}
+
+		// O_TRUNC: truncate existing file
+		if ((numFlags & O_TRUNC) && exists) {
+			await vfs.writeFile(pathStr, "");
+		}
+
+		const fd = fdTable.open(pathStr, numFlags, FILETYPE_REGULAR_FILE);
+
+		// Store creation mode for umask application
+		if (numMode !== undefined && (numFlags & O_CREAT)) {
+			const entry = fdTable.get(fd);
+			if (entry) entry.description.creationMode = numMode;
+		}
+
+		return fd;
+	};
+
+	// fdClose(fd)
+	handlers[K.fdClose] = (fd: unknown) => {
+		const fdNum = Number(fd);
+		const ok = fdTable.close(fdNum);
+		if (!ok) throw new Error("EBADF: bad file descriptor, close");
+	};
+
+	// fdRead(fd, length, position?) → base64 data
+	handlers[K.fdRead] = async (fd: unknown, length: unknown, position: unknown) => {
+		checkBridgeBudget(deps);
+		const fdNum = Number(fd);
+		const len = Number(length);
+		const entry = fdTable.get(fdNum);
+		if (!entry) throw new Error("EBADF: bad file descriptor, read");
+		if (!canRead(entry.description.flags)) throw new Error("EBADF: bad file descriptor, read");
+
+		const pos = (position !== null && position !== undefined)
+			? Number(position)
+			: Number(entry.description.cursor);
+
+		const data = await vfs.pread(entry.description.path, pos, len);
+
+		// Update cursor only when no explicit position
+		if (position === null || position === undefined) {
+			entry.description.cursor += BigInt(data.length);
+		}
+
+		return Buffer.from(data).toString("base64");
+	};
+
+	// fdWrite(fd, base64data, position?) → bytes written
+	handlers[K.fdWrite] = async (fd: unknown, base64data: unknown, position: unknown) => {
+		checkBridgeBudget(deps);
+		const fdNum = Number(fd);
+		const entry = fdTable.get(fdNum);
+		if (!entry) throw new Error("EBADF: bad file descriptor, write");
+		if (!canWrite(entry.description.flags)) throw new Error("EBADF: bad file descriptor, write");
+
+		const data = Buffer.from(String(base64data), "base64");
+
+		// Read existing content
+		let content: Uint8Array;
+		try {
+			content = await vfs.readFile(entry.description.path);
+		} catch {
+			content = new Uint8Array(0);
+		}
+
+		// Determine write position
+		let writePos: number;
+		if (entry.description.flags & O_APPEND) {
+			writePos = content.length;
+		} else if (position !== null && position !== undefined) {
+			writePos = Number(position);
+		} else {
+			writePos = Number(entry.description.cursor);
+		}
+
+		// Splice data into content
+		const endPos = writePos + data.length;
+		const newContent = new Uint8Array(Math.max(content.length, endPos));
+		newContent.set(content);
+		newContent.set(data, writePos);
+		await vfs.writeFile(entry.description.path, newContent);
+
+		// Update cursor only when no explicit position
+		if (position === null || position === undefined) {
+			entry.description.cursor = BigInt(endPos);
+		}
+
+		return data.length;
+	};
+
+	// fdFstat(fd) → JSON stat string
+	handlers[K.fdFstat] = async (fd: unknown) => {
+		checkBridgeBudget(deps);
+		const fdNum = Number(fd);
+		const entry = fdTable.get(fdNum);
+		if (!entry) throw new Error("EBADF: bad file descriptor, fstat");
+
+		const stat = await vfs.stat(entry.description.path);
+		return JSON.stringify({
+			dev: 0,
+			ino: stat.ino ?? 0,
+			mode: stat.mode,
+			nlink: stat.nlink ?? 1,
+			uid: stat.uid ?? 0,
+			gid: stat.gid ?? 0,
+			rdev: 0,
+			size: stat.size,
+			blksize: 4096,
+			blocks: Math.ceil(stat.size / 512),
+			atimeMs: stat.atimeMs ?? Date.now(),
+			mtimeMs: stat.mtimeMs ?? Date.now(),
+			ctimeMs: stat.ctimeMs ?? Date.now(),
+			birthtimeMs: stat.birthtimeMs ?? Date.now(),
+		});
+	};
+
+	// fdFtruncate(fd, len?)
+	handlers[K.fdFtruncate] = async (fd: unknown, len: unknown) => {
+		checkBridgeBudget(deps);
+		const fdNum = Number(fd);
+		const entry = fdTable.get(fdNum);
+		if (!entry) throw new Error("EBADF: bad file descriptor, ftruncate");
+
+		const newLen = (len !== undefined && len !== null) ? Number(len) : 0;
+		let content: Uint8Array;
+		try {
+			content = await vfs.readFile(entry.description.path);
+		} catch {
+			content = new Uint8Array(0);
+		}
+
+		if (content.length > newLen) {
+			await vfs.writeFile(entry.description.path, content.slice(0, newLen));
+		} else if (content.length < newLen) {
+			const padded = new Uint8Array(newLen);
+			padded.set(content);
+			await vfs.writeFile(entry.description.path, padded);
+		}
+	};
+
+	// fdFsync(fd) — no-op for in-memory VFS, validates FD exists
+	handlers[K.fdFsync] = (fd: unknown) => {
+		const fdNum = Number(fd);
+		const entry = fdTable.get(fdNum);
+		if (!entry) throw new Error("EBADF: bad file descriptor, fsync");
+	};
+
+	// fdGetPath(fd) → path string or null
+	handlers[K.fdGetPath] = (fd: unknown) => {
+		const fdNum = Number(fd);
+		const entry = fdTable.get(fdNum);
+		return entry ? entry.description.path : null;
+	};
+
+	return {
+		handlers,
+		dispose: () => {
+			fdTable.closeAll();
+		},
+	};
 }
 
 export function createProcessConfigForExecution(

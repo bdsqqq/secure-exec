@@ -12,6 +12,7 @@ import type {
 	Kernel,
 	Permissions,
 } from "../../src/kernel/types.js";
+import { KernelError, O_CREAT, O_EXCL, O_TRUNC } from "../../src/kernel/types.js";
 import { createKernel } from "../../src/kernel/kernel.js";
 
 const S_IFREG = 0o100000;
@@ -89,6 +90,50 @@ export class TestFileSystem implements VirtualFileSystem {
 		await this.mkdir(dirname(n));
 		const data = typeof content === "string" ? new TextEncoder().encode(content) : content;
 		this.files.set(n, { data, mode: S_IFREG | 0o644, uid: 1000, gid: 1000, ino: nextIno++ });
+	}
+
+	prepareOpenSync(path: string, flags: number): boolean {
+		const n = normalizePath(path);
+		const hasCreate = (flags & O_CREAT) !== 0;
+		const hasExcl = (flags & O_EXCL) !== 0;
+		const hasTrunc = (flags & O_TRUNC) !== 0;
+		const file = this.files.get(n);
+		const exists = file !== undefined || this.dirs.has(n) || this.symlinks.has(n);
+
+		if (hasCreate && hasExcl && exists) {
+			throw new KernelError("EEXIST", `file already exists, open '${n}'`);
+		}
+
+		let created = false;
+		if (!file && hasCreate) {
+			const parts = dirname(n).split("/").filter(Boolean);
+			let current = "";
+			for (const part of parts) {
+				current += `/${part}`;
+				this.dirs.add(current);
+			}
+			this.files.set(n, {
+				data: new Uint8Array(0),
+				mode: S_IFREG | 0o644,
+				uid: 1000,
+				gid: 1000,
+				ino: nextIno++,
+			});
+			created = true;
+		}
+
+		if (hasTrunc) {
+			if (this.dirs.has(n)) {
+				throw new KernelError("EISDIR", `illegal operation on a directory, open '${n}'`);
+			}
+			const current = this.files.get(n);
+			if (!current) {
+				throw new KernelError("ENOENT", `no such file or directory, open '${n}'`);
+			}
+			current.data = new Uint8Array(0);
+		}
+
+		return created;
 	}
 
 	async createDir(path: string): Promise<void> {

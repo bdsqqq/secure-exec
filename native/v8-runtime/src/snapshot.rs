@@ -134,7 +134,9 @@ where
         let limit_bytes = (limit as usize) * 1024 * 1024;
         params = params.heap_limits(0, limit_bytes);
     }
-    v8::Isolate::new(params)
+    let mut isolate = v8::Isolate::new(params);
+    crate::isolate::configure_isolate(&mut isolate);
+    isolate
 }
 
 /// Thread-safe snapshot cache keyed by bridge code hash.

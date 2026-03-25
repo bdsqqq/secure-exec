@@ -93,6 +93,13 @@ Unsupported modules use: `"<module> is not supported in sandbox"`.
 | Deferred modules (`net`, `tls`, `readline`, `perf_hooks`, `worker_threads`) | 4 (Deferred) | `require()` returns stubs; APIs throw deterministic unsupported errors when called. |
 | Unsupported modules (`dgram`, `cluster`, `wasi`, `inspector`, `repl`, `trace_events`, `domain`) | 5 (Unsupported) | `require()` fails immediately with deterministic unsupported-module errors. |
 
+## ESM Execution Notes
+
+- `exec(code, { filePath })` honors Node-style ESM classification for `.mjs` entrypoints and `.js` files under `package.json` `"type": "module"`.
+- ESM package resolution uses `import` conditions, while `require()` and `createRequire()` keep `require` condition semantics in the same execution.
+- Built-in ESM imports such as `node:fs` and `node:path` support both default exports and named exports for supported APIs.
+- Dynamic `import()` preserves underlying missing-module, syntax, and evaluation failures instead of collapsing them into successful execution results.
+
 ## Permanently Unsupported Features
 
 Some Node.js features cannot be supported in secure-exec due to fundamental architectural constraints of the sandboxed V8 isolate. These are not planned for implementation.

@@ -23,6 +23,14 @@ export interface NodeExecutionDriverOptions extends RuntimeDriverOptions {
 	bindings?: BindingTree;
 	/** Callback to toggle PTY raw mode — wired by kernel runtime when PTY is attached. */
 	onPtySetRawMode?: (mode: boolean) => void;
+	/** Kernel socket table — routes net.connect through kernel instead of host TCP. */
+	socketTable?: import("@secure-exec/core").SocketTable;
+	/** Kernel process table — registers child processes for cross-runtime visibility. */
+	processTable?: import("@secure-exec/core").ProcessTable;
+	/** Kernel timer table — tracks sandbox timers for budget enforcement and cleanup. */
+	timerTable?: import("@secure-exec/core").TimerTable;
+	/** Process ID for kernel socket/process ownership. Required when socketTable/processTable is set. */
+	pid?: number;
 }
 
 export interface BudgetState {
@@ -52,6 +60,7 @@ export interface DriverDeps {
 	maxHandles?: number;
 	budgetState: BudgetState;
 	activeHttpServerIds: Set<number>;
+	activeHttpServerClosers: Map<number, () => Promise<void>>;
 	activeChildProcesses: Map<number, SpawnedProcess>;
 	activeHostTimers: Set<ReturnType<typeof setTimeout>>;
 	moduleFormatCache: Map<string, "esm" | "cjs" | "json">;

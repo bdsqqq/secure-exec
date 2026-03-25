@@ -25,6 +25,7 @@ import type {
 } from "./types.js";
 import type { VirtualFileSystem, VirtualStat } from "./vfs.js";
 import { createDeviceLayer } from "./device-layer.js";
+import { createProcLayer } from "./proc-layer.js";
 import { FDTableManager, ProcessFDTable } from "./fd-table.js";
 import { ProcessTable } from "./process-table.js";
 import { PipeManager } from "./pipe-manager.js";
@@ -33,6 +34,10 @@ import { FileLockManager } from "./file-lock.js";
 import { CommandRegistry } from "./command-registry.js";
 import { wrapFileSystem, checkChildProcess } from "./permissions.js";
 import { UserManager } from "./user.js";
+import { SocketTable } from "./socket-table.js";
+import { TimerTable } from "./timer-table.js";
+import { InodeTable } from "./inode-table.js";
+import { InMemoryFileSystem } from "../shared/in-memory-fs.js";
 import {
 	FILETYPE_REGULAR_FILE,
 	FILETYPE_DIRECTORY,
@@ -43,6 +48,8 @@ import {
 	SEEK_END,
 	O_APPEND,
 	O_CREAT,
+	O_EXCL,
+	O_TRUNC,
 	SIGTERM,
 	SIGPIPE,
 	SIGWINCH,
@@ -61,6 +68,7 @@ export function createKernel(options: KernelOptions): Kernel {
 
 class KernelImpl implements Kernel {
 	private vfs: VirtualFileSystem;
+	private rawInMemoryFs?: InMemoryFileSystem;
 	private fdTableManager = new FDTableManager();
 	private processTable = new ProcessTable();
 	private pipeManager = new PipeManager();
@@ -75,6 +83,9 @@ class KernelImpl implements Kernel {
 	});
 	private fileLockManager = new FileLockManager();
 	private commandRegistry = new CommandRegistry();
+	readonly socketTable: SocketTable;
+	readonly timerTable: TimerTable;
+	readonly inodeTable: InodeTable;
 	private userManager: UserManager;
 	private drivers: RuntimeDriver[] = [];
 	private driverPids = new Map<string, Set<number>>();
@@ -87,8 +98,19 @@ class KernelImpl implements Kernel {
 	private posixDirsReady: Promise<void>;
 
 	constructor(options: KernelOptions) {
-		// Apply device layer over the base filesystem
+		this.inodeTable = new InodeTable();
+		if (options.filesystem instanceof InMemoryFileSystem) {
+			options.filesystem.setInodeTable(this.inodeTable);
+			this.rawInMemoryFs = options.filesystem;
+		}
+
+		// Apply pseudo-filesystems before permissions so dynamic entries are
+		// subject to the same policy as regular files.
 		let fs = createDeviceLayer(options.filesystem);
+		fs = createProcLayer(fs, {
+			processTable: this.processTable,
+			fdTableManager: this.fdTableManager,
+		});
 
 		// Apply permission wrapping
 		if (options.permissions) {
@@ -101,10 +123,18 @@ class KernelImpl implements Kernel {
 		this.env = { ...options.env };
 		this.cwd = options.cwd ?? "/home/user";
 		this.userManager = new UserManager();
+		this.socketTable = new SocketTable({
+			vfs: this.vfs,
+			hostAdapter: options.hostNetworkAdapter,
+			getSignalState: (pid) => this.processTable.getSignalState(pid),
+		});
+		this.timerTable = new TimerTable();
 
-		// Clean up FD table when a process exits (driverPids preserved for waitpid)
+		// Clean up FD table and sockets when a process exits
 		this.processTable.onProcessExit = (pid) => {
 			this.cleanupProcessFDs(pid);
+			this.socketTable.closeAllForProcess(pid);
+			this.timerTable.clearAllForProcess(pid);
 		};
 		// Clean up driver PID ownership when zombie is reaped
 		this.processTable.onProcessReap = (pid) => {
@@ -208,6 +238,10 @@ class KernelImpl implements Kernel {
 
 		// Terminate all running processes
 		await this.processTable.terminateAll();
+
+		// Clean up all sockets
+		this.socketTable.disposeAll();
+		this.timerTable.disposeAll();
 
 		// Dispose all drivers (reverse mount order)
 		for (let i = this.drivers.length - 1; i >= 0; i--) {
@@ -610,9 +644,13 @@ class KernelImpl implements Kernel {
 		// Spawn via driver
 		const driverProcess = driver.spawn(command, args, ctx);
 
-		// Also buffer data emitted via DriverProcess callbacks after spawn returns
-		if (!stdoutPiped) driverProcess.onStdout = (data) => stdoutBuf.push(data);
-		if (!stderrPiped) driverProcess.onStderr = (data) => stderrBuf.push(data);
+		// Capture data emitted via DriverProcess callbacks after spawn returns.
+		if (!stdoutPiped) {
+			driverProcess.onStdout = stdoutCb ?? ((data) => stdoutBuf.push(data));
+		}
+		if (!stderrPiped) {
+			driverProcess.onStderr = stderrCb ?? ((data) => stderrBuf.push(data));
+		}
 
 		// Register in process table
 		const entry = this.processTable.register(
@@ -698,7 +736,9 @@ class KernelImpl implements Kernel {
 			throw new KernelError("ESRCH", `no such process ${pid}`);
 		};
 
-		return {
+		const kernelInterface: KernelInterface & {
+			fdPollWait: (pid: number, fd: number, timeoutMs?: number) => Promise<void>;
+		} = {
 			vfs: this.vfs,
 
 			// FD operations
@@ -714,16 +754,22 @@ class KernelImpl implements Kernel {
 					if (!entry) throw new KernelError("EBADF", `bad file descriptor ${n}`);
 					return table.dup(n);
 				}
+				const created = (flags & (O_CREAT | O_EXCL | O_TRUNC)) !== 0
+					? this.prepareOpenSync(path, flags)
+					: false;
 				const table = this.getTable(pid);
 				const filetype = FILETYPE_REGULAR_FILE;
 				const fd = table.open(path, flags, filetype);
+				const fdEntry = table.get(fd);
+				if (fdEntry) {
+					this.trackDescriptionInode(fdEntry.description);
+				}
 
-				// Apply umask to creation mode when O_CREAT is set
-				if (flags & O_CREAT) {
+				// Stash the effective mode for the first write that materializes a new file.
+				if (created && (flags & O_CREAT)) {
 					const entry = this.processTable.get(pid);
 					const umask = entry?.umask ?? 0o022;
 					const requestedMode = mode ?? 0o666;
-					const fdEntry = table.get(fd);
 					if (fdEntry) {
 						fdEntry.description.creationMode = requestedMode & ~umask;
 					}
@@ -751,7 +797,7 @@ class KernelImpl implements Kernel {
 
 				// Positional read from VFS — avoids loading entire file
 				const cursor = Number(entry.description.cursor);
-				const slice = await this.vfs.pread(entry.description.path, cursor, length);
+				const slice = await this.preadDescription(entry.description, cursor, length);
 				entry.description.cursor += BigInt(slice.length);
 				return slice;
 			},
@@ -787,6 +833,7 @@ class KernelImpl implements Kernel {
 
 				// Only signal pipe/pty/lock closure when last reference is dropped
 				if (entry.description.refCount <= 0) {
+					this.releaseDescriptionInode(entry.description);
 					if (isPipe) this.pipeManager.close(descId);
 					if (isPty) this.ptyManager.close(descId);
 					this.fileLockManager.releaseByDescription(descId);
@@ -812,8 +859,7 @@ class KernelImpl implements Kernel {
 						newCursor = entry.description.cursor + offset;
 						break;
 					case SEEK_END: {
-						const content = await this.vfs.readFile(entry.description.path);
-						newCursor = BigInt(content.length) + offset;
+						newCursor = BigInt(await this.getDescriptionSize(entry.description)) + offset;
 						break;
 					}
 					default:
@@ -837,11 +883,7 @@ class KernelImpl implements Kernel {
 				}
 
 				// Read from VFS at given offset without moving cursor
-				const content = await this.vfs.readFile(entry.description.path);
-				const pos = Number(offset);
-				if (pos >= content.length) return new Uint8Array(0);
-				const end = Math.min(pos + length, content.length);
-				return content.slice(pos, end);
+				return this.preadDescription(entry.description, Number(offset), length);
 			},
 			fdPwrite: async (pid, fd, data, offset) => {
 				assertOwns(pid);
@@ -854,14 +896,14 @@ class KernelImpl implements Kernel {
 					throw new KernelError("ESPIPE", "illegal seek");
 				}
 
-				// Write at offset without moving cursor
-				const content = await this.vfs.readFile(entry.description.path);
+				// Write at offset without moving cursor.
+				const content = await this.readDescriptionFile(entry.description);
 				const pos = Number(offset);
 				const endPos = pos + data.length;
 				const newContent = new Uint8Array(Math.max(content.length, endPos));
 				newContent.set(content);
 				newContent.set(data, pos);
-				await this.vfs.writeFile(entry.description.path, newContent);
+				await this.writeDescriptionFile(entry.description, newContent);
 				return data.length;
 			},
 			fdDup: (pid, fd) => {
@@ -870,7 +912,19 @@ class KernelImpl implements Kernel {
 			},
 			fdDup2: (pid, oldFd, newFd) => {
 				assertOwns(pid);
-				this.getTable(pid).dup2(oldFd, newFd);
+				const table = this.getTable(pid);
+				const targetEntry = table.get(newFd);
+				const targetDesc = targetEntry?.description;
+				const targetDescId = targetDesc?.id;
+				table.dup2(oldFd, newFd);
+				if (targetDesc && targetDesc.refCount <= 0) {
+					this.releaseDescriptionInode(targetDesc);
+					if (targetDescId !== undefined) {
+						if (this.pipeManager.isPipe(targetDescId)) this.pipeManager.close(targetDescId);
+						if (this.ptyManager.isPty(targetDescId)) this.ptyManager.close(targetDescId);
+						this.fileLockManager.releaseByDescription(targetDescId);
+					}
+				}
 			},
 			fdDupMin: (pid, fd, minFd) => {
 				assertOwns(pid);
@@ -894,6 +948,16 @@ class KernelImpl implements Kernel {
 					return { readable: true, writable: true, hangup: false, invalid: false };
 				} catch {
 					return { readable: false, writable: false, hangup: false, invalid: true };
+				}
+			},
+			fdPollWait: async (pid, fd, timeoutMs) => {
+				assertOwns(pid);
+				const table = this.getTable(pid);
+				const entry = table.get(fd);
+				if (!entry) throw new KernelError("EBADF", `bad file descriptor ${fd}`);
+				const descId = entry.description.id;
+				if (this.pipeManager.isPipe(descId)) {
+					await this.pipeManager.waitForPoll(descId, timeoutMs);
 				}
 			},
 			fdSetCloexec: (pid, fd, value) => {
@@ -936,12 +1000,12 @@ class KernelImpl implements Kernel {
 			},
 
 			// Advisory file locking
-			flock: (pid, fd, operation) => {
+			flock: async (pid, fd, operation) => {
 				assertOwns(pid);
 				const table = this.getTable(pid);
 				const entry = table.get(fd);
 				if (!entry) throw new KernelError("EBADF", `bad file descriptor ${fd}`);
-				this.fileLockManager.flock(entry.description.path, entry.description.id, operation);
+				await this.fileLockManager.flock(entry.description.path, entry.description.id, operation);
 			},
 
 			// Process operations
@@ -1097,7 +1161,7 @@ class KernelImpl implements Kernel {
 				}
 
 				// Regular file — stat the underlying path
-				return this.vfs.stat(entry.description.path);
+				return this.statDescription(entry.description);
 			},
 
 			// Environment
@@ -1172,7 +1236,16 @@ class KernelImpl implements Kernel {
 				await this.vfs.mkdir(path);
 				await this.vfs.chmod(path, effectiveMode);
 			},
+
+			// Socket table (shared across runtimes)
+			socketTable: this.socketTable,
+			timerTable: this.timerTable,
+
+			// Process table (shared across runtimes)
+			processTable: this.processTable,
 		};
+
+		return kernelInterface;
 	}
 
 	/**
@@ -1253,7 +1326,15 @@ class KernelImpl implements Kernel {
 		if (!entry) return;
 
 		// Close the inherited FD and install the override
+		const existing = childTable.get(targetFd);
 		childTable.close(targetFd);
+		if (existing && existing.description.refCount <= 0) {
+			this.releaseDescriptionInode(existing.description);
+			const descId = existing.description.id;
+			if (this.pipeManager.isPipe(descId)) this.pipeManager.close(descId);
+			if (this.ptyManager.isPty(descId)) this.ptyManager.close(descId);
+			this.fileLockManager.releaseByDescription(descId);
+		}
 		childTable.openWith(entry.description, entry.filetype, targetFd);
 	}
 
@@ -1303,9 +1384,11 @@ class KernelImpl implements Kernel {
 		const table = this.fdTableManager.get(pid);
 		if (!table) return;
 
-		// Collect managed descriptions before closing so we can check refCounts after
-		const managedDescs: { id: number; description: { refCount: number }; type: "pipe" | "pty" | "lock" }[] = [];
+		// Collect descriptions before closing so we can check refCounts after.
+		const descriptions = new Map<number, import("./types.js").FileDescription>();
+		const managedDescs: { id: number; description: import("./types.js").FileDescription; type: "pipe" | "pty" | "lock" }[] = [];
 		for (const entry of table) {
+			descriptions.set(entry.description.id, entry.description);
 			const descId = entry.description.id;
 			if (this.pipeManager.isPipe(descId)) {
 				managedDescs.push({ id: descId, description: entry.description, type: "pipe" });
@@ -1319,7 +1402,14 @@ class KernelImpl implements Kernel {
 		// Close all FDs and remove the table
 		this.fdTableManager.remove(pid);
 
-		// Signal closure for descriptions whose last reference was dropped
+		// Release inode-backed file data after the last shared reference closes.
+		for (const description of descriptions.values()) {
+			if (description.refCount <= 0) {
+				this.releaseDescriptionInode(description);
+			}
+		}
+
+		// Signal closure for managed descriptions whose last reference was dropped.
 		for (const { id, description, type } of managedDescs) {
 			if (description.refCount <= 0) {
 				if (type === "pipe") this.pipeManager.close(id);
@@ -1331,12 +1421,10 @@ class KernelImpl implements Kernel {
 
 	private async vfsWrite(entry: FDEntry, data: Uint8Array): Promise<number> {
 		let content: Uint8Array;
-		let isNewFile = false;
 		try {
-			content = await this.vfs.readFile(entry.description.path);
+			content = await this.readDescriptionFile(entry.description);
 		} catch {
 			content = new Uint8Array(0);
-			isNewFile = true;
 		}
 
 		// O_APPEND: every write seeks to end of file first (POSIX)
@@ -1347,16 +1435,90 @@ class KernelImpl implements Kernel {
 		const newContent = new Uint8Array(Math.max(content.length, endPos));
 		newContent.set(content);
 		newContent.set(data, cursor);
-		await this.vfs.writeFile(entry.description.path, newContent);
+		await this.writeDescriptionFile(entry.description, newContent);
 
-		// Apply creation mode from umask on first write that creates the file
-		if (isNewFile && entry.description.creationMode !== undefined) {
+		// Apply creation mode once the descriptor's newly created file is materialized.
+		if (entry.description.creationMode !== undefined) {
 			await this.vfs.chmod(entry.description.path, entry.description.creationMode);
 			entry.description.creationMode = undefined;
 		}
 
 		entry.description.cursor = BigInt(endPos);
 		return data.length;
+	}
+
+	private trackDescriptionInode(description: import("./types.js").FileDescription): void {
+		if (!this.rawInMemoryFs || description.inode !== undefined) return;
+		const ino = this.rawInMemoryFs.getInodeForPath(description.path);
+		if (ino === null) return;
+		description.inode = ino;
+		this.inodeTable.incrementOpenRefs(ino);
+	}
+
+	private releaseDescriptionInode(
+		description: import("./types.js").FileDescription,
+	): void {
+		if (description.inode === undefined) return;
+		this.inodeTable.decrementOpenRefs(description.inode);
+		if (this.inodeTable.shouldDelete(description.inode)) {
+			this.rawInMemoryFs?.deleteInodeData(description.inode);
+			this.inodeTable.delete(description.inode);
+		}
+		description.inode = undefined;
+	}
+
+	private async readDescriptionFile(
+		description: import("./types.js").FileDescription,
+	): Promise<Uint8Array> {
+		if (description.inode !== undefined && this.rawInMemoryFs) {
+			return this.rawInMemoryFs.readFileByInode(description.inode);
+		}
+		return this.vfs.readFile(description.path);
+	}
+
+	private async writeDescriptionFile(
+		description: import("./types.js").FileDescription,
+		content: Uint8Array,
+	): Promise<void> {
+		if (description.inode !== undefined && this.rawInMemoryFs) {
+			this.rawInMemoryFs.writeFileByInode(description.inode, content);
+			return;
+		}
+		await this.vfs.writeFile(description.path, content);
+		this.trackDescriptionInode(description);
+	}
+
+	private prepareOpenSync(path: string, flags: number): boolean {
+		const syncVfs = this.vfs as VirtualFileSystem & {
+			prepareOpenSync?: (targetPath: string, openFlags: number) => boolean;
+		};
+		return syncVfs.prepareOpenSync?.(path, flags) ?? false;
+	}
+
+	private async preadDescription(
+		description: import("./types.js").FileDescription,
+		offset: number,
+		length: number,
+	): Promise<Uint8Array> {
+		if (description.inode !== undefined && this.rawInMemoryFs) {
+			return this.rawInMemoryFs.preadByInode(description.inode, offset, length);
+		}
+		return this.vfs.pread(description.path, offset, length);
+	}
+
+	private async getDescriptionSize(
+		description: import("./types.js").FileDescription,
+	): Promise<number> {
+		return (await this.statDescription(description)).size;
+	}
+
+	private async statDescription(
+		description: import("./types.js").FileDescription,
+	): Promise<VirtualStat> {
+		if (description.inode !== undefined && this.rawInMemoryFs) {
+			return this.rawInMemoryFs.statByInode(description.inode);
+		}
+		return this.vfs.stat(description.path);
 	}
 
 	private getTable(pid: number): ProcessFDTable {

@@ -7,6 +7,7 @@
 /// function is called:
 /// - "child_stdout", "child_stderr", "child_exit" → _childProcessDispatch
 /// - "http_request" → _httpServerDispatch
+/// - "timer" → _timerDispatch
 pub fn dispatch_stream_event(scope: &mut v8::HandleScope, event_type: &str, payload: &[u8]) {
     // Look up the dispatch function on the global object
     let context = scope.get_current_context();
@@ -15,6 +16,7 @@ pub fn dispatch_stream_event(scope: &mut v8::HandleScope, event_type: &str, payl
     let dispatch_name = match event_type {
         "child_stdout" | "child_stderr" | "child_exit" => "_childProcessDispatch",
         "http_request" => "_httpServerDispatch",
+        "timer" => "_timerDispatch",
         _ => return, // Unknown event type — ignore
     };
 
@@ -30,7 +32,15 @@ pub fn dispatch_stream_event(scope: &mut v8::HandleScope, event_type: &str, payl
             let payload_val = if !payload.is_empty() {
                 match crate::bridge::deserialize_v8_value(scope, payload) {
                     Ok(v) => v,
-                    Err(_) => v8::null(scope).into(),
+                    Err(_) => match std::str::from_utf8(payload) {
+                        Ok(text) => match v8::String::new(scope, text) {
+                            Some(json_text) => v8::json::parse(scope, json_text)
+                                .map(|value| value.into())
+                                .unwrap_or_else(|| json_text.into()),
+                            None => v8::null(scope).into(),
+                        },
+                        Err(_) => v8::null(scope).into(),
+                    },
                 }
             } else {
                 v8::null(scope).into()

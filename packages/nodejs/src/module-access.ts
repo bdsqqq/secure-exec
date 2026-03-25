@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import path from "node:path";
 import { createEaccesError } from "@secure-exec/core/internal/shared/errors";
+import { O_CREAT, O_EXCL, O_TRUNC } from "@secure-exec/core";
 import type { VirtualDirEntry, VirtualFileSystem, VirtualStat } from "@secure-exec/core";
 
 /**
@@ -231,6 +232,21 @@ export class ModuleAccessFileSystem implements VirtualFileSystem {
 			return this.hostNodeModulesRoot;
 		}
 		return path.join(this.hostNodeModulesRoot, ...relative.split("/"));
+	}
+
+	prepareOpenSync(pathValue: string, flags: number): boolean {
+		const virtualPath = normalizeOverlayPath(pathValue);
+		if (this.isReadOnlyProjectionPath(virtualPath)) {
+			throw createEaccesError(
+				(flags & O_TRUNC) !== 0 ? "truncate" : "write",
+				virtualPath,
+			);
+		}
+
+		const syncBase = this.baseFileSystem as (VirtualFileSystem & {
+			prepareOpenSync?: (targetPath: string, openFlags: number) => boolean;
+		}) | undefined;
+		return syncBase?.prepareOpenSync?.(virtualPath, flags) ?? false;
 	}
 
 	/** Translate a sandbox path to the corresponding host path (for sync module resolution). */

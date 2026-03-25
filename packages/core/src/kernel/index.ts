@@ -35,6 +35,9 @@ export type {
 	ChildProcessAccessRequest,
 	EnvAccessRequest,
 	KernelErrorCode,
+	SignalDisposition,
+	SignalHandler,
+	ProcessSignalState,
 	Termios,
 	TermiosCC,
 	OpenShellOptions,
@@ -56,13 +59,56 @@ export type {
 export { FDTableManager, ProcessFDTable } from "./fd-table.js";
 export { ProcessTable } from "./process-table.js";
 export { createDeviceLayer } from "./device-layer.js";
+export {
+	createProcLayer,
+	createProcessScopedFileSystem,
+	resolveProcSelfPath,
+} from "./proc-layer.js";
 export { PipeManager } from "./pipe-manager.js";
 export { PtyManager } from "./pty.js";
 export type { LineDisciplineConfig } from "./pty.js";
 export { CommandRegistry } from "./command-registry.js";
 export { FileLockManager, LOCK_SH, LOCK_EX, LOCK_UN, LOCK_NB } from "./file-lock.js";
+export { WaitHandle, WaitQueue } from "./wait.js";
+export { InodeTable } from "./inode-table.js";
+export type { Inode } from "./inode-table.js";
+export { TimerTable } from "./timer-table.js";
+export type { KernelTimer, TimerTableOptions } from "./timer-table.js";
+export { DnsCache } from "./dns-cache.js";
+export type { DnsCacheOptions } from "./dns-cache.js";
 export { UserManager } from "./user.js";
 export type { UserConfig } from "./user.js";
+
+// Socket table
+export { SocketTable } from "./socket-table.js";
+export type {
+	KernelSocket,
+	SocketState,
+	SockAddr,
+	InetAddr,
+	UnixAddr,
+	UdpDatagram,
+} from "./socket-table.js";
+export {
+	AF_INET, AF_INET6, AF_UNIX,
+	SOCK_STREAM, SOCK_DGRAM,
+	SOL_SOCKET, IPPROTO_TCP,
+	SO_REUSEADDR, SO_KEEPALIVE, SO_RCVBUF, SO_SNDBUF,
+	TCP_NODELAY,
+	MSG_PEEK, MSG_DONTWAIT, MSG_NOSIGNAL,
+	MAX_DATAGRAM_SIZE, MAX_UDP_QUEUE_DEPTH,
+	S_IFSOCK,
+	isInetAddr, isUnixAddr, addrKey, optKey,
+} from "./socket-table.js";
+
+// Host adapter interfaces (for kernel network delegation)
+export type {
+	HostNetworkAdapter,
+	HostSocket,
+	HostListener,
+	HostUdpSocket,
+	DnsResult,
+} from "./host-adapter.js";
 
 // Permissions
 export {
@@ -84,6 +130,8 @@ export {
 	FILETYPE_UNKNOWN, FILETYPE_CHARACTER_DEVICE, FILETYPE_DIRECTORY,
 	FILETYPE_REGULAR_FILE, FILETYPE_SYMBOLIC_LINK, FILETYPE_PIPE,
 	SIGHUP, SIGINT, SIGQUIT, SIGKILL, SIGPIPE, SIGALRM, SIGTERM, SIGCHLD, SIGCONT, SIGSTOP, SIGTSTP, SIGWINCH,
+	SA_RESTART, SA_RESETHAND, SA_NOCLDSTOP,
+	SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK,
 	WNOHANG,
 } from "./types.js";
 

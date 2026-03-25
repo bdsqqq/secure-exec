@@ -343,14 +343,41 @@ pub fn execute_script(
                 };
             }
         };
-        if script.run(tc).is_none() {
-            return match tc.exception() {
-                Some(e) => {
-                    let (c, err) = exception_to_result(tc, e);
-                    (c, Some(err))
+        let completion = match script.run(tc) {
+            Some(result) => result,
+            None => {
+                return match tc.exception() {
+                    Some(e) => {
+                        let (c, err) = exception_to_result(tc, e);
+                        (c, Some(err))
+                    }
+                    None => (1, None),
+                };
+            }
+        };
+
+        // Surface rejected async completions for exec()-style scripts that
+        // return a Promise (for example an async IIFE ending in await import()).
+        if completion.is_promise() {
+            let promise = v8::Local::<v8::Promise>::try_from(completion).unwrap();
+            tc.perform_microtask_checkpoint();
+
+            if let Some(exception) = tc.exception() {
+                let (c, err) = exception_to_result(tc, exception);
+                return (c, Some(err));
+            }
+
+            if let Some(state) = tc.get_slot_mut::<crate::isolate::PromiseRejectState>() {
+                if let Some((_, err)) = state.unhandled.drain().next() {
+                    return (1, Some(err));
                 }
-                None => (1, None),
-            };
+            }
+
+            if promise.state() == v8::PromiseState::Rejected {
+                let rejection = promise.result(tc);
+                let (c, err) = exception_to_result(tc, rejection);
+                return (c, Some(err));
+            }
         }
     }
 
@@ -401,7 +428,7 @@ fn exception_to_result(
 ///
 /// Reads constructor.name for error type, .message for the message,
 /// .stack for the stack trace, and optional .code for Node-style error codes.
-pub fn extract_error_info(
+pub(crate) fn extract_error_info(
     scope: &mut v8::HandleScope,
     exception: v8::Local<v8::Value>,
 ) -> ExecutionError {
@@ -546,14 +573,171 @@ struct ModuleResolveState {
 // duration of execute_module.
 unsafe impl Send for ModuleResolveState {}
 
-thread_local! {
-    static MODULE_RESOLVE_STATE: RefCell<Option<ModuleResolveState>> = const { RefCell::new(None) };
+/// Deferred root-module completion state for async ESM evaluation.
+///
+/// When `module.evaluate()` returns a pending promise (for example because the
+/// entry module or one of its dependencies uses top-level `await`), the session
+/// thread keeps the module + promise alive across the bridge event loop and
+/// finalizes exports only after the promise settles.
+#[cfg_attr(test, allow(dead_code))]
+struct PendingModuleEvaluation {
+    module: v8::Global<v8::Module>,
+    promise: v8::Global<v8::Promise>,
 }
 
-fn clear_module_state() {
+// SAFETY: PendingModuleEvaluation is only accessed from the session thread
+// (single-threaded per session).
+unsafe impl Send for PendingModuleEvaluation {}
+
+thread_local! {
+    static MODULE_RESOLVE_STATE: RefCell<Option<ModuleResolveState>> = const { RefCell::new(None) };
+    static PENDING_MODULE_EVALUATION: RefCell<Option<PendingModuleEvaluation>> = const { RefCell::new(None) };
+}
+
+#[cfg_attr(test, allow(dead_code))]
+pub fn clear_module_state() {
     MODULE_RESOLVE_STATE.with(|cell| {
         *cell.borrow_mut() = None;
     });
+}
+
+pub fn clear_pending_module_evaluation() {
+    PENDING_MODULE_EVALUATION.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
+#[cfg_attr(test, allow(dead_code))]
+pub fn has_pending_module_evaluation() -> bool {
+    PENDING_MODULE_EVALUATION.with(|cell| cell.borrow().is_some())
+}
+
+pub fn pending_module_evaluation_needs_wait(scope: &mut v8::HandleScope) -> bool {
+    PENDING_MODULE_EVALUATION.with(|cell| {
+        let borrow = cell.borrow();
+        let Some(pending) = borrow.as_ref() else {
+            return false;
+        };
+        let promise = v8::Local::new(scope, &pending.promise);
+        promise.state() == v8::PromiseState::Pending
+    })
+}
+
+fn set_pending_module_evaluation(
+    scope: &mut v8::HandleScope,
+    module: v8::Local<v8::Module>,
+    promise: v8::Local<v8::Promise>,
+) {
+    PENDING_MODULE_EVALUATION.with(|cell| {
+        *cell.borrow_mut() = Some(PendingModuleEvaluation {
+            module: v8::Global::new(scope, module),
+            promise: v8::Global::new(scope, promise),
+        });
+    });
+}
+
+fn take_unhandled_promise_rejection(scope: &mut v8::HandleScope) -> Option<ExecutionError> {
+    scope
+        .get_slot_mut::<crate::isolate::PromiseRejectState>()
+        .and_then(|state| state.unhandled.drain().next().map(|(_, err)| err))
+}
+
+fn serialize_module_exports(
+    scope: &mut v8::HandleScope,
+    module: v8::Local<v8::Module>,
+) -> Result<Vec<u8>, ExecutionError> {
+    // Serialize module namespace (exports)
+    // If the ESM namespace is empty, fall back to globalThis.module.exports
+    // for CJS compatibility (code using module.exports = {...}).
+    // The module namespace is a V8 exotic object that ValueSerializer can't
+    // handle directly, so we copy its properties into a plain object.
+    let namespace = module.get_module_namespace();
+    let namespace_obj = namespace.to_object(scope).unwrap();
+    let prop_names = namespace_obj
+        .get_own_property_names(scope, v8::GetPropertyNamesArgs::default())
+        .unwrap();
+    let exports_val: v8::Local<v8::Value> = if prop_names.length() == 0 {
+        // No ESM exports — check CJS module.exports fallback
+        let ctx = scope.get_current_context();
+        let global = ctx.global(scope);
+        let module_key = v8::String::new(scope, "module").unwrap();
+        let cjs_exports = global
+            .get(scope, module_key.into())
+            .and_then(|m| m.to_object(scope))
+            .and_then(|m| {
+                let exports_key = v8::String::new(scope, "exports").unwrap();
+                m.get(scope, exports_key.into())
+            })
+            .filter(|v| !v.is_undefined() && !v.is_null_or_undefined());
+        match cjs_exports {
+            Some(val) => val,
+            None => v8::Object::new(scope).into(),
+        }
+    } else {
+        let plain = v8::Object::new(scope);
+        for i in 0..prop_names.length() {
+            let key = prop_names.get_index(scope, i).unwrap();
+            let val = namespace_obj
+                .get(scope, key)
+                .unwrap_or_else(|| v8::undefined(scope).into());
+            plain.set(scope, key, val);
+        }
+        plain.into()
+    };
+
+    serialize_v8_value(scope, exports_val).map_err(|err| ExecutionError {
+        error_type: "Error".into(),
+        message: format!("failed to serialize exports: {}", err),
+        stack: String::new(),
+        code: None,
+    })
+}
+
+#[cfg_attr(test, allow(dead_code))]
+pub fn finalize_pending_module_evaluation(
+    scope: &mut v8::HandleScope,
+) -> Option<(i32, Option<Vec<u8>>, Option<ExecutionError>)> {
+    let pending = PENDING_MODULE_EVALUATION.with(|cell| cell.borrow_mut().take())?;
+    let tc = &mut v8::TryCatch::new(scope);
+    let module = v8::Local::new(tc, &pending.module);
+    let promise = v8::Local::new(tc, &pending.promise);
+
+    tc.perform_microtask_checkpoint();
+
+    if let Some(exception) = tc.exception() {
+        let (code, err) = exception_to_result(tc, exception);
+        return Some((code, None, Some(err)));
+    }
+
+    if let Some(err) = take_unhandled_promise_rejection(tc) {
+        return Some((1, None, Some(err)));
+    }
+
+    match promise.state() {
+        v8::PromiseState::Pending => {
+            PENDING_MODULE_EVALUATION.with(|cell| {
+                *cell.borrow_mut() = Some(pending);
+            });
+            None
+        }
+        v8::PromiseState::Rejected => {
+            let rejection = promise.result(tc);
+            let (code, err) = exception_to_result(tc, rejection);
+            Some((code, None, Some(err)))
+        }
+        v8::PromiseState::Fulfilled => {
+            if module.get_status() == v8::ModuleStatus::Errored {
+                let exc = module.get_exception();
+                let (code, err) = exception_to_result(tc, exc);
+                return Some((code, None, Some(err)));
+            }
+
+            match serialize_module_exports(tc, module) {
+                Ok(exports) => Some((0, Some(exports), None)),
+                Err(err) => Some((1, None, Some(err))),
+            }
+        }
+    }
 }
 
 /// Execute user code as an ES module (mode='run').
@@ -571,6 +755,8 @@ pub fn execute_module(
     file_path: Option<&str>,
     bridge_cache: &mut Option<BridgeCodeCache>,
 ) -> (i32, Option<Vec<u8>>, Option<ExecutionError>) {
+    clear_pending_module_evaluation();
+
     // Set up thread-local resolve state
     MODULE_RESOLVE_STATE.with(|cell| {
         *cell.borrow_mut() = Some(ModuleResolveState {
@@ -682,6 +868,38 @@ pub fn execute_module(
             };
         }
 
+        // Give microtask-driven top-level await a chance to settle immediately,
+        // then defer finalization to the session event loop if it is still pending.
+        if eval_result.unwrap().is_promise() {
+            let promise = v8::Local::<v8::Promise>::try_from(eval_result.unwrap()).unwrap();
+            tc.perform_microtask_checkpoint();
+
+            if let Some(exception) = tc.exception() {
+                clear_module_state();
+                let (c, err) = exception_to_result(tc, exception);
+                return (c, None, Some(err));
+            }
+
+            if let Some(err) = take_unhandled_promise_rejection(tc) {
+                clear_module_state();
+                return (1, None, Some(err));
+            }
+
+            match promise.state() {
+                v8::PromiseState::Pending => {
+                    set_pending_module_evaluation(tc, module, promise);
+                    return (0, None, None);
+                }
+                v8::PromiseState::Rejected => {
+                    let rejection = promise.result(tc);
+                    clear_module_state();
+                    let (exit_code, err) = exception_to_result(tc, rejection);
+                    return (exit_code, None, Some(err));
+                }
+                v8::PromiseState::Fulfilled => {}
+            }
+        }
+
         // Check module status for errors (handles TLA rejection case)
         if module.get_status() == v8::ModuleStatus::Errored {
             let exc = module.get_exception();
@@ -690,62 +908,11 @@ pub fn execute_module(
             return (exit_code, None, Some(err));
         }
 
-        // Serialize module namespace (exports)
-        // If the ESM namespace is empty, fall back to globalThis.module.exports
-        // for CJS compatibility (code using module.exports = {...}).
-        // The module namespace is a V8 exotic object that ValueSerializer can't
-        // handle directly, so we copy its properties into a plain object.
-        let namespace = module.get_module_namespace();
-        let namespace_obj = namespace.to_object(tc).unwrap();
-        let prop_names = namespace_obj
-            .get_own_property_names(tc, v8::GetPropertyNamesArgs::default())
-            .unwrap();
-        let exports_val: v8::Local<v8::Value> = if prop_names.length() == 0 {
-            // No ESM exports — check CJS module.exports fallback
-            let ctx = tc.get_current_context();
-            let global = ctx.global(tc);
-            let module_key = v8::String::new(tc, "module").unwrap();
-            let cjs_exports = global
-                .get(tc, module_key.into())
-                .and_then(|m| m.to_object(tc))
-                .and_then(|m| {
-                    let exports_key = v8::String::new(tc, "exports").unwrap();
-                    m.get(tc, exports_key.into())
-                })
-                .filter(|v| !v.is_undefined() && !v.is_null_or_undefined());
-            match cjs_exports {
-                Some(val) => val,
-                None => {
-                    // Empty namespace, empty CJS — return empty object
-                    v8::Object::new(tc).into()
-                }
-            }
-        } else {
-            // Copy namespace properties to a plain object for serialization
-            let plain = v8::Object::new(tc);
-            for i in 0..prop_names.length() {
-                let key = prop_names.get_index(tc, i).unwrap();
-                let val = namespace_obj
-                    .get(tc, key)
-                    .unwrap_or_else(|| v8::undefined(tc).into());
-                plain.set(tc, key, val);
-            }
-            plain.into()
-        };
-        let exports_bytes = match serialize_v8_value(tc, exports_val) {
+        let exports_bytes = match serialize_module_exports(tc, module) {
             Ok(bytes) => bytes,
-            Err(e) => {
+            Err(err) => {
                 clear_module_state();
-                return (
-                    1,
-                    None,
-                    Some(ExecutionError {
-                        error_type: "Error".into(),
-                        message: format!("failed to serialize exports: {}", e),
-                        stack: String::new(),
-                        code: None,
-                    }),
-                );
+                return (1, None, Some(err));
             }
         };
 
@@ -893,6 +1060,207 @@ fn prefetch_module_imports(
     }
 }
 
+fn resolve_or_compile_module<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    specifier_str: &str,
+    referrer_name: &str,
+) -> Option<v8::Local<'s, v8::Module>> {
+    // Phase 1: Check cache by specifier.
+    let cached_global = MODULE_RESOLVE_STATE.with(|cell| {
+        let borrow = cell.borrow();
+        let state = borrow.as_ref()?;
+        state.module_cache.get(specifier_str).cloned()
+    });
+    if let Some(cached) = cached_global {
+        return Some(v8::Local::new(scope, &cached));
+    }
+
+    // Phase 2: Get bridge context.
+    let bridge_ctx_ptr = MODULE_RESOLVE_STATE.with(|cell| {
+        let borrow = cell.borrow();
+        let state = borrow.as_ref().expect("module resolve state not set");
+        state.bridge_ctx
+    });
+    let ctx = unsafe { &*bridge_ctx_ptr };
+
+    // Phase 3: Resolve module path.
+    let resolved_path = resolve_module_via_ipc(scope, ctx, specifier_str, referrer_name)?;
+
+    // Phase 4: Check cache by resolved path.
+    let cached_global = MODULE_RESOLVE_STATE.with(|cell| {
+        let borrow = cell.borrow();
+        let state = borrow.as_ref()?;
+        state.module_cache.get(&resolved_path).cloned()
+    });
+    if let Some(cached) = cached_global {
+        return Some(v8::Local::new(scope, &cached));
+    }
+
+    // Phase 5: Load and compile the module source.
+    let source_code = load_module_via_ipc(scope, ctx, &resolved_path)?;
+    let resource = v8::String::new(scope, &resolved_path)?;
+    let origin = v8::ScriptOrigin::new(
+        scope,
+        resource.into(),
+        0,
+        0,
+        false,
+        -1,
+        None,
+        false,
+        false,
+        true,
+        None,
+    );
+    let v8_source = match v8::String::new(scope, &source_code) {
+        Some(s) => s,
+        None => {
+            throw_module_error(scope, "module source too large for V8");
+            return None;
+        }
+    };
+    let mut compiled = v8::script_compiler::Source::new(v8_source, Some(&origin));
+    let module = v8::script_compiler::compile_module(scope, &mut compiled)?;
+
+    MODULE_RESOLVE_STATE.with(|cell| {
+        if let Some(state) = cell.borrow_mut().as_mut() {
+            state
+                .module_names
+                .insert(module.get_identity_hash(), resolved_path.clone());
+            let global = v8::Global::new(scope, module);
+            state
+                .module_cache
+                .insert(specifier_str.to_string(), global.clone());
+            state.module_cache.insert(resolved_path, global);
+        }
+    });
+
+    Some(module)
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn dynamic_import_namespace_callback(
+    _scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    rv.set(args.data());
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn dynamic_import_reject_callback(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let reason = args.get(0);
+    scope.throw_exception(reason);
+    rv.set(reason);
+}
+
+#[cfg_attr(test, allow(dead_code))]
+pub fn dynamic_import_callback<'a>(
+    scope: &mut v8::HandleScope<'a>,
+    _host_defined_options: v8::Local<'a, v8::Data>,
+    resource_name: v8::Local<'a, v8::Value>,
+    specifier: v8::Local<'a, v8::String>,
+    _import_attributes: v8::Local<'a, v8::FixedArray>,
+) -> Option<v8::Local<'a, v8::Promise>> {
+    let tc = &mut v8::TryCatch::new(scope);
+
+    let specifier_str = specifier.to_rust_string_lossy(tc);
+    let referrer_name = resource_name.to_rust_string_lossy(tc);
+    let module = match resolve_or_compile_module(tc, &specifier_str, &referrer_name) {
+        Some(module) => module,
+        None => {
+            let reason = if let Some(exception) = tc.exception() {
+                exception
+            } else {
+                let msg = v8::String::new(tc, "Cannot dynamically import module").unwrap();
+                v8::Exception::error(tc, msg).into()
+            };
+            return rejected_promise(tc, reason);
+        }
+    };
+
+    if module.get_status() == v8::ModuleStatus::Uninstantiated
+        && module
+            .instantiate_module(tc, module_resolve_callback)
+            .is_none()
+    {
+        let reason = if let Some(exception) = tc.exception() {
+            exception
+        } else {
+            let msg =
+                v8::String::new(tc, "Cannot instantiate dynamically imported module").unwrap();
+            v8::Exception::error(tc, msg).into()
+        };
+        return rejected_promise(tc, reason);
+    }
+
+    if module.get_status() == v8::ModuleStatus::Errored {
+        let exception = v8::Global::new(tc, module.get_exception());
+        let exception = v8::Local::new(tc, &exception);
+        return rejected_promise(tc, exception);
+    }
+
+    if module.get_status() == v8::ModuleStatus::Evaluated {
+        let namespace = v8::Global::new(tc, module.get_module_namespace());
+        let namespace = v8::Local::new(tc, &namespace);
+        return resolved_promise(tc, namespace.into());
+    }
+
+    let eval_result = match module.evaluate(tc) {
+        Some(result) => result,
+        None => {
+            let reason = if let Some(exception) = tc.exception() {
+                exception
+            } else {
+                let msg =
+                    v8::String::new(tc, "Cannot evaluate dynamically imported module").unwrap();
+                v8::Exception::error(tc, msg).into()
+            };
+            return rejected_promise(tc, reason);
+        }
+    };
+
+    let namespace = v8::Global::new(tc, module.get_module_namespace());
+    let namespace = v8::Local::new(tc, &namespace);
+    if eval_result.is_promise() {
+        let eval_promise = v8::Local::<v8::Promise>::try_from(eval_result).ok()?;
+        let on_fulfilled = v8::FunctionTemplate::builder(dynamic_import_namespace_callback)
+            .data(namespace.into())
+            .build(tc)
+            .get_function(tc)?;
+        let on_rejected = v8::FunctionTemplate::builder(dynamic_import_reject_callback)
+            .build(tc)
+            .get_function(tc)?;
+        return eval_promise.then2(tc, on_fulfilled, on_rejected);
+    }
+
+    resolved_promise(tc, namespace.into())
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn resolved_promise<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    value: v8::Local<'s, v8::Value>,
+) -> Option<v8::Local<'s, v8::Promise>> {
+    let resolver = v8::PromiseResolver::new(scope)?;
+    resolver.resolve(scope, value);
+    Some(resolver.get_promise(scope))
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn rejected_promise<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    reason: v8::Local<'s, v8::Value>,
+) -> Option<v8::Local<'s, v8::Promise>> {
+    let resolver = v8::PromiseResolver::new(scope)?;
+    resolver.reject(scope, reason);
+    Some(resolver.get_promise(scope))
+}
+
 /// Send _batchResolveModules via sync-blocking IPC.
 ///
 /// Sends an array of {specifier, referrer} pairs, receives an array of
@@ -970,85 +1338,16 @@ fn module_resolve_callback<'a>(
     let specifier_str = specifier.to_rust_string_lossy(scope);
     let referrer_hash = referrer.get_identity_hash();
 
-    // Phase 1: Check cache by specifier (brief borrow, released before V8 work)
-    let cached_global = MODULE_RESOLVE_STATE.with(|cell| {
-        let borrow = cell.borrow();
-        let state = borrow.as_ref()?;
-        state.module_cache.get(&specifier_str).cloned()
-    });
-    if let Some(cached) = cached_global {
-        return Some(v8::Local::new(scope, &cached));
-    }
-
-    // Phase 2: Get context data (brief borrow)
-    let (bridge_ctx_ptr, referrer_name) = MODULE_RESOLVE_STATE.with(|cell| {
+    let referrer_name = MODULE_RESOLVE_STATE.with(|cell| {
         let borrow = cell.borrow();
         let state = borrow.as_ref().expect("module resolve state not set");
-        (
-            state.bridge_ctx,
-            state
-                .module_names
-                .get(&referrer_hash)
-                .cloned()
-                .unwrap_or_default(),
-        )
+        state
+            .module_names
+            .get(&referrer_hash)
+            .cloned()
+            .unwrap_or_default()
     });
-
-    let ctx = unsafe { &*bridge_ctx_ptr };
-
-    // Phase 3: Resolve module via sync-blocking IPC
-    let resolved_path = resolve_module_via_ipc(scope, ctx, &specifier_str, &referrer_name)?;
-
-    // Phase 4: Check cache by resolved path (brief borrow)
-    let cached_global = MODULE_RESOLVE_STATE.with(|cell| {
-        let borrow = cell.borrow();
-        let state = borrow.as_ref()?;
-        state.module_cache.get(&resolved_path).cloned()
-    });
-    if let Some(cached) = cached_global {
-        return Some(v8::Local::new(scope, &cached));
-    }
-
-    // Phase 5: Load module source via sync-blocking IPC
-    let source_code = load_module_via_ipc(scope, ctx, &resolved_path)?;
-
-    // Phase 6: Compile as ES module
-    let resource = v8::String::new(scope, &resolved_path)?;
-    let origin = v8::ScriptOrigin::new(
-        scope,
-        resource.into(),
-        0,
-        0,
-        false,
-        -1,
-        None,
-        false,
-        false,
-        true, // is_module
-        None,
-    );
-    let v8_source = match v8::String::new(scope, &source_code) {
-        Some(s) => s,
-        None => {
-            throw_module_error(scope, "module source too large for V8");
-            return None;
-        }
-    };
-    let mut compiled = v8::script_compiler::Source::new(v8_source, Some(&origin));
-    let module = v8::script_compiler::compile_module(scope, &mut compiled)?;
-
-    // Phase 7: Cache the module (brief borrow)
-    MODULE_RESOLVE_STATE.with(|cell| {
-        if let Some(state) = cell.borrow_mut().as_mut() {
-            state
-                .module_names
-                .insert(module.get_identity_hash(), resolved_path.clone());
-            let global = v8::Global::new(scope, module);
-            state.module_cache.insert(resolved_path, global);
-        }
-    });
-
-    Some(module)
+    resolve_or_compile_module(scope, &specifier_str, &referrer_name)
 }
 
 /// Send _resolveModule(specifier, referrer_path) via sync-blocking IPC.
@@ -2119,6 +2418,29 @@ mod tests {
             assert!(error.is_none());
             assert!(eval_bool(&mut iso, &ctx, "_sawBridge === true"));
             assert!(eval_bool(&mut iso, &ctx, "_bridgeReady === true"));
+        }
+
+        // --- Part 18b: Rejected async script completion returns structured error ---
+        {
+            let mut iso = isolate::create_isolate(None);
+            let ctx = isolate::create_context(&mut iso);
+
+            let (code, error) = {
+                let scope = &mut v8::HandleScope::new(&mut iso);
+                let local = v8::Local::new(scope, &ctx);
+                let scope = &mut v8::ContextScope::new(scope, local);
+                execute_script(
+                    scope,
+                    "",
+                    "(async function () { throw new Error('async failure'); })()",
+                    &mut None,
+                )
+            };
+
+            assert_eq!(code, 1);
+            let err = error.unwrap();
+            assert_eq!(err.error_type, "Error");
+            assert_eq!(err.message, "async failure");
         }
 
         // --- Part 19: SyntaxError in user code returns structured error ---

@@ -1,4 +1,7 @@
-import { exposeCustomGlobal } from "@secure-exec/core/internal/shared/global-exposure";
+import {
+	exposeCustomGlobal,
+	exposeMutableRuntimeStateGlobal,
+} from "@secure-exec/core/internal/shared/global-exposure";
 import type {
 	ModuleCacheBridgeRecord,
 	RequireFromBridgeFn,
@@ -7,6 +10,21 @@ import type {
 
 // Module polyfill for the sandbox
 // Provides module.createRequire and other module utilities for npm compatibility
+
+// Seed the mutable CommonJS loader state before requireSetup runs.
+const initialModuleCache: ModuleCacheBridgeRecord = {};
+const initialPendingModules: Record<string, { exports: unknown }> = {};
+const initialCurrentModule = {
+	id: "/<entry>.js",
+	filename: "/<entry>.js",
+	dirname: "/",
+	exports: {},
+	loaded: false,
+};
+
+exposeMutableRuntimeStateGlobal("_moduleCache", initialModuleCache);
+exposeMutableRuntimeStateGlobal("_pendingModules", initialPendingModules);
+exposeMutableRuntimeStateGlobal("_currentModule", initialCurrentModule);
 
 // Declare host bridge globals that are set up by setupRequire()
 declare const _requireFrom: RequireFromBridgeFn;

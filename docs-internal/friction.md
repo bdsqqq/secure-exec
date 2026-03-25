@@ -1,5 +1,11 @@
 # Sandboxed Node Friction Log
 
+## 2026-03-24
+
+1. **[resolved]** ESM `exec()` and failing dynamic imports still had a final parity gap after the earlier dynamic-import cleanup.
+   - Symptom: `exec(code, { filePath: "/entry.mjs" })` could still miss Node-style import-condition routing, and missing-module / syntax / evaluation failures from `await import(...)` could incorrectly exit with code `0`.
+   - Fix: the runtime now resolves ESM loads in `"import"` mode, keeps `require()` on `"require"` conditions, propagates async entrypoint promise rejections out of the native V8 execution path, and preserves Node-like error messages for failing dynamic imports.
+
 ## 2026-03-10
 
 1. **[resolved]** TypeScript compilation needed sandboxing without baking compiler behavior into the core runtime.
@@ -144,9 +150,9 @@
    - Symptom: compatibility fixtures paid repeated `copy + pnpm install` cost even when fixture inputs were unchanged.
    - Fix: added persistent fixture install cache under `packages/secure-exec/.cache/project-matrix/` keyed by fixture/toolchain/runtime factors with `.ready` marker semantics. Repeated `test:project-matrix` runs now reuse prepared installs.
 
-7. TODO: follow up on lazy dynamic-import edge cases in ESM execution.
-   - Symptom: `filePath: "/entry.mjs"` with top-level `await import("./mod.mjs")` can log pre-import output and imported-module side effects but miss post-await statements.
-   - Next step: add a dedicated ESM top-level-await + dynamic-import regression test.
+7. **[resolved]** ESM top-level await could finalize before async startup completed.
+   - Symptom: `filePath: "/entry.mjs"` with top-level `await import("./mod.mjs")` could log pre-import output and imported-module side effects but miss post-await statements.
+   - Fix: kept the root module evaluation promise alive across the native V8 session event loop and only finalized exports/results after top-level await settled; added runtime-driver regressions for entrypoint, transitive-import, dynamic-import, and timeout coverage.
 
 7. **[resolved]** Dynamic import error/fallback path masked ESM failures behind CJS-style wrappers.
    - Symptom: ESM compile/evaluation failures could be rethrown as generic dynamic-import errors, and fallback namespace construction could throw for primitive/null CommonJS exports.
@@ -174,9 +180,9 @@
    - Symptom: requests like `require('./request')` failed when both `request/` and `request.js` existed.
    - Fix: changed resolver order to match Node behavior: file + extension probes run before directory index/package resolution.
 
-6. ESM + top-level await in this runtime path can return early for long async waits.
+6. **[resolved]** ESM + top-level await in this runtime path could return early for long async waits.
    - Symptom: module evaluation could finish before awaited async work (timers/network) completed.
-   - Mitigation for example: runner switched to CJS async-IIFE, which `exec()` already awaits reliably.
+   - Fix: native V8 ESM execution now defers finalization until the entry-module evaluation promise settles, so long async startup follows Node-style top-level-await semantics instead of requiring a CJS async-IIFE workaround.
 
 7. `secure-exec` package build currently fails due to broad pre-existing type errors in bridge/browser files.
    - Symptom: importing `secure-exec` from `dist/` in example loader was not reliable in this workspace state.

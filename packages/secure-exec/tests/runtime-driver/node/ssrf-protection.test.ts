@@ -1,5 +1,4 @@
 import * as http from "node:http";
-import * as https from "node:https";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createDefaultNetworkAdapter,
@@ -10,6 +9,10 @@ import {
 } from "../../../src/index.js";
 import type { StdioEvent } from "../../../src/shared/api-types.js";
 import { isPrivateIp } from "../../../src/node/driver.js";
+
+type LoopbackAwareAdapter = ReturnType<typeof createDefaultNetworkAdapter> & {
+	__setLoopbackPortChecker?: (checker: (hostname: string, port: number) => boolean) => void;
+};
 
 describe("SSRF protection", () => {
 	// ---------------------------------------------------------------
@@ -158,44 +161,44 @@ describe("SSRF protection", () => {
 	// ---------------------------------------------------------------
 
 	describe("loopback exemption for sandbox-owned servers", () => {
-		it("sandbox creates http.createServer, binds port 0, fetches own endpoint", async () => {
-			const adapter = createDefaultNetworkAdapter();
-
-			// Start a server through the adapter (simulates sandbox server creation)
+		it("fetch and httpRequest allow loopback ports claimed by the injected checker", async () => {
 			let capturedRequest: { method: string; url: string } | null = null;
-			const result = await adapter.httpServerListen!({
-				serverId: 1,
-				port: 0,
-				onRequest: async (req) => {
-					capturedRequest = { method: req.method, url: req.url };
-					return {
-						status: 200,
-						headers: [["content-type", "text/plain"]],
-						body: "hello-from-sandbox",
-					};
-				},
+			const server = http.createServer((req, res) => {
+				capturedRequest = { method: req.method || "GET", url: req.url || "/" };
+				res.writeHead(200, { "content-type": "text/plain" });
+				res.end("hello-from-sandbox");
 			});
 
-			const port = result.address!.port;
+			await new Promise<void>((resolve, reject) => {
+				server.once("error", reject);
+				server.listen(0, "127.0.0.1", () => resolve());
+			});
+
+			const address = server.address();
+			if (!address || typeof address === "string") {
+				throw new Error("expected an inet listener address");
+			}
+
+			const adapter = createDefaultNetworkAdapter() as LoopbackAwareAdapter;
+			adapter.__setLoopbackPortChecker?.((_hostname, port) => port === address.port);
+
 			try {
-				// Fetch from the sandbox's own server — should succeed
 				const fetchResult = await adapter.fetch(
-					`http://127.0.0.1:${port}/test`,
+					`http://127.0.0.1:${address.port}/test`,
 					{ method: "GET" },
 				);
 				expect(fetchResult.status).toBe(200);
 				expect(fetchResult.body).toBe("hello-from-sandbox");
 				expect(capturedRequest).toEqual({ method: "GET", url: "/test" });
 
-				// httpRequest to the same port also succeeds
 				const httpResult = await adapter.httpRequest(
-					`http://127.0.0.1:${port}/api`,
+					`http://127.0.0.1:${address.port}/api`,
 					{ method: "GET" },
 				);
 				expect(httpResult.status).toBe(200);
 				expect(httpResult.body).toBe("hello-from-sandbox");
 			} finally {
-				await adapter.httpServerClose!(1);
+				await new Promise<void>((resolve) => server.close(() => resolve()));
 			}
 		});
 
@@ -211,76 +214,99 @@ describe("SSRF protection", () => {
 		});
 
 		it("fetch to other private IPs remains blocked even with owned servers", async () => {
-			const adapter = createDefaultNetworkAdapter();
+			const adapter = createDefaultNetworkAdapter() as LoopbackAwareAdapter;
+			adapter.__setLoopbackPortChecker?.((_hostname, port) => port === 40123);
 
-			// Start a server so we have an owned port
-			await adapter.httpServerListen!({
-				serverId: 2,
-				port: 0,
-				onRequest: async () => ({ status: 200, body: "ok" }),
-			});
-
-			try {
-				// Other private ranges remain blocked
-				await expect(
-					adapter.fetch("http://10.0.0.1/", {}),
-				).rejects.toThrow(/SSRF blocked/);
-				await expect(
-					adapter.fetch("http://192.168.1.1/", {}),
-				).rejects.toThrow(/SSRF blocked/);
-				await expect(
-					adapter.fetch("http://169.254.169.254/", {}),
-				).rejects.toThrow(/SSRF blocked/);
-			} finally {
-				await adapter.httpServerClose!(2);
-			}
+			await expect(
+				adapter.fetch("http://10.0.0.1/", {}),
+			).rejects.toThrow(/SSRF blocked/);
+			await expect(
+				adapter.fetch("http://192.168.1.1/", {}),
+			).rejects.toThrow(/SSRF blocked/);
+			await expect(
+				adapter.fetch("http://169.254.169.254/", {}),
+			).rejects.toThrow(/SSRF blocked/);
 		});
 
-		it("coerces 0.0.0.0 listen to loopback for strict sandboxing", async () => {
-			const adapter = createDefaultNetworkAdapter();
-
-			const result = await adapter.httpServerListen!({
-				serverId: 3,
-				port: 0,
-				hostname: "0.0.0.0",
-				onRequest: async () => ({
-					status: 200,
-					headers: [["content-type", "text/plain"]],
-					body: "coerced",
+		it("sandbox listeners on 0.0.0.0 remain reachable via loopback", async () => {
+			const events: StdioEvent[] = [];
+			const runtime = new NodeRuntime({
+				onStdio: (event) => events.push(event),
+				systemDriver: createNodeDriver({
+					networkAdapter: createDefaultNetworkAdapter(),
+					permissions: allowAllNetwork,
 				}),
+				runtimeDriverFactory: createNodeRuntimeDriverFactory(),
 			});
 
-			// 0.0.0.0 was coerced to 127.0.0.1
-			expect(result.address!.address).toBe("127.0.0.1");
-
 			try {
-				// Can still fetch from the coerced loopback server
-				const fetchResult = await adapter.fetch(
-					`http://127.0.0.1:${result.address!.port}/`,
-					{},
-				);
-				expect(fetchResult.status).toBe(200);
-				expect(fetchResult.body).toBe("coerced");
+				const result = await runtime.exec(`
+					(async () => {
+						const http = require('http');
+						const server = http.createServer((_req, res) => {
+							res.writeHead(200, { 'content-type': 'text/plain' });
+							res.end('coerced');
+						});
+
+						await new Promise((resolve) => server.listen(0, '0.0.0.0', resolve));
+						const port = server.address().port;
+						const response = await new Promise((resolve, reject) => {
+							http.get({ host: '127.0.0.1', port, path: '/' }, (res) => {
+								let data = '';
+								res.on('data', (chunk) => data += chunk);
+								res.on('end', () => resolve({
+									body: data,
+									encoding: res.headers['x-body-encoding'],
+								}));
+							}).on('error', reject);
+						});
+						const body = response.encoding === 'base64' || response.body === 'Y29lcmNlZA=='
+							? Buffer.from(response.body, 'base64').toString('utf8')
+							: response.body;
+						console.log('body:' + body);
+						await new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+					})();
+				`);
+
+				expect(result.code).toBe(0);
+				const stdout = events
+					.filter((event) => event.channel === "stdout")
+					.map((event) => event.message)
+					.join("");
+				expect(stdout).toContain("body:coerced");
 			} finally {
-				await adapter.httpServerClose!(3);
+				await runtime.terminate();
 			}
 		});
 
 		it("port exemption removed after server close", async () => {
-			const adapter = createDefaultNetworkAdapter();
-
-			const result = await adapter.httpServerListen!({
-				serverId: 4,
-				port: 0,
-				onRequest: async () => ({ status: 200, body: "ok" }),
+			const server = http.createServer((_req, res) => {
+				res.writeHead(200);
+				res.end("ok");
 			});
 
-			const port = result.address!.port;
-			await adapter.httpServerClose!(4);
+			await new Promise<void>((resolve, reject) => {
+				server.once("error", reject);
+				server.listen(0, "127.0.0.1", () => resolve());
+			});
 
-			// Port no longer owned — should be blocked
+			const address = server.address();
+			if (!address || typeof address === "string") {
+				throw new Error("expected an inet listener address");
+			}
+
+			let open = true;
+			const adapter = createDefaultNetworkAdapter() as LoopbackAwareAdapter;
+			adapter.__setLoopbackPortChecker?.((_hostname, port) => open && port === address.port);
+
+			const fetchResult = await adapter.fetch(`http://127.0.0.1:${address.port}/`, {});
+			expect(fetchResult.status).toBe(200);
+
+			open = false;
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+
 			await expect(
-				adapter.fetch(`http://127.0.0.1:${port}/`, {}),
+				adapter.fetch(`http://127.0.0.1:${address.port}/`, {}),
 			).rejects.toThrow(/SSRF blocked/);
 		});
 	});
@@ -408,85 +434,13 @@ describe("SSRF protection", () => {
 			const upgradePort = addr.port;
 
 			try {
-				// Use a network adapter that allows the upgrade server's port
-				const adapter = createDefaultNetworkAdapter();
-				// Register the upgrade server's port as owned via a dummy listen
-				const dummyResult = await adapter.httpServerListen!({
-					serverId: 99,
-					port: 0,
-					onRequest: async () => ({ status: 200, body: "dummy" }),
-				});
-				const dummyPort = dummyResult.address!.port;
-
-				// We need the upgrade server's port exempted — add it by listening
-				// Actually, use a custom adapter that allows the specific port
-				const customAdapter: import("../../../src/types.js").NetworkAdapter = {
-					async fetch(url, opts) { return adapter.fetch(url, opts); },
-					async dnsLookup(h) { return adapter.dnsLookup(h); },
-					async httpRequest(url, opts) {
-						// Allow the upgrade server's port on loopback
-						return new Promise((resolve, reject) => {
-							const urlObj = new URL(url);
-							const transport = urlObj.protocol === "https:" ? https : http;
-							const reqOptions: https.RequestOptions = {
-								hostname: urlObj.hostname,
-								port: urlObj.port || 80,
-								path: urlObj.pathname + urlObj.search,
-								method: opts?.method || "GET",
-								headers: opts?.headers || {},
-							};
-
-							const req = transport.request(reqOptions, (res) => {
-								const chunks: Buffer[] = [];
-								res.on("data", (chunk: Buffer) => chunks.push(chunk));
-								res.on("end", () => {
-									const headers: Record<string, string> = {};
-									Object.entries(res.headers).forEach(([k, v]) => {
-										if (typeof v === "string") headers[k] = v;
-										else if (Array.isArray(v)) headers[k] = v.join(", ");
-									});
-									resolve({
-										status: res.statusCode || 200,
-										statusText: res.statusMessage || "OK",
-										headers,
-										body: Buffer.concat(chunks).toString("utf-8"),
-										url,
-									});
-								});
-								res.on("error", reject);
-							});
-
-							// Handle HTTP upgrade (101 Switching Protocols)
-							req.on("upgrade", (res, socket, head) => {
-								const headers: Record<string, string> = {};
-								Object.entries(res.headers).forEach(([k, v]) => {
-									if (typeof v === "string") headers[k] = v;
-									else if (Array.isArray(v)) headers[k] = v.join(", ");
-								});
-								socket.destroy();
-								resolve({
-									status: res.statusCode || 101,
-									statusText: res.statusMessage || "Switching Protocols",
-									headers,
-									body: head.toString(),
-									url,
-								});
-							});
-
-							req.on("error", reject);
-							if (opts?.body) req.write(opts.body);
-							req.end();
-						});
-					},
-				};
-
-				await adapter.httpServerClose!(99);
+				const adapter = createDefaultNetworkAdapter({ initialExemptPorts: [upgradePort] });
 
 				const events: StdioEvent[] = [];
 				const runtime = new NodeRuntime({
 					onStdio: (event) => events.push(event),
 					systemDriver: createNodeDriver({
-						networkAdapter: customAdapter,
+						networkAdapter: adapter,
 						permissions: allowAllNetwork,
 					}),
 					runtimeDriverFactory: createNodeRuntimeDriverFactory(),

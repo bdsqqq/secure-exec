@@ -93,7 +93,9 @@ export const RIGHTS_DIR_ALL: bigint = RIGHT_FD_FDSTAT_SET_FLAGS | RIGHT_FD_SYNC 
 // WASI errno codes (wasi_snapshot_preview1)
 // ---------------------------------------------------------------------------
 export const ERRNO_SUCCESS = 0;
+export const ERRNO_EADDRINUSE = 3;
 export const ERRNO_EACCES = 2;
+export const ERRNO_EAGAIN = 6;
 export const ERRNO_EBADF = 8;
 export const ERRNO_ECHILD = 10;
 export const ERRNO_ECONNREFUSED = 14;
@@ -115,6 +117,8 @@ export const ERRNO_ETIMEDOUT = 73;
 /** Map POSIX error code strings to WASI errno numbers. */
 export const ERRNO_MAP: Record<string, number> = {
 	EACCES: ERRNO_EACCES,
+	EADDRINUSE: ERRNO_EADDRINUSE,
+	EAGAIN: ERRNO_EAGAIN,
 	EBADF: ERRNO_EBADF,
 	ECHILD: ERRNO_ECHILD,
 	ECONNREFUSED: ERRNO_ECONNREFUSED,

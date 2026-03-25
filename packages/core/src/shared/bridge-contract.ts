@@ -70,6 +70,8 @@ export const HOST_BRIDGE_GLOBAL_KEYS = {
 	networkHttpRequestRaw: "_networkHttpRequestRaw",
 	networkHttpServerListenRaw: "_networkHttpServerListenRaw",
 	networkHttpServerCloseRaw: "_networkHttpServerCloseRaw",
+	networkHttpServerRespondRaw: "_networkHttpServerRespondRaw",
+	networkHttpServerWaitRaw: "_networkHttpServerWaitRaw",
 	upgradeSocketWriteRaw: "_upgradeSocketWriteRaw",
 	upgradeSocketEndRaw: "_upgradeSocketEndRaw",
 	upgradeSocketDestroyRaw: "_upgradeSocketDestroyRaw",
@@ -103,6 +105,7 @@ export const RUNTIME_BRIDGE_GLOBAL_KEYS = {
 	dnsModule: "_dnsModule",
 	httpServerDispatch: "_httpServerDispatch",
 	httpServerUpgradeDispatch: "_httpServerUpgradeDispatch",
+	timerDispatch: "_timerDispatch",
 	upgradeSocketData: "_upgradeSocketData",
 	upgradeSocketEnd: "_upgradeSocketEnd",
 	netSocketDispatch: "_netSocketDispatch",
@@ -279,6 +282,11 @@ export type NetworkDnsLookupRawBridgeRef = BridgeApplyRef<[string], string>;
 export type NetworkHttpRequestRawBridgeRef = BridgeApplyRef<[string, string], string>;
 export type NetworkHttpServerListenRawBridgeRef = BridgeApplyRef<[string], string>;
 export type NetworkHttpServerCloseRawBridgeRef = BridgeApplyRef<[number], void>;
+export type NetworkHttpServerRespondRawBridgeRef = BridgeApplySyncRef<
+	[number, number, string],
+	void
+>;
+export type NetworkHttpServerWaitRawBridgeRef = BridgeApplyRef<[number], void>;
 export type UpgradeSocketWriteRawBridgeRef = BridgeApplySyncRef<[number, string], void>;
 export type UpgradeSocketEndRawBridgeRef = BridgeApplySyncRef<[number], void>;
 export type UpgradeSocketDestroyRawBridgeRef = BridgeApplySyncRef<[number], void>;

@@ -6,10 +6,18 @@ import {
 	type MockCommandConfig,
 } from "./helpers.js";
 import type { Kernel, Permissions, ProcessContext, RuntimeDriver, DriverProcess, KernelInterface } from "../../src/kernel/types.js";
-import { FILETYPE_PIPE, FILETYPE_CHARACTER_DEVICE } from "../../src/kernel/types.js";
+import {
+	FILETYPE_PIPE,
+	FILETYPE_CHARACTER_DEVICE,
+	O_CREAT,
+	O_EXCL,
+	O_TRUNC,
+	O_WRONLY,
+} from "../../src/kernel/types.js";
 import { createKernel } from "../../src/kernel/kernel.js";
 import { filterEnv, wrapFileSystem } from "../../src/kernel/permissions.js";
 import { MAX_CANON, MAX_PTY_BUFFER_BYTES } from "../../src/kernel/pty.js";
+import { createProcessScopedFileSystem } from "../../src/kernel/proc-layer.js";
 
 describe("kernel + MockRuntimeDriver integration", () => {
 	let kernel: Kernel;
@@ -81,6 +89,31 @@ describe("kernel + MockRuntimeDriver integration", () => {
 
 		expect(driver.kernelInterface).not.toBeNull();
 		expect(driver.kernelInterface!.vfs).toBeDefined();
+	});
+
+	it("exposes timerTable on the kernel public API", async () => {
+		const driver = new MockRuntimeDriver(["x"]);
+		({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+		expect(kernel.timerTable).toBeDefined();
+		expect(kernel.timerTable.size).toBe(0);
+	});
+
+	it("clears process timers when a process exits", async () => {
+		const driver = new MockRuntimeDriver(["sleep"], {
+			sleep: { neverExit: true, killSignals: [] },
+		});
+		({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+		const proc = kernel.spawn("sleep", []);
+		const timerId = kernel.timerTable.createTimer(proc.pid, 1_000, false, () => {});
+		expect(kernel.timerTable.get(timerId)).not.toBeNull();
+
+		proc.kill();
+		await proc.wait();
+
+		expect(kernel.timerTable.get(timerId)).toBeNull();
+		expect(kernel.timerTable.size).toBe(0);
 	});
 
 	// -----------------------------------------------------------------------
@@ -3905,6 +3938,73 @@ describe("kernel + MockRuntimeDriver integration", () => {
 	});
 
 	// -----------------------------------------------------------------------
+	// /proc pseudo-filesystem
+	// -----------------------------------------------------------------------
+
+	describe("/proc pseudo-filesystem", () => {
+		it("readdir('/proc/self/fd') returns open FD numbers for the current process", async () => {
+			const driver = new MockRuntimeDriver(["cmd"], { cmd: { neverExit: true } });
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("cmd", []);
+			const procVfs = createProcessScopedFileSystem(ki.vfs, proc.pid);
+
+			await ki.vfs.writeFile("/tmp/proc-fd.txt", "data");
+			const fd = ki.fdOpen(proc.pid, "/tmp/proc-fd.txt", 0);
+
+			const entries = await procVfs.readDir("/proc/self/fd");
+			expect(entries).toContain("0");
+			expect(entries).toContain("1");
+			expect(entries).toContain("2");
+			expect(entries).toContain(String(fd));
+
+			proc.kill();
+			await proc.wait();
+		});
+
+		it("readlink('/proc/self/fd/0') resolves to the process stdin path", async () => {
+			const driver = new MockRuntimeDriver(["cmd"], { cmd: { neverExit: true } });
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("cmd", []);
+			const procVfs = createProcessScopedFileSystem(ki.vfs, proc.pid);
+
+			expect(await procVfs.readlink("/proc/self/fd/0")).toBe("/dev/stdin");
+
+			proc.kill();
+			await proc.wait();
+		});
+
+		it("readFile('/proc/self/cwd') returns the current working directory", async () => {
+			const driver = new MockRuntimeDriver(["cmd"], { cmd: { neverExit: true } });
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("cmd", [], { cwd: "/tmp" });
+			const procVfs = createProcessScopedFileSystem(ki.vfs, proc.pid);
+
+			const cwd = new TextDecoder().decode(await procVfs.readFile("/proc/self/cwd"));
+			expect(cwd).toBe("/tmp");
+
+			proc.kill();
+			await proc.wait();
+		});
+
+		it("readTextFile('/proc/<pid>/environ') exposes NUL-delimited environment entries", async () => {
+			const driver = new MockRuntimeDriver(["cmd"], { cmd: { neverExit: true } });
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+			const ki = driver.kernelInterface!;
+			const proc = kernel.spawn("cmd", [], { env: { FOO: "bar", BAZ: "qux" } });
+
+			const environ = await ki.vfs.readFile(`/proc/${proc.pid}/environ`);
+			expect(new TextDecoder().decode(environ)).toContain("FOO=bar");
+			expect(new TextDecoder().decode(environ)).toContain("\0");
+
+			proc.kill();
+			await proc.wait();
+		});
+	});
+
+	// -----------------------------------------------------------------------
 	// Kernel maxProcesses budget
 	// -----------------------------------------------------------------------
 
@@ -4943,6 +5043,89 @@ describe("kernel + MockRuntimeDriver integration", () => {
 			await proc.wait();
 		});
 
+		it("O_CREAT|O_EXCL succeeds for a new file", async () => {
+			const driver = new MockRuntimeDriver(["x"], { x: { neverExit: true } });
+			const { kernel: k, vfs } = await createTestKernel({ drivers: [driver] });
+			kernel = k;
+
+			const proc = kernel.spawn("x", []);
+			const ki = driver.kernelInterface!;
+
+			const fd = ki.fdOpen(proc.pid, "/tmp/exclusive-new.txt", O_WRONLY | O_CREAT | O_EXCL);
+			expect(fd).toBeGreaterThanOrEqual(3);
+			expect(await vfs.readFile("/tmp/exclusive-new.txt")).toEqual(new Uint8Array(0));
+
+			proc.kill(9);
+			await proc.wait();
+		});
+
+		it("O_CREAT|O_EXCL returns EEXIST for an existing file", async () => {
+			const driver = new MockRuntimeDriver(["x"], { x: { neverExit: true } });
+			const { kernel: k, vfs } = await createTestKernel({ drivers: [driver] });
+			kernel = k;
+
+			const proc = kernel.spawn("x", []);
+			const ki = driver.kernelInterface!;
+
+			await vfs.writeFile("/tmp/exclusive-existing.txt", "data");
+			expect(() =>
+				ki.fdOpen(proc.pid, "/tmp/exclusive-existing.txt", O_WRONLY | O_CREAT | O_EXCL),
+			).toThrow("EEXIST");
+
+			proc.kill(9);
+			await proc.wait();
+		});
+
+		it("O_TRUNC truncates an existing file on open", async () => {
+			const driver = new MockRuntimeDriver(["x"], { x: { neverExit: true } });
+			const { kernel: k, vfs } = await createTestKernel({ drivers: [driver] });
+			kernel = k;
+
+			const proc = kernel.spawn("x", []);
+			const ki = driver.kernelInterface!;
+
+			await vfs.writeFile("/tmp/truncate-existing.txt", "hello");
+			const fd = ki.fdOpen(proc.pid, "/tmp/truncate-existing.txt", O_WRONLY | O_TRUNC);
+			expect(fd).toBeGreaterThanOrEqual(3);
+			expect(await vfs.readFile("/tmp/truncate-existing.txt")).toEqual(new Uint8Array(0));
+
+			proc.kill(9);
+			await proc.wait();
+		});
+
+		it("O_TRUNC|O_CREAT creates an empty file when missing", async () => {
+			const driver = new MockRuntimeDriver(["x"], { x: { neverExit: true } });
+			const { kernel: k, vfs } = await createTestKernel({ drivers: [driver] });
+			kernel = k;
+
+			const proc = kernel.spawn("x", []);
+			const ki = driver.kernelInterface!;
+
+			const fd = ki.fdOpen(proc.pid, "/tmp/truncate-create.txt", O_WRONLY | O_CREAT | O_TRUNC);
+			expect(fd).toBeGreaterThanOrEqual(3);
+			expect(await vfs.readFile("/tmp/truncate-create.txt")).toEqual(new Uint8Array(0));
+
+			proc.kill(9);
+			await proc.wait();
+		});
+
+		it("O_EXCL without O_CREAT is ignored", async () => {
+			const driver = new MockRuntimeDriver(["x"], { x: { neverExit: true } });
+			const { kernel: k, vfs } = await createTestKernel({ drivers: [driver] });
+			kernel = k;
+
+			const proc = kernel.spawn("x", []);
+			const ki = driver.kernelInterface!;
+
+			await vfs.writeFile("/tmp/excl-ignored.txt", "ok");
+			const fd = ki.fdOpen(proc.pid, "/tmp/excl-ignored.txt", O_EXCL);
+			expect(fd).toBeGreaterThanOrEqual(3);
+			expect(new TextDecoder().decode(await vfs.readFile("/tmp/excl-ignored.txt"))).toBe("ok");
+
+			proc.kill(9);
+			await proc.wait();
+		});
+
 		it("child inherits parent umask", async () => {
 			const driver = new MockRuntimeDriver(["parent", "child"], {
 				parent: { neverExit: true },
@@ -4967,6 +5150,101 @@ describe("kernel + MockRuntimeDriver integration", () => {
 			await child.wait();
 			parent.kill(9);
 			await parent.wait();
+		});
+	});
+
+	// -----------------------------------------------------------------------
+	// Socket table integration
+	// -----------------------------------------------------------------------
+
+	describe("socket table integration", () => {
+		it("kernel exposes socketTable", async () => {
+			const driver = new MockRuntimeDriver(["sh"], { sh: { exitCode: 0 } });
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			expect(kernel.socketTable).toBeDefined();
+			expect(typeof kernel.socketTable.create).toBe("function");
+		});
+
+		it("create socket and close it", async () => {
+			const driver = new MockRuntimeDriver(["sh"], { sh: { exitCode: 0 } });
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const id = kernel.socketTable.create(2, 1, 0, 1); // AF_INET, SOCK_STREAM
+			expect(id).toBeGreaterThan(0);
+
+			const sock = kernel.socketTable.get(id);
+			expect(sock).toBeDefined();
+			expect(sock!.state).toBe("created");
+
+			kernel.socketTable.close(id, 1);
+			expect(kernel.socketTable.get(id)).toBeNull();
+		});
+
+		it("dispose cleans up all sockets", async () => {
+			const driver = new MockRuntimeDriver(["sh"], { sh: { exitCode: 0 } });
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const id1 = kernel.socketTable.create(2, 1, 0, 1);
+			const id2 = kernel.socketTable.create(2, 1, 0, 1);
+			expect(kernel.socketTable.get(id1)).not.toBeNull();
+			expect(kernel.socketTable.get(id2)).not.toBeNull();
+
+			await kernel.dispose();
+
+			expect(kernel.socketTable.get(id1)).toBeNull();
+			expect(kernel.socketTable.get(id2)).toBeNull();
+		});
+
+		it("process exit cleans up sockets owned by that process", async () => {
+			const driver = new MockRuntimeDriver(["cmd"], {
+				cmd: { neverExit: true },
+			});
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const proc = kernel.spawn("cmd", []);
+			const pid = proc.pid;
+
+			// Create sockets owned by this process
+			const id1 = kernel.socketTable.create(2, 1, 0, pid);
+			const id2 = kernel.socketTable.create(2, 1, 0, pid);
+
+			// Create a socket owned by a different pid (should survive)
+			const otherId = kernel.socketTable.create(2, 1, 0, 99999);
+
+			expect(kernel.socketTable.get(id1)).toBeDefined();
+			expect(kernel.socketTable.get(id2)).toBeDefined();
+
+			// Kill the process — triggers onProcessExit → closeAllForProcess
+			proc.kill(9);
+			await proc.wait();
+
+			// Sockets owned by the exited process should be cleaned up
+			expect(kernel.socketTable.get(id1)).toBeNull();
+			expect(kernel.socketTable.get(id2)).toBeNull();
+
+			// Socket owned by other pid should survive
+			expect(kernel.socketTable.get(otherId)).not.toBeNull();
+		});
+
+		it("loopback TCP through kernel socket table", async () => {
+			const driver = new MockRuntimeDriver(["sh"], { sh: { exitCode: 0 } });
+			({ kernel } = await createTestKernel({ drivers: [driver] }));
+
+			const serverSock = kernel.socketTable.create(2, 1, 0, 1);
+			await kernel.socketTable.bind(serverSock, { host: "127.0.0.1", port: 9090 });
+			await kernel.socketTable.listen(serverSock, 5);
+
+			const clientSock = kernel.socketTable.create(2, 1, 0, 1);
+			await kernel.socketTable.connect(clientSock, { host: "127.0.0.1", port: 9090 });
+
+			const accepted = kernel.socketTable.accept(serverSock);
+			expect(accepted).not.toBeNull();
+
+			// Exchange data
+			kernel.socketTable.send(clientSock, new TextEncoder().encode("hello"));
+			const data = kernel.socketTable.recv(accepted!, 1024);
+			expect(new TextDecoder().decode(data!)).toBe("hello");
 		});
 	});
 });

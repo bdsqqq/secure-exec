@@ -13,6 +13,8 @@ import type {
 	NetworkHttpRequestRawBridgeRef,
 	NetworkHttpServerCloseRawBridgeRef,
 	NetworkHttpServerListenRawBridgeRef,
+	NetworkHttpServerRespondRawBridgeRef,
+	NetworkHttpServerWaitRawBridgeRef,
 	RegisterHandleBridgeFn,
 	UnregisterHandleBridgeFn,
 	UpgradeSocketWriteRawBridgeRef,
@@ -38,6 +40,14 @@ declare const _networkHttpServerListenRaw:
 
 declare const _networkHttpServerCloseRaw:
   | NetworkHttpServerCloseRawBridgeRef
+  | undefined;
+
+declare const _networkHttpServerRespondRaw:
+  | NetworkHttpServerRespondRawBridgeRef
+  | undefined;
+
+declare const _networkHttpServerWaitRaw:
+  | NetworkHttpServerWaitRawBridgeRef
   | undefined;
 
 declare const _netSocketConnectRaw:
@@ -795,16 +805,30 @@ export class ClientRequest {
       if ((this._options as Record<string, unknown>).rejectUnauthorized !== undefined) {
         tls.rejectUnauthorized = (this._options as Record<string, unknown>).rejectUnauthorized;
       }
-      const optionsJson = JSON.stringify({
-        method: this._options.method || "GET",
-        headers: this._options.headers || {},
-        body: this._body || null,
-        ...tls,
-      });
+      const normalizedHeaders = normalizeRequestHeaders(this._options.headers);
 
-      const responseJson = await _networkHttpRequestRaw.apply(undefined, [url, optionsJson], {
-        result: { promise: true },
-      });
+      const directLoopbackServer = findLoopbackServerForRequest(this._options);
+      const responseJson = directLoopbackServer
+        ? await dispatchServerRequest(
+            directLoopbackServer._bridgeServerId,
+            JSON.stringify({
+              method: this._options.method || "GET",
+              url: this._options.path || "/",
+              headers: normalizedHeaders,
+              rawHeaders: flattenRawHeaders(normalizedHeaders),
+              bodyBase64: this._body
+                ? Buffer.from(this._body).toString("base64")
+                : undefined,
+            } satisfies SerializedServerRequest),
+          )
+        : await _networkHttpRequestRaw.apply(undefined, [url, JSON.stringify({
+            method: this._options.method || "GET",
+            headers: normalizedHeaders,
+            body: this._body || null,
+            ...tls,
+          })], {
+            result: { promise: true },
+          });
       const response = JSON.parse(responseJson) as {
         headers?: Record<string, string>;
         url?: string;
@@ -1094,13 +1118,79 @@ interface SerializedServerResponse {
   bodyEncoding?: "utf8" | "base64";
 }
 
+function debugBridgeNetwork(...args: unknown[]): void {
+  if (process.env.SECURE_EXEC_DEBUG_HTTP_BRIDGE === "1") {
+    console.error("[secure-exec bridge network]", ...args);
+  }
+}
+
 let nextServerId = 1;
-const serverRequestListeners = new Map<
-  number,
-  (incoming: ServerIncomingMessage, outgoing: ServerResponseBridge) => unknown
->();
-// Server instances indexed by serverId — used by upgrade dispatch to emit 'upgrade' events
+// Server instances indexed by serverId — used by request/upgrade dispatch
 const serverInstances = new Map<number, Server>();
+
+function normalizeRequestHeaders(
+  headers: nodeHttp.OutgoingHttpHeaders | readonly string[] | undefined,
+): Record<string, string> {
+  if (!headers) return {};
+  if (Array.isArray(headers)) {
+    const normalized: Record<string, string> = {};
+    for (let i = 0; i < headers.length; i += 2) {
+      const key = headers[i];
+      const value = headers[i + 1];
+      if (key !== undefined && value !== undefined) {
+        normalized[String(key).toLowerCase()] = String(value);
+      }
+    }
+    return normalized;
+  }
+
+  const normalized: Record<string, string> = {};
+  Object.entries(headers).forEach(([key, value]) => {
+    if (value === undefined) return;
+    normalized[key.toLowerCase()] = Array.isArray(value)
+      ? value.join(", ")
+      : String(value);
+  });
+  return normalized;
+}
+
+function flattenRawHeaders(headers: Record<string, string>): string[] {
+  return Object.entries(headers).flatMap(([key, value]) => [key, value]);
+}
+
+function isLoopbackRequestHost(hostname: string): boolean {
+  const bare = hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+  return bare === "localhost" || bare === "127.0.0.1" || bare === "::1";
+}
+
+function findLoopbackServerForRequest(
+  options: nodeHttp.RequestOptions,
+): Server | null {
+  const hostname = String(options.hostname || options.host || "localhost");
+  if (!isLoopbackRequestHost(hostname)) {
+    return null;
+  }
+
+  const normalizedHeaders = normalizeRequestHeaders(options.headers);
+  const connectionHeader = normalizedHeaders["connection"]?.toLowerCase();
+  const upgradeHeader = normalizedHeaders["upgrade"];
+  if (connectionHeader?.includes("upgrade") || upgradeHeader) {
+    return null;
+  }
+
+  const port = Number(options.port) || 80;
+  for (const server of serverInstances.values()) {
+    const address = server.address();
+    if (!address) continue;
+    if (address.port === port) {
+      return server;
+    }
+  }
+
+  return null;
+}
 
 class ServerIncomingMessage {
   headers: Record<string, string>;
@@ -1405,9 +1495,9 @@ class ServerResponseBridge {
 }
 
 /**
- * Polyfill of Node.js `http.Server`. Delegates actual listening to the host
- * via the `_networkHttpServerListenRaw` bridge. Incoming requests are
- * dispatched through `_httpServerDispatch` which invokes the request listener
+ * Polyfill of Node.js `http.Server`. Delegates listening through the
+ * kernel-backed `_networkHttpServerListenRaw` bridge. Incoming requests are
+ * dispatched through `_httpServerDispatch`, which invokes the request listener
  * inside the isolate. Registers an active handle to keep the sandbox alive.
  */
 class Server {
@@ -1417,15 +1507,23 @@ class Server {
   private _listenPromise: Promise<void> | null = null;
   private _address: ServerAddress | null = null;
   private _handleId: string | null = null;
+  private _hostCloseWaitStarted = false;
+  private _activeRequestDispatches = 0;
+  private _closePending = false;
+  private _closeRunning = false;
+  private _closeCallbacks: Array<(err?: Error) => void> = [];
+  /** @internal Request listener stored on the instance (replaces serverRequestListeners Map). */
+  _requestListener: (req: ServerIncomingMessage, res: ServerResponseBridge) => unknown;
 
   constructor(requestListener?: (req: ServerIncomingMessage, res: ServerResponseBridge) => unknown) {
     this._serverId = nextServerId++;
-    if (requestListener) {
-      serverRequestListeners.set(this._serverId, requestListener);
-    } else {
-      serverRequestListeners.set(this._serverId, () => undefined);
-    }
+    this._requestListener = requestListener ?? (() => undefined);
     serverInstances.set(this._serverId, this);
+  }
+
+  /** @internal Bridge-visible server ID for loopback self-dispatch. */
+  get _bridgeServerId(): number {
+    return this._serverId;
   }
 
   /** @internal Emit an event — used by upgrade dispatch to fire 'upgrade' events. */
@@ -1435,25 +1533,76 @@ class Server {
     listeners.slice().forEach((listener) => listener(...args));
   }
 
+  private _finishStart(resultJson: string): void {
+    const result = JSON.parse(resultJson) as SerializedServerListenResult;
+    this._address = result.address;
+    this.listening = true;
+    this._handleId = `http-server:${this._serverId}`;
+    debugBridgeNetwork("server listening", this._serverId, this._address);
+    if (typeof _registerHandle === "function") {
+      _registerHandle(this._handleId, "http server");
+    }
+    this._startHostCloseWait();
+  }
+
+  private _completeClose(): void {
+    this.listening = false;
+    this._address = null;
+    serverInstances.delete(this._serverId);
+    if (this._handleId && typeof _unregisterHandle === "function") {
+      _unregisterHandle(this._handleId);
+    }
+    this._handleId = null;
+  }
+
+  _beginRequestDispatch(): void {
+    this._activeRequestDispatches += 1;
+  }
+
+  _endRequestDispatch(): void {
+    this._activeRequestDispatches = Math.max(0, this._activeRequestDispatches - 1);
+    if (this._closePending && this._activeRequestDispatches === 0) {
+      this._closePending = false;
+      queueMicrotask(() => {
+        this._startClose();
+      });
+    }
+  }
+
+  private _startHostCloseWait(): void {
+    if (this._hostCloseWaitStarted || typeof _networkHttpServerWaitRaw === "undefined") {
+      return;
+    }
+    this._hostCloseWaitStarted = true;
+    void _networkHttpServerWaitRaw
+      .apply(undefined, [this._serverId], { result: { promise: true } })
+      .then(() => {
+        if (!this.listening) {
+          return;
+        }
+        debugBridgeNetwork("server close from host", this._serverId);
+        this._completeClose();
+        this._emit("close");
+      })
+      .catch(() => {
+        // Ignore shutdown races during teardown.
+      });
+  }
+
   private async _start(port?: number, hostname?: string): Promise<void> {
     if (typeof _networkHttpServerListenRaw === "undefined") {
       throw new Error(
-        "http.createServer requires NetworkAdapter.httpServerListen support"
+        "http.createServer requires kernel-backed network bridge support"
       );
     }
 
+    debugBridgeNetwork("server listen start", this._serverId, port, hostname);
     const resultJson = await _networkHttpServerListenRaw.apply(
       undefined,
       [JSON.stringify({ serverId: this._serverId, port, hostname })],
       { result: { promise: true } }
     );
-    const result = JSON.parse(resultJson) as SerializedServerListenResult;
-    this._address = result.address;
-    this.listening = true;
-    this._handleId = `http-server:${this._serverId}`;
-    if (typeof _registerHandle === "function") {
-      _registerHandle(this._handleId, "http server");
-    }
+    this._finishStart(resultJson);
   }
 
   listen(
@@ -1486,33 +1635,52 @@ class Server {
   }
 
   close(cb?: (err?: Error) => void): this {
+    debugBridgeNetwork("server close requested", this._serverId, this.listening);
+    if (cb) {
+      this._closeCallbacks.push(cb);
+    }
+    if (this._activeRequestDispatches > 0) {
+      this._closePending = true;
+      return this;
+    }
+    queueMicrotask(() => {
+      this._startClose();
+    });
+    return this;
+  }
+
+  private _startClose(): void {
+    if (this._closeRunning) {
+      return;
+    }
+    this._closeRunning = true;
     const run = async () => {
       try {
         if (this._listenPromise) {
           await this._listenPromise;
         }
         if (this.listening && typeof _networkHttpServerCloseRaw !== "undefined") {
+          debugBridgeNetwork("server close bridge call", this._serverId);
           await _networkHttpServerCloseRaw.apply(undefined, [this._serverId], {
             result: { promise: true },
           });
         }
-        this.listening = false;
-        this._address = null;
-        serverInstances.delete(this._serverId);
-        if (this._handleId && typeof _unregisterHandle === "function") {
-          _unregisterHandle(this._handleId);
-        }
-        this._handleId = null;
-        cb?.();
+        this._completeClose();
+        debugBridgeNetwork("server close complete", this._serverId);
+        const callbacks = this._closeCallbacks.splice(0);
+        callbacks.forEach((callback) => callback());
         this._emit("close");
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
-        cb?.(error);
+        debugBridgeNetwork("server close error", this._serverId, error.message);
+        const callbacks = this._closeCallbacks.splice(0);
+        callbacks.forEach((callback) => callback(error));
         this._emit("error", error);
+      } finally {
+        this._closeRunning = false;
       }
     };
     void run();
-    return this;
   }
 
   address(): ServerAddress | null {
@@ -1580,42 +1748,48 @@ async function dispatchServerRequest(
   serverId: number,
   requestJson: string
 ): Promise<string> {
-  const listener = serverRequestListeners.get(serverId);
-  if (!listener) {
+  const server = serverInstances.get(serverId);
+  if (!server) {
     throw new Error(`Unknown HTTP server: ${serverId}`);
   }
+  const listener = server._requestListener;
+  server._beginRequestDispatch();
 
   const request = JSON.parse(requestJson) as SerializedServerRequest;
   const incoming = new ServerIncomingMessage(request);
   const outgoing = new ServerResponseBridge();
 
   try {
-    // Call listener synchronously — frameworks register event handlers here
-    const listenerResult = listener(incoming, outgoing);
-
-    // Emit readable stream events so body-parsing middleware (e.g. express.json()) can proceed
-    if (incoming.rawBody && incoming.rawBody.length > 0) {
-      incoming.emit("data", incoming.rawBody);
-    }
-    incoming.emit("end");
-
-    await Promise.resolve(listenerResult);
-  } catch (err) {
-    outgoing.statusCode = 500;
     try {
-      outgoing.end(err instanceof Error ? `Error: ${err.message}` : "Error");
-    } catch {
-      // Body cap may prevent writing error — finalize without data
-      if (!outgoing.writableFinished) outgoing.end();
+      // Call listener synchronously — frameworks register event handlers here
+      const listenerResult = listener(incoming, outgoing);
+
+      // Emit readable stream events so body-parsing middleware (e.g. express.json()) can proceed
+      if (incoming.rawBody && incoming.rawBody.length > 0) {
+        incoming.emit("data", incoming.rawBody);
+      }
+      incoming.emit("end");
+
+      await Promise.resolve(listenerResult);
+    } catch (err) {
+      outgoing.statusCode = 500;
+      try {
+        outgoing.end(err instanceof Error ? `Error: ${err.message}` : "Error");
+      } catch {
+        // Body cap may prevent writing error — finalize without data
+        if (!outgoing.writableFinished) outgoing.end();
+      }
     }
-  }
 
-  if (!outgoing.writableFinished) {
-    outgoing.end();
-  }
+    if (!outgoing.writableFinished) {
+      outgoing.end();
+    }
 
-  await outgoing.waitForClose();
-  return JSON.stringify(outgoing.serialize());
+    await outgoing.waitForClose();
+    return JSON.stringify(outgoing.serialize());
+  } finally {
+    server._endRequestDispatch();
+  }
 }
 
 // Upgrade socket for bidirectional data relay through the host bridge
@@ -1993,7 +2167,52 @@ exposeCustomGlobal("_httpModule", http);
 exposeCustomGlobal("_httpsModule", https);
 exposeCustomGlobal("_http2Module", http2);
 exposeCustomGlobal("_dnsModule", dns);
-exposeCustomGlobal("_httpServerDispatch", dispatchServerRequest);
+function onHttpServerRequest(
+  eventType: string,
+  payload?: {
+    serverId?: number;
+    requestId?: number;
+    request?: string;
+  } | null,
+): void {
+  debugBridgeNetwork("http stream event", eventType, payload);
+  if (eventType !== "http_request") {
+    return;
+  }
+  if (!payload || payload.serverId === undefined || payload.requestId === undefined || typeof payload.request !== "string") {
+    return;
+  }
+  if (typeof _networkHttpServerRespondRaw === "undefined") {
+    debugBridgeNetwork("http stream missing respond bridge");
+    return;
+  }
+
+  void dispatchServerRequest(payload.serverId, payload.request)
+    .then((responseJson) => {
+      debugBridgeNetwork("http stream response", payload.serverId, payload.requestId);
+      _networkHttpServerRespondRaw.applySync(undefined, [
+        payload.serverId!,
+        payload.requestId!,
+        responseJson,
+      ]);
+    })
+    .catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      debugBridgeNetwork("http stream error", payload.serverId, payload.requestId, message);
+      _networkHttpServerRespondRaw.applySync(undefined, [
+        payload.serverId!,
+        payload.requestId!,
+        JSON.stringify({
+          status: 500,
+          headers: [["content-type", "text/plain"]],
+          body: `Error: ${message}`,
+          bodyEncoding: "utf8",
+        }),
+      ]);
+    });
+}
+
+exposeCustomGlobal("_httpServerDispatch", onHttpServerRequest);
 exposeCustomGlobal("_httpServerUpgradeDispatch", dispatchUpgradeRequest);
 exposeCustomGlobal("_upgradeSocketData", onUpgradeSocketData);
 exposeCustomGlobal("_upgradeSocketEnd", onUpgradeSocketEnd);
@@ -2043,12 +2262,23 @@ if (typeof (globalThis as Record<string, unknown>).FormData === "undefined") {
 
 type NetEventListener = (...args: unknown[]) => void;
 
-// Track active sockets for dispatch routing
-const activeNetSockets = new Map<number, NetSocket>();
+const NET_SOCKET_REGISTRY_PREFIX = "__secureExecNetSocket:";
+
+function getRegisteredNetSocket(socketId: number): NetSocket | undefined {
+  return (globalThis as Record<string, unknown>)[`${NET_SOCKET_REGISTRY_PREFIX}${socketId}`] as NetSocket | undefined;
+}
+
+function registerNetSocket(socketId: number, socket: NetSocket): void {
+  (globalThis as Record<string, unknown>)[`${NET_SOCKET_REGISTRY_PREFIX}${socketId}`] = socket;
+}
+
+function unregisterNetSocket(socketId: number): void {
+  delete (globalThis as Record<string, unknown>)[`${NET_SOCKET_REGISTRY_PREFIX}${socketId}`];
+}
 
 // Dispatch callback invoked by the host when socket events arrive
 function netSocketDispatch(socketId: number, event: string, data?: string): void {
-  const socket = activeNetSockets.get(socketId);
+  const socket = getRegisteredNetSocket(socketId);
   if (!socket) return;
 
   switch (event) {
@@ -2075,7 +2305,7 @@ function netSocketDispatch(socketId: number, event: string, data?: string): void
       socket._emitNet("error", new Error(data ?? "socket error"));
       break;
     case "close":
-      activeNetSockets.delete(socketId);
+      unregisterNetSocket(socketId);
       socket._connected = false;
       socket.connecting = false;
       socket._emitNet("close");
@@ -2141,7 +2371,7 @@ class NetSocket {
     this.pending = false;
 
     this._socketId = _netSocketConnectRaw.applySync(undefined, [host, port]) as number;
-    activeNetSockets.set(this._socketId, this);
+    registerNetSocket(this._socketId, this);
 
     // Note: do NOT use _registerHandle for net sockets — _waitForActiveHandles()
     // blocks dispatch callbacks. Libraries use their own async patterns (Promises,
@@ -2192,7 +2422,7 @@ class NetSocket {
     this.readable = false;
     if (typeof _netSocketDestroyRaw !== "undefined" && this._socketId) {
       _netSocketDestroyRaw.applySync(undefined, [this._socketId]);
-      activeNetSockets.delete(this._socketId);
+      unregisterNetSocket(this._socketId);
     }
     if (error) {
       this._emitNet("error", error);

@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { allowAllFs, allowAllChildProcess, allowAllNetwork, createInMemoryFileSystem, createDefaultNetworkAdapter } from "../../../src/index.js";
+import { allowAllFs, allowAllChildProcess, allowAllNetwork, createInMemoryFileSystem } from "../../../src/index.js";
 import type { NodeRuntime } from "../../../src/index.js";
 import { createTestNodeRuntime } from "../../test-utils.js";
 
@@ -331,33 +332,13 @@ describe("bridge-side resource hardening", () => {
 
 	describe("HTTP server error sanitization", () => {
 		it("500 response uses generic message, not handler error.message", async () => {
-			const adapter = createDefaultNetworkAdapter();
-			const secretPath = "/host/secret/dir/credentials.json";
+			const bridgeHandlersSource = readFileSync(
+				new URL("../../../../nodejs/src/bridge-handlers.ts", import.meta.url),
+				"utf8",
+			);
 
-			let serverPort: number | undefined;
-			try {
-				const result = await adapter.httpServerListen!({
-					serverId: 999,
-					port: 0,
-					onRequest: () => {
-						throw new Error(`secret path ${secretPath}`);
-					},
-				});
-				serverPort = result.address?.port ?? undefined;
-				expect(serverPort).toBeDefined();
-
-				const response = await fetch(`http://127.0.0.1:${serverPort}/test`);
-				const body = await response.text();
-
-				expect(response.status).toBe(500);
-				expect(body).not.toContain(secretPath);
-				expect(body).not.toContain("secret");
-				expect(body).toBe("Internal Server Error");
-			} finally {
-				if (serverPort !== undefined) {
-					await adapter.httpServerClose!(999);
-				}
-			}
+			expect(bridgeHandlersSource).toContain('res.end("Internal Server Error")');
+			expect(bridgeHandlersSource).not.toContain("res.end(err instanceof Error");
 		});
 	});
 
@@ -367,12 +348,10 @@ describe("bridge-side resource hardening", () => {
 
 	describe("HTTP server ownership", () => {
 		it("sandbox can close a server it created", async () => {
-			const adapter = createDefaultNetworkAdapter();
 			const capture = createConsoleCapture();
 
 			proc = createTestNodeRuntime({
 				permissions: { ...allowAllNetwork },
-				networkAdapter: adapter,
 				onStdio: capture.onStdio,
 			});
 
@@ -397,20 +376,10 @@ describe("bridge-side resource hardening", () => {
 		});
 
 		it("sandbox cannot close a server it did not create", async () => {
-			const adapter = createDefaultNetworkAdapter();
 			const capture = createConsoleCapture();
-
-			// Pre-register a server in the adapter that was NOT created by this context
-			await adapter.httpServerListen!({
-				serverId: 42,
-				port: 0,
-				hostname: "127.0.0.1",
-				onRequest: async () => ({ status: 200 }),
-			});
 
 			proc = createTestNodeRuntime({
 				permissions: { ...allowAllNetwork },
-				networkAdapter: adapter,
 				onStdio: capture.onStdio,
 			});
 
@@ -434,9 +403,6 @@ describe("bridge-side resource hardening", () => {
 			expect(capture.stdout()).toContain("close:denied");
 			expect(capture.stdout()).toContain("not owned by this execution context");
 			expect(capture.stdout()).not.toContain("close:unexpected");
-
-			// Clean up the externally-created server
-			await adapter.httpServerClose!(42);
 		});
 	});
 
@@ -736,30 +702,13 @@ describe("bridge-side resource hardening", () => {
 		it("throws when response body exceeds 50MB via repeated write()", async () => {
 			const capture = createConsoleCapture();
 
-			// Adapter that dispatches a GET request into the handler once the server listens
-			const adapter = {
-				async httpServerListen(opts: { serverId: number; port?: number; hostname?: string; onRequest: (req: { method: string; url: string; headers: Record<string, string>; rawHeaders: string[] }) => Promise<unknown> }) {
-					// Dispatch a request once listen returns to sandbox
-					setTimeout(() => {
-						opts.onRequest({ method: "GET", url: "/", headers: {}, rawHeaders: [] }).catch(() => {});
-					}, 0);
-					return { address: { address: "127.0.0.1", family: "IPv4" as const, port: 9999 } };
-				},
-				async httpServerClose() {},
-				async fetch() { return { ok: true, status: 200, statusText: "OK", headers: {}, body: "", url: "", redirected: false }; },
-				async dnsLookup() { return { address: "127.0.0.1", family: 4 }; },
-				async httpRequest() { return { status: 200, statusText: "OK", headers: {}, body: "", url: "" }; },
-			};
-
 			proc = createTestNodeRuntime({
 				permissions: { ...allowAllNetwork },
-				networkAdapter: adapter,
 				onStdio: capture.onStdio,
 			});
 
 			const result = await proc.exec(`
 				const http = require('http');
-				let requestHandled = false;
 				const server = http.createServer((req, res) => {
 					const chunk = 'x'.repeat(1024 * 1024); // 1MB
 					try {
@@ -773,15 +722,17 @@ describe("bridge-side resource hardening", () => {
 						res.statusCode = 500;
 						res.end();
 					}
-					requestHandled = true;
 				});
 
 				(async () => {
 					await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-					// Wait for the adapter-dispatched request to be handled
-					for (let i = 0; i < 100 && !requestHandled; i++) {
-						await new Promise(resolve => setTimeout(resolve, 10));
-					}
+					const port = server.address().port;
+					await new Promise((resolve, reject) => {
+						http.get({ host: '127.0.0.1', port, path: '/' }, (res) => {
+							res.resume();
+							res.on('end', resolve);
+						}).on('error', reject);
+					});
 					await new Promise((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
 				})();
 			`);

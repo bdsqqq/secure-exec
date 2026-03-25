@@ -44,7 +44,19 @@ export function wrapFileSystem(
 		);
 	};
 
-	return {
+	const wrapped: VirtualFileSystem & {
+		prepareOpenSync?: (path: string, flags: number) => boolean;
+	} = {
+		prepareOpenSync: (path, flags) => {
+			if ((flags & 0o100) !== 0 || (flags & 0o1000) !== 0) {
+				check("write", path);
+			}
+			const syncFs = fs as VirtualFileSystem & {
+				prepareOpenSync?: (targetPath: string, openFlags: number) => boolean;
+			};
+			return syncFs.prepareOpenSync?.(path, flags) ?? false;
+		},
+
 		readFile: async (path) => { check("read", path); return fs.readFile(path); },
 		readTextFile: async (path) => { check("read", path); return fs.readTextFile(path); },
 		readDir: async (path) => { check("readdir", path); return fs.readDir(path); },
@@ -72,6 +84,7 @@ export function wrapFileSystem(
 		truncate: async (path, length) => { check("truncate", path); return fs.truncate(path, length); },
 		pread: async (path, offset, length) => { check("read", path); return fs.pread(path, offset, length); },
 	};
+	return wrapped;
 }
 
 /**

@@ -1,8 +1,46 @@
 // V8 isolate lifecycle: platform init, create, configure, destroy
 
+use std::collections::HashMap;
 use std::sync::Once;
 
+use crate::ipc::ExecutionError;
+
 static V8_INIT: Once = Once::new();
+
+#[derive(Default)]
+pub struct PromiseRejectState {
+    pub unhandled: HashMap<i32, ExecutionError>,
+}
+
+extern "C" fn promise_reject_callback(msg: v8::PromiseRejectMessage) {
+    let scope = &mut unsafe { v8::CallbackScope::new(&msg) };
+    let promise_id = msg.get_promise().get_identity_hash().get();
+    match msg.get_event() {
+        v8::PromiseRejectEvent::PromiseRejectWithNoHandler => {
+            let error = {
+                let scope = &mut v8::HandleScope::new(scope);
+                let value = msg
+                    .get_value()
+                    .unwrap_or_else(|| v8::undefined(scope).into());
+                crate::execution::extract_error_info(scope, value)
+            };
+            if let Some(state) = scope.get_slot_mut::<PromiseRejectState>() {
+                state.unhandled.insert(promise_id, error);
+            }
+        }
+        v8::PromiseRejectEvent::PromiseHandlerAddedAfterReject => {
+            if let Some(state) = scope.get_slot_mut::<PromiseRejectState>() {
+                state.unhandled.remove(&promise_id);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn configure_isolate(isolate: &mut v8::OwnedIsolate) {
+    isolate.set_slot(PromiseRejectState::default());
+    isolate.set_promise_reject_callback(promise_reject_callback);
+}
 
 /// Initialize the V8 platform (once per process).
 /// Safe to call multiple times; only the first call takes effect.
@@ -21,7 +59,9 @@ pub fn create_isolate(heap_limit_mb: Option<u32>) -> v8::OwnedIsolate {
         let limit_bytes = (limit as usize) * 1024 * 1024;
         params = params.heap_limits(0, limit_bytes);
     }
-    v8::Isolate::new(params)
+    let mut isolate = v8::Isolate::new(params);
+    configure_isolate(&mut isolate);
+    isolate
 }
 
 /// Create a new V8 context on the given isolate.

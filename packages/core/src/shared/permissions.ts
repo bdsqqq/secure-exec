@@ -232,38 +232,17 @@ export function wrapFileSystem(
 	};
 }
 
-/**
- * Wrap a NetworkAdapter so externally-originating operations (`listen`, `fetch`,
- * `dns`, `http`) pass through the network permission check.
- * `httpServerClose` is forwarded as-is.
- */
+/** Wrap a NetworkAdapter so external client operations pass through the network permission check. */
 export function wrapNetworkAdapter(
 	adapter: NetworkAdapter,
 	permissions?: Permissions,
 ): NetworkAdapter {
-	return {
-		httpServerListen: adapter.httpServerListen
-			? async (options) => {
-					checkPermission(
-						permissions?.network,
-						{
-							op: "listen",
-							hostname: options.hostname,
-							url: options.hostname
-								? `http://${options.hostname}:${options.port ?? 3000}`
-								: `http://0.0.0.0:${options.port ?? 3000}`,
-							method: "LISTEN",
-						},
-						(req, reason) => createEaccesError("listen", req.url, reason),
-					);
-					return adapter.httpServerListen!(options);
-				}
-			: undefined,
-		httpServerClose: adapter.httpServerClose
-			? async (serverId) => {
-					return adapter.httpServerClose!(serverId);
-				}
-			: undefined,
+	const loopbackAwareAdapter = adapter as NetworkAdapter & {
+		__setLoopbackPortChecker?: (checker: (hostname: string, port: number) => boolean) => void;
+	};
+	const wrapped: NetworkAdapter & {
+		__setLoopbackPortChecker?: (checker: (hostname: string, port: number) => boolean) => void;
+	} = {
 		fetch: async (url, options) => {
 			checkPermission(
 				permissions?.network,
@@ -293,22 +272,12 @@ export function wrapNetworkAdapter(
 		upgradeSocketEnd: adapter.upgradeSocketEnd?.bind(adapter),
 		upgradeSocketDestroy: adapter.upgradeSocketDestroy?.bind(adapter),
 		setUpgradeSocketCallbacks: adapter.setUpgradeSocketCallbacks?.bind(adapter),
-		// Forward net socket methods with permission check on connect
-		netSocketConnect: adapter.netSocketConnect
-			? (host, port, callbacks) => {
-					checkPermission(
-						permissions?.network,
-						{ op: "connect" as const, url: `tcp://${host}:${port}`, method: "CONNECT" },
-						(req, reason) => createEaccesError("connect", req.url, reason),
-					);
-					return adapter.netSocketConnect!(host, port, callbacks);
-				}
-			: undefined,
-		netSocketWrite: adapter.netSocketWrite?.bind(adapter),
-		netSocketEnd: adapter.netSocketEnd?.bind(adapter),
-		netSocketDestroy: adapter.netSocketDestroy?.bind(adapter),
-		netSocketUpgradeTls: adapter.netSocketUpgradeTls?.bind(adapter),
 	};
+	if (typeof loopbackAwareAdapter.__setLoopbackPortChecker === "function") {
+		wrapped.__setLoopbackPortChecker = (checker) =>
+			loopbackAwareAdapter.__setLoopbackPortChecker!(checker);
+	}
+	return wrapped;
 }
 
 /** Wrap a CommandExecutor so spawn passes through the childProcess permission check. */
@@ -374,8 +343,6 @@ export function createNetworkStub(): NetworkAdapter {
 		throw createEnosysError(op, path);
 	};
 	return {
-		httpServerListen: async () => stub("listen"),
-		httpServerClose: async () => stub("close"),
 		fetch: async (url) => stub("connect", url),
 		dnsLookup: async (hostname) => stub("connect", hostname),
 		httpRequest: async (url) => stub("connect", url),

@@ -113,6 +113,7 @@ Factory that builds a Node-backed execution driver factory.
 
 - Constructs `NodeExecutionDriver` instances
 - Owns optional Node-specific isolate creation hook
+- Standalone `NodeRuntime` executions still provision an internal `SocketTable` + host adapter, so `http.createServer()` and `net.connect()` remain kernel-routed even without `kernel.mount()`
 
 ### createNodeRuntime()
 

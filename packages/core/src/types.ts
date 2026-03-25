@@ -65,16 +65,6 @@ export interface NetworkServerListenOptions {
 }
 
 export interface NetworkAdapter {
-	httpServerListen?(
-		options: NetworkServerListenOptions,
-	): Promise<{ address: NetworkServerAddress | null }>;
-	httpServerClose?(serverId: number): Promise<void>;
-	/** Write data from the sandbox to a real upgrade socket on the host. */
-	upgradeSocketWrite?(socketId: number, dataBase64: string): void;
-	/** End a real upgrade socket on the host. */
-	upgradeSocketEnd?(socketId: number): void;
-	/** Destroy a real upgrade socket on the host. */
-	upgradeSocketDestroy?(socketId: number): void;
 	fetch(
 		url: string,
 		options: {
@@ -115,41 +105,17 @@ export interface NetworkAdapter {
 		trailers?: Record<string, string>;
 		upgradeSocketId?: number;
 	}>;
+	/** Write data from the sandbox to a real upgrade socket on the host. */
+	upgradeSocketWrite?(socketId: number, dataBase64: string): void;
+	/** End a real upgrade socket on the host. */
+	upgradeSocketEnd?(socketId: number): void;
+	/** Destroy a real upgrade socket on the host. */
+	upgradeSocketDestroy?(socketId: number): void;
 	/** Register callbacks for client-side upgrade socket data push. */
 	setUpgradeSocketCallbacks?(callbacks: {
 		onData: (socketId: number, dataBase64: string) => void;
 		onEnd: (socketId: number) => void;
 	}): void;
-	/** Create a TCP socket connection on the host. Returns socketId. */
-	netSocketConnect?(
-		host: string,
-		port: number,
-		callbacks: {
-			onConnect: () => void;
-			onData: (dataBase64: string) => void;
-			onEnd: () => void;
-			onError: (message: string) => void;
-			onClose: () => void;
-		},
-	): number;
-	/** Write data to a net socket. */
-	netSocketWrite?(socketId: number, dataBase64: string): void;
-	/** Half-close a net socket (send FIN). */
-	netSocketEnd?(socketId: number): void;
-	/** Forcefully destroy a net socket. */
-	netSocketDestroy?(socketId: number): void;
-	/** Upgrade a net socket to TLS. Re-wires events for the TLS layer. */
-	netSocketUpgradeTls?(
-		socketId: number,
-		options: { rejectUnauthorized?: boolean; servername?: string },
-		callbacks: {
-			onSecureConnect: () => void;
-			onData: (dataBase64: string) => void;
-			onEnd: () => void;
-			onError: (message: string) => void;
-			onClose: () => void;
-		},
-	): void;
 }
 
 export type {

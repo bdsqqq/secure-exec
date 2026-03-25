@@ -16,6 +16,9 @@
 #include <time.h>
 #include <errno.h>
 #include <pwd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "posix_spawn_compat.h"
 
@@ -319,6 +322,118 @@ static void test_host_user(void) {
     }
 }
 
+/* ========== host_net imports exercised through libc ========== */
+
+static void test_host_net(void) {
+    int listener_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (listener_fd < 0) {
+        FAIL("getsockname", strerror(errno));
+        FAIL("getpeername", "skipped");
+        return;
+    }
+
+    struct sockaddr_in listener_addr;
+    memset(&listener_addr, 0, sizeof(listener_addr));
+    listener_addr.sin_family = AF_INET;
+    listener_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    listener_addr.sin_port = htons(0);
+
+    if (bind(listener_fd, (struct sockaddr *)&listener_addr, sizeof(listener_addr)) != 0 ||
+        listen(listener_fd, 1) != 0) {
+        FAIL("getsockname", strerror(errno));
+        FAIL("getpeername", "skipped");
+        close(listener_fd);
+        return;
+    }
+
+    struct sockaddr_in bound_listener_addr;
+    socklen_t bound_listener_len = sizeof(bound_listener_addr);
+    if (getsockname(listener_fd, (struct sockaddr *)&bound_listener_addr, &bound_listener_len) != 0) {
+        FAIL("getsockname", strerror(errno));
+        FAIL("getpeername", "skipped");
+        close(listener_fd);
+        return;
+    }
+
+    int client_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (client_fd < 0) {
+        FAIL("getsockname", strerror(errno));
+        FAIL("getpeername", "skipped");
+        close(listener_fd);
+        return;
+    }
+
+    struct sockaddr_in client_bind_addr;
+    memset(&client_bind_addr, 0, sizeof(client_bind_addr));
+    client_bind_addr.sin_family = AF_INET;
+    client_bind_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    client_bind_addr.sin_port = htons(0);
+    if (bind(client_fd, (struct sockaddr *)&client_bind_addr, sizeof(client_bind_addr)) != 0) {
+        FAIL("getsockname", strerror(errno));
+        FAIL("getpeername", "skipped");
+        close(client_fd);
+        close(listener_fd);
+        return;
+    }
+
+    struct sockaddr_in bound_client_addr;
+    socklen_t bound_client_len = sizeof(bound_client_addr);
+    if (getsockname(client_fd, (struct sockaddr *)&bound_client_addr, &bound_client_len) != 0) {
+        FAIL("getsockname", strerror(errno));
+        FAIL("getpeername", "skipped");
+        close(client_fd);
+        close(listener_fd);
+        return;
+    }
+
+    if (connect(client_fd, (struct sockaddr *)&bound_listener_addr, sizeof(bound_listener_addr)) != 0) {
+        FAIL("getsockname", strerror(errno));
+        FAIL("getpeername", "skipped");
+        close(client_fd);
+        close(listener_fd);
+        return;
+    }
+
+    int server_fd = accept(listener_fd, NULL, NULL);
+    if (server_fd < 0) {
+        FAIL("getsockname", strerror(errno));
+        FAIL("getpeername", "skipped");
+        close(client_fd);
+        close(listener_fd);
+        return;
+    }
+
+    struct sockaddr_in accepted_local_addr;
+    socklen_t accepted_local_len = sizeof(accepted_local_addr);
+    struct sockaddr_in client_peer_addr;
+    socklen_t client_peer_len = sizeof(client_peer_addr);
+    struct sockaddr_in server_peer_addr;
+    socklen_t server_peer_len = sizeof(server_peer_addr);
+
+    int getsockname_ok =
+        getsockname(server_fd, (struct sockaddr *)&accepted_local_addr, &accepted_local_len) == 0 &&
+        ntohs(bound_listener_addr.sin_port) != 0 &&
+        ntohs(bound_client_addr.sin_port) != 0 &&
+        ntohs(accepted_local_addr.sin_port) == ntohs(bound_listener_addr.sin_port) &&
+        bound_listener_addr.sin_addr.s_addr == htonl(INADDR_LOOPBACK) &&
+        bound_client_addr.sin_addr.s_addr == htonl(INADDR_LOOPBACK) &&
+        accepted_local_addr.sin_addr.s_addr == htonl(INADDR_LOOPBACK);
+    TEST("getsockname", getsockname_ok, getsockname_ok ? "" : "address mismatch");
+
+    int getpeername_ok =
+        getpeername(client_fd, (struct sockaddr *)&client_peer_addr, &client_peer_len) == 0 &&
+        getpeername(server_fd, (struct sockaddr *)&server_peer_addr, &server_peer_len) == 0 &&
+        ntohs(client_peer_addr.sin_port) == ntohs(bound_listener_addr.sin_port) &&
+        ntohs(server_peer_addr.sin_port) == ntohs(bound_client_addr.sin_port) &&
+        client_peer_addr.sin_addr.s_addr == htonl(INADDR_LOOPBACK) &&
+        server_peer_addr.sin_addr.s_addr == htonl(INADDR_LOOPBACK);
+    TEST("getpeername", getpeername_ok, getpeername_ok ? "" : "peer address mismatch");
+
+    close(server_fd);
+    close(client_fd);
+    close(listener_fd);
+}
+
 int main(int argc, char *argv[]) {
     /* Use /tmp/sc as working directory for file tests */
     const char *base = "/tmp/sc";
@@ -330,6 +445,7 @@ int main(int argc, char *argv[]) {
     test_args_env_clock(argc, argv);
     test_host_process();
     test_host_user();
+    test_host_net();
 
     rmdir(base);
 

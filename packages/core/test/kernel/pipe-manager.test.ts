@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { PipeManager } from "../../src/kernel/pipe-manager.js";
+import { PipeManager, MAX_PIPE_BUFFER_BYTES } from "../../src/kernel/pipe-manager.js";
+import { O_NONBLOCK } from "../../src/kernel/types.js";
 
 describe("PipeManager", () => {
 	it("creates a pipe with read and write ends", () => {
@@ -139,6 +140,82 @@ describe("PipeManager", () => {
 		manager.close(write.description.id);
 		const eof = await manager.read(read.description.id, 10);
 		expect(eof).toBeNull();
+	});
+
+	it("write blocks when the pipe buffer is full until a reader drains it", async () => {
+		const manager = new PipeManager();
+		const { read, write } = manager.createPipe();
+
+		manager.write(write.description.id, new Uint8Array(MAX_PIPE_BUFFER_BYTES));
+
+		let settled = false;
+		const blockedWrite = Promise.resolve(manager.write(write.description.id, new Uint8Array([7, 8, 9])));
+		blockedWrite.then(() => {
+			settled = true;
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(settled).toBe(false);
+
+		const drained = await manager.read(read.description.id, MAX_PIPE_BUFFER_BYTES);
+		expect(drained!.length).toBe(MAX_PIPE_BUFFER_BYTES);
+
+		await expect(blockedWrite).resolves.toBe(3);
+
+		const tail = await manager.read(read.description.id, 16);
+		expect(Array.from(tail!)).toEqual([7, 8, 9]);
+	});
+
+	it("non-blocking write returns EAGAIN immediately when the pipe buffer is full", () => {
+		const manager = new PipeManager();
+		const { write } = manager.createPipe();
+
+		write.description.flags |= O_NONBLOCK;
+		manager.write(write.description.id, new Uint8Array(MAX_PIPE_BUFFER_BYTES));
+
+		expect(() => manager.write(write.description.id, new Uint8Array([1]))).toThrow(
+			expect.objectContaining({ code: "EAGAIN" }),
+		);
+	});
+
+	it("blocking write makes partial progress before waiting for remaining capacity", async () => {
+		const manager = new PipeManager();
+		const { read, write } = manager.createPipe();
+		const initial = new Uint8Array(MAX_PIPE_BUFFER_BYTES - 2).fill(1);
+
+		manager.write(write.description.id, initial);
+
+		let settled = false;
+		const blockedWrite = Promise.resolve(manager.write(write.description.id, new Uint8Array([9, 8, 7, 6])));
+		blockedWrite.then(() => {
+			settled = true;
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(settled).toBe(false);
+
+		const firstDrain = await manager.read(read.description.id, MAX_PIPE_BUFFER_BYTES);
+		expect(firstDrain!.length).toBe(MAX_PIPE_BUFFER_BYTES);
+		expect(Array.from(firstDrain!.subarray(MAX_PIPE_BUFFER_BYTES - 2))).toEqual([9, 8]);
+
+		await expect(blockedWrite).resolves.toBe(4);
+
+		const remainder = await manager.read(read.description.id, 16);
+		expect(Array.from(remainder!)).toEqual([7, 6]);
+	});
+
+	it("closing the read end wakes a blocked writer with EPIPE", async () => {
+		const manager = new PipeManager();
+		const { read, write } = manager.createPipe();
+
+		manager.write(write.description.id, new Uint8Array(MAX_PIPE_BUFFER_BYTES));
+
+		const blockedWrite = Promise.resolve(manager.write(write.description.id, new Uint8Array([1, 2, 3])));
+
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		manager.close(read.description.id);
+
+		await expect(blockedWrite).rejects.toThrow(expect.objectContaining({ code: "EPIPE" }));
 	});
 
 	// -----------------------------------------------------------------------

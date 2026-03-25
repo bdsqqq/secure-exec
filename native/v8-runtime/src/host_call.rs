@@ -61,7 +61,7 @@ impl FrameSender for WriterFrameSender {
 /// Trait for receiving a BinaryFrame response directly without re-serialization.
 /// Production code uses a channel-based implementation; tests use a buffer-based one.
 pub trait ResponseReceiver: Send {
-    fn recv_response(&self) -> Result<BinaryFrame, String>;
+    fn recv_response(&self, expected_call_id: u64) -> Result<BinaryFrame, String>;
 }
 
 /// ResponseReceiver that reads frames from a byte buffer via ipc_binary::read_frame.
@@ -81,7 +81,7 @@ impl ReaderResponseReceiver {
 }
 
 impl ResponseReceiver for ReaderResponseReceiver {
-    fn recv_response(&self) -> Result<BinaryFrame, String> {
+    fn recv_response(&self, _expected_call_id: u64) -> Result<BinaryFrame, String> {
         let mut reader = self.reader.lock().unwrap();
         ipc_binary::read_frame(&mut *reader)
             .map_err(|e| format!("failed to read BridgeResponse: {}", e))
@@ -132,7 +132,7 @@ impl FrameSender for StubFrameSender {
 struct StubResponseReceiver;
 
 impl ResponseReceiver for StubResponseReceiver {
-    fn recv_response(&self) -> Result<BinaryFrame, String> {
+    fn recv_response(&self, _expected_call_id: u64) -> Result<BinaryFrame, String> {
         panic!("stub bridge function called during snapshot creation — bridge IIFE must not call bridge functions at setup time")
     }
 }
@@ -230,7 +230,7 @@ impl BridgeCallContext {
         // Receive BridgeResponse directly (no re-serialization)
         let response = {
             let rx = self.response_rx.lock().unwrap();
-            match rx.recv_response() {
+            match rx.recv_response(call_id) {
                 Ok(frame) => frame,
                 Err(e) => {
                     self.pending_calls.lock().unwrap().remove(&call_id);

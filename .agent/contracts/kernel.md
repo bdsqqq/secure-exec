@@ -28,6 +28,10 @@ The kernel VFS SHALL provide a POSIX-like filesystem interface with consistent e
 - **WHEN** a caller invokes `removeFile(path)` on an existing regular file
 - **THEN** the file MUST be deleted and subsequent `exists(path)` MUST return false
 
+#### Scenario: removeFile defers inode data deletion while FDs remain open
+- **WHEN** the last directory entry for a file is removed while one or more existing FDs still reference that inode
+- **THEN** the pathname MUST disappear from directory listings and `exists(path)` MUST return false, but reads and writes through the already-open FDs MUST continue to operate until the last reference closes
+
 #### Scenario: removeDir deletes a directory
 - **WHEN** a caller invokes `removeDir(path)` on an existing empty directory
 - **THEN** the directory MUST be deleted
@@ -52,9 +56,17 @@ The kernel VFS SHALL provide a POSIX-like filesystem interface with consistent e
 - **WHEN** a caller invokes `link(oldPath, newPath)`
 - **THEN** both paths MUST reference the same content, and `stat` for both MUST report `nlink >= 2`
 
+#### Scenario: hard links share a stable inode number
+- **WHEN** two directory entries refer to the same file through `link(oldPath, newPath)`
+- **THEN** `stat(oldPath).ino` and `stat(newPath).ino` MUST be identical until the inode is deleted
+
 #### Scenario: readDirWithTypes returns entries with type information
 - **WHEN** a caller invokes `readDirWithTypes(path)` on a directory containing files and subdirectories
 - **THEN** the VFS MUST return `VirtualDirEntry[]` where each entry has `name`, `isDirectory`, and `isSymbolicLink` fields
+
+#### Scenario: InMemoryFileSystem directory listings include self and parent entries
+- **WHEN** a caller invokes `readDir(path)` or `readDirWithTypes(path)` against an `InMemoryFileSystem` directory
+- **THEN** the listing MUST begin with `.` and `..`, and for `/` the `..` entry MUST refer back to the root directory
 
 #### Scenario: chmod updates file permissions
 - **WHEN** a caller invokes `chmod(path, mode)` on an existing file
@@ -71,6 +83,18 @@ The kernel FD table SHALL manage per-process file descriptor allocation with ref
 - **WHEN** a process opens a file via `fdOpen(pid, path, flags)`
 - **THEN** the FD table MUST allocate and return the lowest available file descriptor number
 
+#### Scenario: Open with O_CREAT|O_EXCL rejects existing paths
+- **WHEN** a process opens an already-existing path with `O_CREAT | O_EXCL`
+- **THEN** `fdOpen` MUST fail with `EEXIST` before allocating a new FD
+
+#### Scenario: Open with O_TRUNC truncates at open time
+- **WHEN** a process opens an existing regular file with `O_TRUNC`
+- **THEN** the file contents MUST be truncated to zero bytes before subsequent reads or writes through the returned FD
+
+#### Scenario: Open with O_TRUNC|O_CREAT materializes an empty file
+- **WHEN** a process opens a missing path with `O_TRUNC | O_CREAT`
+- **THEN** the kernel MUST create an empty regular file during `fdOpen`
+
 #### Scenario: Close decrements reference count and releases FD
 - **WHEN** a process closes an FD via `fdClose(pid, fd)`
 - **THEN** the FD entry MUST be removed from the process table and the underlying FileDescription's `refCount` MUST be decremented
@@ -78,6 +102,10 @@ The kernel FD table SHALL manage per-process file descriptor allocation with ref
 #### Scenario: Close last reference cleans up FileDescription
 - **WHEN** the last FD referencing a FileDescription is closed (refCount reaches 0)
 - **THEN** the FileDescription MUST be eligible for cleanup
+
+#### Scenario: Close last reference releases deferred-unlink inode data
+- **WHEN** the last FD referencing an already-unlinked inode is closed
+- **THEN** the kernel MUST release the inode's retained file data so no hidden data remains after the final close
 
 #### Scenario: Dup creates a new FD sharing the same FileDescription
 - **WHEN** a process duplicates an FD via `fdDup(pid, fd)`
@@ -106,6 +134,25 @@ The kernel FD table SHALL manage per-process file descriptor allocation with ref
 #### Scenario: closeAll releases all FDs on process exit
 - **WHEN** a process exits and `closeAll()` is invoked on its FD table
 - **THEN** all FDs MUST be closed and all FileDescription refCounts MUST be decremented
+
+### Requirement: Advisory flock Semantics
+The kernel SHALL provide advisory `flock()` semantics per file description, including blocking waits and cleanup on last close.
+
+#### Scenario: Exclusive flock blocks until the prior holder unlocks
+- **WHEN** process A holds `LOCK_EX` on a file and process B calls `flock(fd, LOCK_EX)` on the same file without `LOCK_NB`
+- **THEN** process B MUST remain blocked until process A releases the lock, after which process B acquires it
+
+#### Scenario: Non-blocking flock returns EAGAIN on conflict
+- **WHEN** a conflicting advisory lock is already held and a caller uses `LOCK_NB`
+- **THEN** `flock()` MUST fail immediately with `EAGAIN`
+
+#### Scenario: flock waiters are served in FIFO order
+- **WHEN** multiple callers are queued waiting for the same file lock
+- **THEN** unlock MUST wake the next waiter in FIFO order so lock ownership advances predictably
+
+#### Scenario: Last file description close releases flock state
+- **WHEN** the final FD referencing a locked file description is closed or the owning process exits
+- **THEN** the lock MUST be released and the next queued waiter MUST be eligible to acquire it
 
 ### Requirement: Process Table Register/Waitpid/Kill/Zombie Cleanup
 The kernel process table SHALL manage process lifecycle with atomic PID allocation, signal delivery, and time-bounded zombie cleanup.
@@ -154,6 +201,17 @@ The kernel process table SHALL manage process lifecycle with atomic PID allocati
 - **WHEN** `listProcesses()` is invoked
 - **THEN** it MUST return a Map of PID to ProcessInfo containing `pid`, `ppid`, `driver`, `command`, `status`, and `exitCode` for every registered process
 
+### Requirement: Kernel TimerTable Ownership And Process Cleanup
+The kernel SHALL expose a shared timer table so runtimes can enforce per-process timer budgets and clear timer ownership on process exit.
+
+#### Scenario: TimerTable is exposed to runtimes
+- **WHEN** a runtime receives a kernel interface in a kernel-mediated environment
+- **THEN** it MUST be able to access the shared `timerTable` for per-process timer allocation and cleanup
+
+#### Scenario: Process exit clears kernel-owned timers
+- **WHEN** a process exits through the kernel process lifecycle
+- **THEN** any timers owned by that PID MUST be removed from the kernel `TimerTable`
+
 ### Requirement: Device Layer Intercepts and EPERM Rules
 The kernel device layer SHALL transparently intercept `/dev/*` paths with fixed device semantics, pass non-device paths through to the underlying VFS, and deny mutation operations on devices.
 
@@ -197,6 +255,37 @@ The kernel device layer SHALL transparently intercept `/dev/*` paths with fixed 
 - **WHEN** any filesystem operation targets a path outside `/dev/`
 - **THEN** the device layer MUST delegate the operation to the underlying VFS without interception
 
+### Requirement: Proc Filesystem Introspection
+The kernel SHALL expose a read-only `/proc` pseudo-filesystem backed by live process and FD table state so runtimes can inspect `/proc/<pid>` consistently, while process-scoped runtime adapters resolve `/proc/self` to the caller PID.
+
+#### Scenario: /proc root lists self and running PIDs
+- **WHEN** a caller invokes `readDir("/proc")`
+- **THEN** the listing MUST include a `self` entry and directory entries for every PID currently tracked by the kernel process table
+
+#### Scenario: /proc/<pid>/fd lists live file descriptors
+- **WHEN** a caller invokes `readDir("/proc/<pid>/fd")` for a live process
+- **THEN** the listing MUST contain the process's currently open FD numbers from the kernel FD table
+
+#### Scenario: /proc/<pid>/fd/<n> resolves to the underlying description path
+- **WHEN** a caller invokes `readlink("/proc/<pid>/fd/<n>")` for an open FD
+- **THEN** the kernel MUST return the backing file description path for that FD
+
+#### Scenario: /proc/<pid>/cwd and exe expose process metadata
+- **WHEN** a caller reads `/proc/<pid>/cwd` or `/proc/<pid>/exe`
+- **THEN** the kernel MUST expose the process working directory and executable path for that PID
+
+#### Scenario: /proc/<pid>/environ exposes NUL-delimited environment entries
+- **WHEN** a caller reads `/proc/<pid>/environ`
+- **THEN** the kernel MUST return the process environment as `KEY=value` entries delimited by `\0`, or an empty file when the process environment is empty
+
+#### Scenario: /proc paths are read-only
+- **WHEN** a caller invokes a mutating filesystem operation against `/proc` or any `/proc/...` path
+- **THEN** the kernel MUST reject the operation with `EPERM`
+
+#### Scenario: Process-scoped runtimes resolve /proc/self to the caller PID
+- **WHEN** sandboxed code in a process-scoped runtime accesses `/proc/self/...`
+- **THEN** the runtime-facing VFS MUST resolve that path as `/proc/<current_pid>/...` before delegating into the shared kernel proc filesystem
+
 ### Requirement: Pipe Manager Blocking Read/EOF/Drain
 The kernel pipe manager SHALL provide buffered unidirectional pipes with blocking read semantics and proper EOF signaling on write-end closure.
 
@@ -220,6 +309,22 @@ The kernel pipe manager SHALL provide buffered unidirectional pipes with blockin
 - **WHEN** a read is performed on a pipe's read end with an empty buffer and the write end is still open
 - **THEN** the read MUST block (return a pending Promise) until data is written or the write end is closed
 
+#### Scenario: Blocking write waits when the pipe buffer is full
+- **WHEN** a blocking write reaches `MAX_PIPE_BUFFER_BYTES` buffered data while the read end remains open
+- **THEN** the write MUST suspend until a reader drains capacity or the pipe closes, rather than growing the buffer without bound
+
+#### Scenario: Pipe reads wake one blocked writer after draining capacity
+- **WHEN** a read consumes buffered pipe data while one or more writers are blocked on buffer capacity
+- **THEN** the pipe manager MUST wake the next blocked writer so it can continue writing in FIFO order
+
+#### Scenario: Non-blocking pipe write returns EAGAIN on a full buffer
+- **WHEN** a pipe write end has `O_NONBLOCK` set and a write finds no remaining buffer capacity
+- **THEN** the write MUST fail immediately with `EAGAIN`
+
+#### Scenario: Blocking pipe writes preserve partial progress
+- **WHEN** only part of a blocking write fits before the pipe buffer becomes full
+- **THEN** the pipe manager MUST commit the bytes that fit, then block for the remainder until more capacity is available
+
 #### Scenario: Read returns null (EOF) when write end is closed and buffer is empty
 - **WHEN** a read is performed on a pipe's read end after the write end has been closed and the buffer is drained
 - **THEN** the read MUST return `null` signaling EOF
@@ -228,6 +333,10 @@ The kernel pipe manager SHALL provide buffered unidirectional pipes with blockin
 - **WHEN** the write end of a pipe is closed and readers are blocked waiting for data
 - **THEN** all blocked readers MUST be notified with `null` (EOF)
 
+#### Scenario: Closing the read end wakes blocked writers with EPIPE
+- **WHEN** writers are blocked waiting for pipe capacity and the read end is closed
+- **THEN** those writers MUST wake and fail with `EPIPE`
+
 #### Scenario: Pipes work across runtime drivers
 - **WHEN** a pipe connects a process in one runtime driver (e.g., WasmVM) to a process in another (e.g., Node)
 - **THEN** data MUST flow through the kernel pipe manager transparently, with the same blocking/EOF semantics
@@ -235,6 +344,51 @@ The kernel pipe manager SHALL provide buffered unidirectional pipes with blockin
 #### Scenario: createPipeFDs installs both ends in process FD table
 - **WHEN** `createPipeFDs(fdTable)` is invoked
 - **THEN** the pipe manager MUST create a pipe and install both read and write FileDescriptions as FDs in the specified FD table, returning `{ readFd, writeFd }`
+
+### Requirement: Socket Blocking Waits Respect Signal Handlers
+The kernel socket table SHALL allow blocking accept/recv waits to observe delivered signals so POSIX-style syscall interruption semantics can be enforced.
+
+#### Scenario: SA_RESETHAND resets a caught handler after first delivery
+- **WHEN** a process delivers a caught signal whose registered handler includes `SA_RESETHAND`
+- **THEN** the kernel MUST invoke that handler once and reset the disposition to `SIG_DFL` before any subsequent delivery of the same signal
+
+#### Scenario: recv interrupted without SA_RESTART returns EINTR
+- **WHEN** a process is blocked in a socket `recv` wait and a caught signal is delivered whose handler does not include `SA_RESTART`
+- **THEN** the wait MUST reject with `EINTR`
+
+#### Scenario: recv interrupted with SA_RESTART resumes waiting
+- **WHEN** a process is blocked in a socket `recv` wait and a caught signal is delivered whose handler includes `SA_RESTART`
+- **THEN** the wait MUST resume transparently until data arrives or EOF occurs
+
+### Requirement: Non-blocking Socket Operations Return Immediate Status
+The kernel socket table SHALL respect per-socket non-blocking mode for read, accept, and external connect operations.
+
+#### Scenario: recv on a non-blocking socket returns EAGAIN when empty
+- **WHEN** `recv` is called on a socket whose `nonBlocking` flag is set and no data or EOF is available
+- **THEN** the call MUST fail immediately with `EAGAIN`
+
+#### Scenario: accept on a non-blocking listening socket returns EAGAIN when backlog is empty
+- **WHEN** `accept` is called on a listening socket whose `nonBlocking` flag is set and there are no queued connections
+- **THEN** the call MUST fail immediately with `EAGAIN`
+
+#### Scenario: external connect on a non-blocking socket returns EINPROGRESS
+- **WHEN** `connect` is called on a non-blocking socket for an external address routed through the host adapter
+- **THEN** the call MUST fail immediately with `EINPROGRESS` while the host-side connection continues asynchronously
+
+#### Scenario: accept interrupted with SA_RESTART resumes waiting
+- **WHEN** a process is blocked in a socket `accept` wait and a caught signal is delivered whose handler includes `SA_RESTART`
+- **THEN** the wait MUST resume transparently until a connection is available
+
+### Requirement: Socket Bind and Listen Preserve Bounded Listener State
+The kernel socket table SHALL reserve listener ports deterministically for loopback routing while keeping pending connection queues bounded.
+
+#### Scenario: bind with port 0 assigns a kernel ephemeral port
+- **WHEN** an internet-domain socket is bound with `port: 0` for kernel-managed routing
+- **THEN** the socket MUST be assigned a free port in the ephemeral range and `localAddr.port` MUST reflect that assigned value instead of `0`
+
+#### Scenario: loopback connect refuses when listener backlog is full
+- **WHEN** a loopback `connect()` targets a listening socket whose pending backlog already reached the configured `listen(backlog)` capacity
+- **THEN** the connection MUST fail with `ECONNREFUSED` instead of growing the backlog without bound
 
 ### Requirement: Command Registry Resolution and /bin Population
 The kernel command registry SHALL map command names to runtime drivers and populate `/bin` stubs for shell PATH-based resolution.

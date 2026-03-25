@@ -1309,7 +1309,7 @@
           resolved = _resolveModuleSync.applySync(undefined, [moduleName, fromDir]);
         }
         if (resolved === null || resolved === undefined) {
-          resolved = _resolveModule.applySyncPromise(undefined, [moduleName, fromDir]);
+          resolved = _resolveModule.applySyncPromise(undefined, [moduleName, fromDir, 'require']);
         }
         if (resolved === null) {
           const err = new Error("Cannot find module '" + moduleName + "'");
@@ -1712,7 +1712,7 @@
           source = _loadFileSync.applySync(undefined, [resolved]);
         }
         if (source === null || source === undefined) {
-          source = _loadFile.applySyncPromise(undefined, [resolved]);
+          source = _loadFile.applySyncPromise(undefined, [resolved, 'require']);
         }
         if (source === null) {
           const err = new Error("Cannot find module '" + resolved + "'");

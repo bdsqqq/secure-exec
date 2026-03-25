@@ -66,6 +66,8 @@ export const HOST_BRIDGE_GLOBAL_KEYS = {
 	networkHttpRequestRaw: "_networkHttpRequestRaw",
 	networkHttpServerListenRaw: "_networkHttpServerListenRaw",
 	networkHttpServerCloseRaw: "_networkHttpServerCloseRaw",
+	networkHttpServerRespondRaw: "_networkHttpServerRespondRaw",
+	networkHttpServerWaitRaw: "_networkHttpServerWaitRaw",
 	upgradeSocketWriteRaw: "_upgradeSocketWriteRaw",
 	upgradeSocketEndRaw: "_upgradeSocketEndRaw",
 	upgradeSocketDestroyRaw: "_upgradeSocketDestroyRaw",
@@ -81,6 +83,15 @@ export const HOST_BRIDGE_GLOBAL_KEYS = {
 	osConfig: "_osConfig",
 	log: "_log",
 	error: "_error",
+	// Kernel FD table operations — dispatched through _loadPolyfill bridge
+	fdOpen: "_fdOpen",
+	fdClose: "_fdClose",
+	fdRead: "_fdRead",
+	fdWrite: "_fdWrite",
+	fdFstat: "_fdFstat",
+	fdFtruncate: "_fdFtruncate",
+	fdFsync: "_fdFsync",
+	fdGetPath: "_fdGetPath",
 } as const;
 
 /** Globals exposed by the bridge bundle and runtime scripts inside the isolate. */
@@ -99,6 +110,7 @@ export const RUNTIME_BRIDGE_GLOBAL_KEYS = {
 	dnsModule: "_dnsModule",
 	httpServerDispatch: "_httpServerDispatch",
 	httpServerUpgradeDispatch: "_httpServerUpgradeDispatch",
+	timerDispatch: "_timerDispatch",
 	upgradeSocketData: "_upgradeSocketData",
 	upgradeSocketEnd: "_upgradeSocketEnd",
 	netSocketDispatch: "_netSocketDispatch",
@@ -275,6 +287,11 @@ export type NetworkDnsLookupRawBridgeRef = BridgeApplyRef<[string], string>;
 export type NetworkHttpRequestRawBridgeRef = BridgeApplyRef<[string, string], string>;
 export type NetworkHttpServerListenRawBridgeRef = BridgeApplyRef<[string], string>;
 export type NetworkHttpServerCloseRawBridgeRef = BridgeApplyRef<[number], void>;
+export type NetworkHttpServerRespondRawBridgeRef = BridgeApplySyncRef<
+	[number, number, string],
+	void
+>;
+export type NetworkHttpServerWaitRawBridgeRef = BridgeApplyRef<[number], void>;
 export type UpgradeSocketWriteRawBridgeRef = BridgeApplySyncRef<[number, string], void>;
 export type UpgradeSocketEndRawBridgeRef = BridgeApplySyncRef<[number], void>;
 export type UpgradeSocketDestroyRawBridgeRef = BridgeApplySyncRef<[number], void>;

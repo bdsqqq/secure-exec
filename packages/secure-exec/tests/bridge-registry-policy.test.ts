@@ -24,6 +24,13 @@ function readNodeSource(relativePath: string): string {
 	);
 }
 
+function readNativeSource(relativePath: string): string {
+	return readFileSync(
+		new URL(`../../../native/v8-runtime/${relativePath}`, import.meta.url),
+		"utf8",
+	);
+}
+
 describe("bridge registry policy", () => {
 	it("keeps canonical bridge key lists represented in custom-global inventory", () => {
 		const inventoryNames = new Set(
@@ -76,5 +83,14 @@ describe("bridge registry policy", () => {
 		expect(runtimeGlobals).toContain(
 			'from "../../../src/shared/bridge-contract.js"',
 		);
+	});
+
+	it("keeps native V8 bridge registries aligned for async HTTP server lifecycle hooks", () => {
+		const sessionSource = readNativeSource("src/session.rs");
+
+		expect(sessionSource).toContain('"_networkHttpServerRespondRaw"');
+		expect(sessionSource).toContain('"_networkHttpServerWaitRaw"');
+		expect(sessionSource).toMatch(/SYNC_BRIDGE_FNS:[^]*"_networkHttpServerRespondRaw"/);
+		expect(sessionSource).toMatch(/ASYNC_BRIDGE_FNS:[^]*"_networkHttpServerWaitRaw"/);
 	});
 });

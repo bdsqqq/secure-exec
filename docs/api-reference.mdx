@@ -223,7 +223,7 @@ new NodeFileSystem()
 
 <sub>Exported from `secure-exec`</sub>
 
-Creates a network adapter with real fetch, DNS, and HTTP support (Node.js only).
+Creates a network adapter with real fetch, DNS, and HTTP client support (Node.js only).
 
 ```ts
 createDefaultNetworkAdapter(): NetworkAdapter
@@ -236,8 +236,6 @@ createDefaultNetworkAdapter(): NetworkAdapter
 | `fetch(url, options?)` | `Promise<FetchResponse>` | HTTP fetch. |
 | `dnsLookup(hostname)` | `Promise<DnsResult>` | DNS resolution. |
 | `httpRequest(url, options?)` | `Promise<HttpResponse>` | Low-level HTTP request. |
-| `httpServerListen?(options)` | `Promise<{ address }>` | Start a loopback HTTP server. |
-| `httpServerClose?(serverId)` | `Promise<void>` | Close a loopback HTTP server. |
 
 ---
 

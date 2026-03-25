@@ -7,8 +7,9 @@
  */
 
 import type { FileDescription } from "./types.js";
-import { FILETYPE_PIPE, O_RDONLY, O_WRONLY, KernelError } from "./types.js";
+import { FILETYPE_PIPE, O_NONBLOCK, O_RDONLY, O_WRONLY, KernelError } from "./types.js";
 import type { ProcessFDTable } from "./fd-table.js";
+import { WaitQueue } from "./wait.js";
 
 export interface PipeEnd {
 	description: FileDescription;
@@ -23,9 +24,13 @@ interface PipeState {
 	writeDescription: FileDescription;
 	/** Resolves waiting for data */
 	readWaiters: Array<(data: Uint8Array | null) => void>;
+	/** Blocking writers waiting for buffer space. */
+	writeWaiters: WaitQueue;
+	/** Poll/select waiters watching this pipe for state changes. */
+	pollWaiters: WaitQueue;
 }
 
-/** Maximum buffered bytes per pipe before writes are rejected (EAGAIN). */
+/** Maximum buffered bytes per pipe before writers block or O_NONBLOCK returns EAGAIN. */
 export const MAX_PIPE_BUFFER_BYTES = 65_536; // 64 KB — matches Linux default
 
 export class PipeManager {
@@ -68,6 +73,8 @@ export class PipeManager {
 			readDescription: readDesc,
 			writeDescription: writeDesc,
 			readWaiters: [],
+			writeWaiters: new WaitQueue(),
+			pollWaiters: new WaitQueue(),
 		};
 
 		this.pipes.set(id, state);
@@ -81,35 +88,24 @@ export class PipeManager {
 	}
 
 	/** Write data to a pipe's write end. Delivers SIGPIPE via onBrokenPipe when read end is closed. */
-	write(descriptionId: number, data: Uint8Array, writerPid?: number): number {
+	write(descriptionId: number, data: Uint8Array, writerPid?: number): number | Promise<number> {
 		const ref = this.descToPipe.get(descriptionId);
 		if (!ref || ref.end !== "write") throw new KernelError("EBADF", "not a pipe write end");
 
 		const state = this.pipes.get(ref.pipeId);
 		if (!state) throw new KernelError("EBADF", "pipe not found");
-		if (state.closed.write) throw new KernelError("EPIPE", "write end closed");
-		if (state.closed.read) {
-			// Deliver SIGPIPE before EPIPE (POSIX: signal first, then errno)
-			if (writerPid !== undefined && this.onBrokenPipe) {
-				this.onBrokenPipe(writerPid);
-			}
-			throw new KernelError("EPIPE", "read end closed");
+		const nonBlocking = (state.writeDescription.flags & O_NONBLOCK) !== 0;
+		const written = this.writeAvailable(state, data, writerPid);
+		if (written === data.length) {
+			return data.length;
 		}
-
-		// If readers are waiting, deliver directly (no buffering)
-		if (state.readWaiters.length > 0) {
-			const waiter = state.readWaiters.shift()!;
-			waiter(data);
-		} else {
-			// Enforce buffer limit to prevent unbounded memory growth
-			const currentSize = this.bufferSize(state);
-			if (currentSize + data.length > MAX_PIPE_BUFFER_BYTES) {
+		if (nonBlocking) {
+			if (written === 0) {
 				throw new KernelError("EAGAIN", "pipe buffer full");
 			}
-			state.buffer.push(new Uint8Array(data));
+			return written;
 		}
-
-		return data.length;
+		return this.writeBlocking(state, data, written, writerPid);
 	}
 
 	/** Read data from a pipe's read end. Returns null on EOF. */
@@ -122,7 +118,10 @@ export class PipeManager {
 
 		// Data available in buffer
 		if (state.buffer.length > 0) {
-			return Promise.resolve(this.drainBuffer(state, length));
+			const data = this.drainBuffer(state, length);
+			state.writeWaiters.wakeOne();
+			state.pollWaiters.wakeAll();
+			return Promise.resolve(data);
 		}
 
 		// Write end closed — EOF
@@ -146,6 +145,7 @@ export class PipeManager {
 
 		if (ref.end === "read") {
 			state.closed.read = true;
+			state.writeWaiters.wakeAll();
 		} else {
 			state.closed.write = true;
 			// Notify any blocked readers with EOF
@@ -153,7 +153,9 @@ export class PipeManager {
 				waiter(null);
 			}
 			state.readWaiters.length = 0;
+			state.writeWaiters.wakeAll();
 		}
+		state.pollWaiters.wakeAll();
 
 		this.descToPipe.delete(descriptionId);
 
@@ -194,6 +196,22 @@ export class PipeManager {
 	/** Get the pipe ID for a description, or undefined if not a pipe */
 	pipeIdFor(descriptionId: number): number | undefined {
 		return this.descToPipe.get(descriptionId)?.pipeId;
+	}
+
+	/** Wait for a pipe poll state change (data, capacity, or hangup). */
+	async waitForPoll(descriptionId: number, timeoutMs?: number): Promise<void> {
+		const ref = this.descToPipe.get(descriptionId);
+		if (!ref) throw new KernelError("EBADF", "not a pipe description");
+
+		const state = this.pipes.get(ref.pipeId);
+		if (!state) throw new KernelError("EBADF", "pipe not found");
+
+		const handle = state.pollWaiters.enqueue(timeoutMs);
+		try {
+			await handle.wait();
+		} finally {
+			state.pollWaiters.remove(handle);
+		}
 	}
 
 	/**
@@ -241,5 +259,59 @@ export class PipeManager {
 			offset += chunk.length;
 		}
 		return result;
+	}
+
+	private async writeBlocking(
+		state: PipeState,
+		data: Uint8Array,
+		offset: number,
+		writerPid?: number,
+	): Promise<number> {
+		while (offset < data.length) {
+			const handle = state.writeWaiters.enqueue();
+			try {
+				await handle.wait();
+			} finally {
+				state.writeWaiters.remove(handle);
+			}
+
+			offset += this.writeAvailable(state, data.subarray(offset), writerPid);
+		}
+
+		return data.length;
+	}
+
+	private writeAvailable(state: PipeState, data: Uint8Array, writerPid?: number): number {
+		this.assertWriteOpen(state, writerPid);
+		if (data.length === 0) return 0;
+
+		// If readers are waiting, deliver directly without growing the buffer.
+		if (state.readWaiters.length > 0 && state.buffer.length === 0) {
+			const waiter = state.readWaiters.shift()!;
+			waiter(new Uint8Array(data));
+			state.pollWaiters.wakeAll();
+			return data.length;
+		}
+
+		const capacity = MAX_PIPE_BUFFER_BYTES - this.bufferSize(state);
+		if (capacity <= 0) {
+			return 0;
+		}
+
+		const bytesToWrite = Math.min(capacity, data.length);
+		state.buffer.push(new Uint8Array(data.subarray(0, bytesToWrite)));
+		state.pollWaiters.wakeAll();
+		return bytesToWrite;
+	}
+
+	private assertWriteOpen(state: PipeState, writerPid?: number): void {
+		if (state.closed.write) throw new KernelError("EPIPE", "write end closed");
+		if (state.closed.read) {
+			// Deliver SIGPIPE before EPIPE (POSIX: signal first, then errno)
+			if (writerPid !== undefined && this.onBrokenPipe) {
+				this.onBrokenPipe(writerPid);
+			}
+			throw new KernelError("EPIPE", "read end closed");
+		}
 	}
 }

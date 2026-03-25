@@ -99,6 +99,15 @@ extern "C" {
     /// to `ret_slave_fd`. Both ends are installed in the process's kernel FD table.
     /// Returns errno.
     fn pty_open(ret_master_fd: *mut u32, ret_slave_fd: *mut u32) -> Errno;
+
+    /// Register a signal handler disposition (POSIX sigaction).
+    ///
+    /// `signal` is the signal number (1-64).
+    /// `action` encodes the disposition: 0=SIG_DFL, 1=SIG_IGN, 2=user handler.
+    /// When action=2, the C sysroot holds the actual function pointer; the kernel
+    /// only needs to know the signal should be caught (cooperative delivery).
+    /// Returns errno.
+    fn proc_sigaction(signal: u32, action: u32) -> Errno;
 }
 
 // ============================================================
@@ -290,6 +299,20 @@ pub fn openpty() -> Result<(u32, u32), Errno> {
     }
 }
 
+/// Register a signal handler disposition (POSIX sigaction).
+///
+/// `signal` is the signal number (1-64).
+/// `action` encodes the disposition: 0=SIG_DFL, 1=SIG_IGN, 2=user handler (C-side holds pointer).
+/// Returns `Ok(())` on success, `Err(errno)` on failure.
+pub fn sigaction_set(signal: u32, action: u32) -> Result<(), Errno> {
+    let errno = unsafe { proc_sigaction(signal, action) };
+    if errno == ERRNO_SUCCESS {
+        Ok(())
+    } else {
+        Err(errno)
+    }
+}
+
 // ============================================================
 // host_net module — TCP socket operations
 // ============================================================
@@ -363,6 +386,20 @@ extern "C" {
     /// Returns errno.
     fn net_setsockopt(fd: u32, level: u32, optname: u32, optval_ptr: *const u8, optval_len: u32) -> Errno;
 
+    /// Get the local address of a socket.
+    ///
+    /// The serialized address string is written to `ret_addr` with maximum
+    /// length from `ret_addr_len`. The actual length is written back.
+    /// Returns errno.
+    fn net_getsockname(fd: u32, ret_addr: *mut u8, ret_addr_len: *mut u32) -> Errno;
+
+    /// Get the peer address of a connected socket.
+    ///
+    /// The serialized address string is written to `ret_addr` with maximum
+    /// length from `ret_addr_len`. The actual length is written back.
+    /// Returns errno.
+    fn net_getpeername(fd: u32, ret_addr: *mut u8, ret_addr_len: *mut u32) -> Errno;
+
     /// Poll socket FDs for readiness.
     ///
     /// `fds_ptr` points to a packed array of poll entries (8 bytes each):
@@ -373,6 +410,60 @@ extern "C" {
     /// the number of FDs with non-zero revents.
     /// Returns errno.
     fn net_poll(fds_ptr: *mut u8, nfds: u32, timeout_ms: i32, ret_ready: *mut u32) -> Errno;
+
+    /// Bind a socket to a local address.
+    ///
+    /// `addr_ptr`/`addr_len` point to a serialized address string (host:port or unix path).
+    /// Returns errno.
+    fn net_bind(fd: u32, addr_ptr: *const u8, addr_len: u32) -> Errno;
+
+    /// Mark a bound socket as listening for incoming connections.
+    ///
+    /// `backlog` is the maximum pending connection queue length.
+    /// Returns errno.
+    fn net_listen(fd: u32, backlog: u32) -> Errno;
+
+    /// Accept an incoming connection on a listening socket.
+    ///
+    /// On success, the new connected socket FD is written to `ret_fd`,
+    /// and the remote address string is written to `ret_addr` with its
+    /// length in `ret_addr_len`.
+    /// Returns errno.
+    fn net_accept(fd: u32, ret_fd: *mut u32, ret_addr: *mut u8, ret_addr_len: *mut u32) -> Errno;
+
+    /// Send a datagram to a specific destination address (UDP).
+    ///
+    /// `buf_ptr`/`buf_len` point to the data to send.
+    /// `flags` are send flags (0 for default).
+    /// `addr_ptr`/`addr_len` point to the destination address string (host:port).
+    /// Number of bytes sent is written to `ret_sent`.
+    /// Returns errno.
+    fn net_sendto(
+        fd: u32,
+        buf_ptr: *const u8,
+        buf_len: u32,
+        flags: u32,
+        addr_ptr: *const u8,
+        addr_len: u32,
+        ret_sent: *mut u32,
+    ) -> Errno;
+
+    /// Receive a datagram from a UDP socket with source address.
+    ///
+    /// `buf_ptr`/`buf_len` point to the receive buffer.
+    /// `flags` are recv flags (0 for default).
+    /// Number of bytes received is written to `ret_received`.
+    /// Source address string is written to `ret_addr` with length in `ret_addr_len`.
+    /// Returns errno.
+    fn net_recvfrom(
+        fd: u32,
+        buf_ptr: *mut u8,
+        buf_len: u32,
+        flags: u32,
+        ret_received: *mut u32,
+        ret_addr: *mut u8,
+        ret_addr_len: *mut u32,
+    ) -> Errno;
 }
 
 // ============================================================
@@ -478,6 +569,34 @@ pub fn setsockopt(fd: u32, level: u32, optname: u32, optval: &[u8]) -> Result<()
     }
 }
 
+/// Get the local address of a socket.
+///
+/// Writes the serialized address into `buf` and returns the number of bytes written.
+/// Returns `Ok(len)` on success, `Err(errno)` on failure.
+pub fn getsockname(fd: u32, buf: &mut [u8]) -> Result<u32, Errno> {
+    let mut len: u32 = buf.len() as u32;
+    let errno = unsafe { net_getsockname(fd, buf.as_mut_ptr(), &mut len) };
+    if errno == ERRNO_SUCCESS {
+        Ok(len)
+    } else {
+        Err(errno)
+    }
+}
+
+/// Get the peer address of a connected socket.
+///
+/// Writes the serialized address into `buf` and returns the number of bytes written.
+/// Returns `Ok(len)` on success, `Err(errno)` on failure.
+pub fn getpeername(fd: u32, buf: &mut [u8]) -> Result<u32, Errno> {
+    let mut len: u32 = buf.len() as u32;
+    let errno = unsafe { net_getpeername(fd, buf.as_mut_ptr(), &mut len) };
+    if errno == ERRNO_SUCCESS {
+        Ok(len)
+    } else {
+        Err(errno)
+    }
+}
+
 /// Upgrade a connected TCP socket to TLS.
 ///
 /// `hostname` is used for SNI (Server Name Indication).
@@ -502,6 +621,97 @@ pub fn poll(fds: &mut [u8], nfds: u32, timeout_ms: i32) -> Result<u32, Errno> {
     let errno = unsafe { net_poll(fds.as_mut_ptr(), nfds, timeout_ms, &mut ready) };
     if errno == ERRNO_SUCCESS {
         Ok(ready)
+    } else {
+        Err(errno)
+    }
+}
+
+/// Bind a socket to a local address.
+///
+/// `addr` is a serialized address string (e.g. "host:port" or "/path/to/socket").
+/// Returns `Ok(())` on success, `Err(errno)` on failure.
+pub fn bind(fd: u32, addr: &[u8]) -> Result<(), Errno> {
+    let errno = unsafe { net_bind(fd, addr.as_ptr(), addr.len() as u32) };
+    if errno == ERRNO_SUCCESS {
+        Ok(())
+    } else {
+        Err(errno)
+    }
+}
+
+/// Mark a bound socket as listening for incoming connections.
+///
+/// `backlog` is the maximum pending connection queue length.
+/// Returns `Ok(())` on success, `Err(errno)` on failure.
+pub fn listen(fd: u32, backlog: u32) -> Result<(), Errno> {
+    let errno = unsafe { net_listen(fd, backlog) };
+    if errno == ERRNO_SUCCESS {
+        Ok(())
+    } else {
+        Err(errno)
+    }
+}
+
+/// Accept an incoming connection on a listening socket.
+///
+/// Returns `Ok((fd, addr_len))` on success, where the remote address string
+/// has been written into `addr_buf` with length `addr_len`.
+/// Returns `Err(errno)` on failure.
+pub fn accept(fd: u32, addr_buf: &mut [u8]) -> Result<(u32, u32), Errno> {
+    let mut new_fd: u32 = 0;
+    let mut addr_len: u32 = addr_buf.len() as u32;
+    let errno = unsafe { net_accept(fd, &mut new_fd, addr_buf.as_mut_ptr(), &mut addr_len) };
+    if errno == ERRNO_SUCCESS {
+        Ok((new_fd, addr_len))
+    } else {
+        Err(errno)
+    }
+}
+
+/// Send a datagram to a specific destination address (UDP).
+///
+/// `addr` is the destination address string (e.g. "host:port").
+/// Returns `Ok(bytes_sent)` on success, `Err(errno)` on failure.
+pub fn sendto(fd: u32, buf: &[u8], flags: u32, addr: &[u8]) -> Result<u32, Errno> {
+    let mut sent: u32 = 0;
+    let errno = unsafe {
+        net_sendto(
+            fd,
+            buf.as_ptr(),
+            buf.len() as u32,
+            flags,
+            addr.as_ptr(),
+            addr.len() as u32,
+            &mut sent,
+        )
+    };
+    if errno == ERRNO_SUCCESS {
+        Ok(sent)
+    } else {
+        Err(errno)
+    }
+}
+
+/// Receive a datagram from a UDP socket with source address.
+///
+/// Writes received data into `buf` and the source address string into `addr_buf`.
+/// Returns `Ok((bytes_received, addr_len))` on success, `Err(errno)` on failure.
+pub fn recvfrom(fd: u32, buf: &mut [u8], flags: u32, addr_buf: &mut [u8]) -> Result<(u32, u32), Errno> {
+    let mut received: u32 = 0;
+    let mut addr_len: u32 = addr_buf.len() as u32;
+    let errno = unsafe {
+        net_recvfrom(
+            fd,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            flags,
+            &mut received,
+            addr_buf.as_mut_ptr(),
+            &mut addr_len,
+        )
+    };
+    if errno == ERRNO_SUCCESS {
+        Ok((received, addr_len))
     } else {
         Err(errno)
     }

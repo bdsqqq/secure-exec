@@ -293,29 +293,28 @@ describe("ProcessTable", () => {
 	// SIGCHLD
 	// -----------------------------------------------------------------------
 
-	it("child exit delivers SIGCHLD to parent", () => {
+	it("child exit delivers SIGCHLD to parent with registered handler", () => {
 		const table = new ProcessTable();
-		const parentKillSignals: number[] = [];
+		const receivedSignals: number[] = [];
 
 		const parentProc = createMockDriverProcess();
-		const origParentKill = parentProc.kill;
-		parentProc.kill = (signal) => {
-			parentKillSignals.push(signal);
-			// SIGCHLD default action is ignore — do not terminate
-			if (signal === SIGCHLD) return;
-			origParentKill.call(parentProc, signal);
-		};
-
 		const parentPid = table.allocatePid();
 		table.register(parentPid, "wasmvm", "sh", [], createCtx(), parentProc);
+
+		// Register a SIGCHLD handler (POSIX: default action is ignore)
+		table.sigaction(parentPid, SIGCHLD, {
+			handler: (sig) => receivedSignals.push(sig),
+			mask: new Set(),
+			flags: 0,
+		});
 
 		const childProc = createMockDriverProcess();
 		const childPid = table.allocatePid();
 		table.register(childPid, "wasmvm", "echo", ["hi"], createCtx({ ppid: parentPid }), childProc);
 
-		// Child exits — parent should receive SIGCHLD
+		// Child exits — parent's SIGCHLD handler should be invoked
 		table.markExited(childPid, 0);
-		expect(parentKillSignals).toContain(SIGCHLD);
+		expect(receivedSignals).toContain(SIGCHLD);
 	});
 
 	it("SIGCHLD not delivered when parent is already exited", () => {
@@ -550,5 +549,136 @@ describe("ProcessTable", () => {
 		table.kill(-pid1, SIGTSTP);
 		expect(table.get(pid1)!.status).toBe("stopped");
 		expect(table.get(pid2)!.status).toBe("stopped");
+	});
+
+	// -----------------------------------------------------------------------
+	// Handle table (active handle tracking)
+	// -----------------------------------------------------------------------
+
+	it("registerHandle tracks a handle on the process", () => {
+		const table = new ProcessTable();
+		const pid = table.allocatePid();
+		table.register(pid, "node", "node", [], createCtx(), createMockDriverProcess());
+
+		table.registerHandle(pid, "timer-1", "setTimeout");
+		table.registerHandle(pid, "socket-5", "net.Socket");
+
+		const handles = table.getHandles(pid);
+		expect(handles.size).toBe(2);
+		expect(handles.get("timer-1")).toBe("setTimeout");
+		expect(handles.get("socket-5")).toBe("net.Socket");
+	});
+
+	it("unregisterHandle removes a handle", () => {
+		const table = new ProcessTable();
+		const pid = table.allocatePid();
+		table.register(pid, "node", "node", [], createCtx(), createMockDriverProcess());
+
+		table.registerHandle(pid, "timer-1", "setTimeout");
+		table.unregisterHandle(pid, "timer-1");
+
+		const handles = table.getHandles(pid);
+		expect(handles.size).toBe(0);
+	});
+
+	it("unregisterHandle throws EBADF for unknown handle", () => {
+		const table = new ProcessTable();
+		const pid = table.allocatePid();
+		table.register(pid, "node", "node", [], createCtx(), createMockDriverProcess());
+
+		expect(() => table.unregisterHandle(pid, "nonexistent")).toThrow("EBADF");
+	});
+
+	it("registerHandle throws EAGAIN when handle limit exceeded", () => {
+		const table = new ProcessTable();
+		const pid = table.allocatePid();
+		table.register(pid, "node", "node", [], createCtx(), createMockDriverProcess());
+
+		table.setHandleLimit(pid, 2);
+		table.registerHandle(pid, "h1", "handle 1");
+		table.registerHandle(pid, "h2", "handle 2");
+
+		expect(() => table.registerHandle(pid, "h3", "handle 3")).toThrow("EAGAIN");
+	});
+
+	it("handleLimit 0 means unlimited", () => {
+		const table = new ProcessTable();
+		const pid = table.allocatePid();
+		table.register(pid, "node", "node", [], createCtx(), createMockDriverProcess());
+
+		// Default limit is 0 (unlimited)
+		for (let i = 0; i < 100; i++) {
+			table.registerHandle(pid, `h-${i}`, `handle ${i}`);
+		}
+		expect(table.getHandles(pid).size).toBe(100);
+	});
+
+	it("setHandleLimit updates the limit for a process", () => {
+		const table = new ProcessTable();
+		const pid = table.allocatePid();
+		table.register(pid, "node", "node", [], createCtx(), createMockDriverProcess());
+
+		table.setHandleLimit(pid, 1);
+		table.registerHandle(pid, "h1", "first");
+		expect(() => table.registerHandle(pid, "h2", "second")).toThrow("EAGAIN");
+
+		// Raise limit
+		table.setHandleLimit(pid, 5);
+		table.registerHandle(pid, "h2", "second");
+		expect(table.getHandles(pid).size).toBe(2);
+	});
+
+	it("process exit clears all active handles", () => {
+		const table = new ProcessTable();
+		const pid = table.allocatePid();
+		table.register(pid, "node", "node", [], createCtx(), createMockDriverProcess());
+
+		table.registerHandle(pid, "timer-1", "setTimeout");
+		table.registerHandle(pid, "socket-2", "net.Socket");
+		table.registerHandle(pid, "file-3", "fs.open");
+
+		table.markExited(pid, 0);
+
+		const entry = table.get(pid)!;
+		expect(entry.activeHandles.size).toBe(0);
+	});
+
+	it("handle operations throw ESRCH for non-existent process", () => {
+		const table = new ProcessTable();
+
+		expect(() => table.registerHandle(999, "h1", "test")).toThrow("ESRCH");
+		expect(() => table.unregisterHandle(999, "h1")).toThrow("ESRCH");
+		expect(() => table.setHandleLimit(999, 10)).toThrow("ESRCH");
+		expect(() => table.getHandles(999)).toThrow("ESRCH");
+	});
+
+	it("handles are per-process — process A cannot see process B handles", () => {
+		const table = new ProcessTable();
+		const pidA = table.allocatePid();
+		const pidB = table.allocatePid();
+		table.register(pidA, "node", "node", ["-e", "a"], createCtx(), createMockDriverProcess());
+		table.register(pidB, "node", "node", ["-e", "b"], createCtx(), createMockDriverProcess());
+
+		table.registerHandle(pidA, "h1", "timer");
+		table.registerHandle(pidB, "h1", "socket"); // Same id, different process
+
+		expect(table.getHandles(pidA).get("h1")).toBe("timer");
+		expect(table.getHandles(pidB).get("h1")).toBe("socket");
+	});
+
+	it("getHandles returns a copy — mutations don't affect kernel state", () => {
+		const table = new ProcessTable();
+		const pid = table.allocatePid();
+		table.register(pid, "node", "node", [], createCtx(), createMockDriverProcess());
+
+		table.registerHandle(pid, "h1", "timer");
+		const copy = table.getHandles(pid);
+		copy.delete("h1");
+		copy.set("injected", "bad");
+
+		// Original should be unchanged
+		const original = table.getHandles(pid);
+		expect(original.size).toBe(1);
+		expect(original.get("h1")).toBe("timer");
 	});
 });

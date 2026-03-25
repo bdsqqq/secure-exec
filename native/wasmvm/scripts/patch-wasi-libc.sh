@@ -210,11 +210,10 @@ else
     exit 1
 fi
 
-# Remove musl object files that conflict with host_socket.o
-# (our socket patch provides poll/select via host_net imports, replacing musl's
-#  poll_oneoff-based implementations which don't check actual FD state)
-"$WASI_AR" d "$SYSROOT_LIB/libc.a" send.o recv.o select.o poll.o 2>/dev/null || true
-echo "Removed conflicting send.o/recv.o/select.o/poll.o from libc.a"
+# Remove libc objects that conflict with host_socket.o.
+# Our socket patch replaces these entry points with host_net-backed versions.
+"$WASI_AR" d "$SYSROOT_LIB/libc.a" accept-wasip1.o send.o recv.o select.o poll.o 2>/dev/null || true
+echo "Removed conflicting accept-wasip1.o/send.o/recv.o/select.o/poll.o from libc.a"
 
 # wasi-libc builds under wasm32-wasi, but clang --target=wasm32-wasip1 expects
 # wasm32-wasip1 subdirectories. Create symlinks so both targets work.

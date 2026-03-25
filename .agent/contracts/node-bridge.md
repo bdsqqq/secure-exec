@@ -157,3 +157,6 @@ The bridge global key registry consumed by host runtime setup, bridge modules, a
 - **WHEN** contributors add a new bridge global used by host/isolate boundary wiring
 - **THEN** that global MUST be added to the canonical shared key registry and corresponding shared contract typing in the same change
 
+#### Scenario: Native V8 bridge registries stay aligned with async and sync lifecycle hooks
+- **WHEN** bridge modules depend on a host bridge global via async `.apply(..., { result: { promise: true } })` or sync `.applySync(...)` semantics
+- **THEN** the native V8 bridge function registries MUST expose a matching callable shape for that global (or an equivalent tested shim), and automated verification MUST cover the registry alignment

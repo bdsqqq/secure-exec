@@ -17,15 +17,25 @@ import type {
   ProcessContext,
   DriverProcess,
 } from '@secure-exec/core';
+import {
+  AF_INET,
+  AF_INET6,
+  AF_UNIX,
+  SOCK_STREAM,
+  SOCK_DGRAM,
+  resolveProcSelfPath,
+} from '@secure-exec/core';
 import type { WorkerHandle } from './worker-adapter.js';
 import { WorkerAdapter } from './worker-adapter.js';
 import {
   SIGNAL_BUFFER_BYTES,
   DATA_BUFFER_BYTES,
+  RPC_WAIT_TIMEOUT_MS,
   SIG_IDX_STATE,
   SIG_IDX_ERRNO,
   SIG_IDX_INT_RESULT,
   SIG_IDX_DATA_LEN,
+  SIG_IDX_PENDING_SIGNAL,
   SIG_STATE_IDLE,
   SIG_STATE_READY,
   type WorkerMessage,
@@ -40,9 +50,81 @@ import { ModuleCache } from './module-cache.js';
 import { readdir, stat } from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { connect as tcpConnect, type Socket } from 'node:net';
+import { type Socket } from 'node:net';
 import { connect as tlsConnect, type TLSSocket } from 'node:tls';
 import { lookup } from 'node:dns/promises';
+
+// wasi-libc bottom-half socket constants differ from the kernel's POSIX-facing
+// constants, so normalize them at the host_net boundary.
+const WASI_AF_INET = 1;
+const WASI_AF_INET6 = 2;
+const WASI_AF_UNIX = 3;
+const WASI_SOCK_DGRAM = 5;
+const WASI_SOCK_STREAM = 6;
+const WASI_SOCK_TYPE_FLAGS = 0x6000;
+
+function normalizeSocketDomain(domain: number): number {
+  switch (domain) {
+    case WASI_AF_INET:
+      return AF_INET;
+    case WASI_AF_INET6:
+      return AF_INET6;
+    case WASI_AF_UNIX:
+      return AF_UNIX;
+    default:
+      return domain;
+  }
+}
+
+function normalizeSocketType(type: number): number {
+  switch (type & ~WASI_SOCK_TYPE_FLAGS) {
+    case WASI_SOCK_DGRAM:
+      return SOCK_DGRAM;
+    case WASI_SOCK_STREAM:
+      return SOCK_STREAM;
+    default:
+      return type & ~WASI_SOCK_TYPE_FLAGS;
+  }
+}
+
+function scopedProcPath(pid: number, path: string): string {
+  return resolveProcSelfPath(path, pid);
+}
+
+function decodeSocketOptionValue(optval: Uint8Array): number {
+  if (optval.byteLength === 0 || optval.byteLength > 6) {
+    throw Object.assign(new Error('EINVAL: invalid socket option length'), { code: 'EINVAL' });
+  }
+
+  // Decode little-endian integers exactly as wasi-libc passes them to host_net.
+  let value = 0;
+  for (let index = 0; index < optval.byteLength; index++) {
+    value += optval[index] * (2 ** (index * 8));
+  }
+  return value;
+}
+
+function encodeSocketOptionValue(value: number, byteLength: number): Uint8Array {
+  if (!Number.isInteger(byteLength) || byteLength <= 0 || byteLength > 6) {
+    throw Object.assign(new Error('EINVAL: invalid socket option length'), { code: 'EINVAL' });
+  }
+
+  const encoded = new Uint8Array(byteLength);
+  let remaining = value;
+  for (let index = 0; index < byteLength; index++) {
+    encoded[index] = remaining % 0x100;
+    remaining = Math.floor(remaining / 0x100);
+  }
+  return encoded;
+}
+
+function serializeSockAddr(addr: KernelSockAddr): string {
+  return 'host' in addr ? `${addr.host}:${addr.port}` : addr.path;
+}
+
+type PollWaitKernel = KernelInterface & {
+  fdPollWait?: (pid: number, fd: number, timeoutMs?: number) => Promise<void>;
+};
 
 function getKernelWorkerUrl(): URL {
   const siblingWorkerUrl = new URL('./kernel-worker.js', import.meta.url);
@@ -253,9 +335,11 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
   private _activeWorkers = new Map<number, WorkerHandle>();
   private _workerAdapter = new WorkerAdapter();
   private _moduleCache = new ModuleCache();
-  // Socket table: socketId → Node.js Socket (per-driver, not per-process)
-  private _sockets = new Map<number, Socket>();
-  private _nextSocketId = 1;
+  // TLS-upgraded sockets bypass kernel recv — direct host TLS I/O
+  private _tlsSockets = new Map<number, Socket>();
+
+  // Per-PID queue of signals pending cooperative delivery to WASM trampoline
+  private _wasmPendingSignals = new Map<number, number[]>();
 
   get commands(): string[] { return this._commands; }
 
@@ -398,11 +482,11 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
       try { await worker.terminate(); } catch { /* best effort */ }
     }
     this._activeWorkers.clear();
-    // Clean up open sockets
-    for (const sock of this._sockets.values()) {
+    // Clean up TLS-upgraded sockets (kernel sockets cleaned up by kernel.dispose)
+    for (const sock of this._tlsSockets.values()) {
       try { sock.destroy(); } catch { /* best effort */ }
     }
-    this._sockets.clear();
+    this._tlsSockets.clear();
     this._moduleCache.clear();
     this._kernel = null;
   }
@@ -622,6 +706,7 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
         break;
       case 'exit':
         this._activeWorkers.delete(ctx.pid);
+        this._wasmPendingSignals.delete(ctx.pid);
         resolveExit(msg.code);
         proc.onExit?.(msg.code);
         break;
@@ -741,6 +826,26 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
           kernel.kill(msg.args.pid as number, msg.args.signal as number);
           break;
         }
+        case 'sigaction': {
+          // proc_sigaction → register signal disposition in kernel process table
+          const sigNum = msg.args.signal as number;
+          const action = msg.args.action as number;
+          let handler: 'default' | 'ignore' | ((signal: number) => void);
+          if (action === 0) {
+            handler = 'default';
+          } else if (action === 1) {
+            handler = 'ignore';
+          } else {
+            // action=2: user handler — queue signal for cooperative delivery
+            handler = (sig: number) => {
+              let queue = this._wasmPendingSignals.get(pid);
+              if (!queue) { queue = []; this._wasmPendingSignals.set(pid, queue); }
+              queue.push(sig);
+            };
+          }
+          kernel.processTable.sigaction(pid, sigNum, { handler, mask: new Set(), flags: 0 });
+          break;
+        }
         case 'pipe': {
           // fd_pipe → create kernel pipe in this process's FD table
           const pipeFds = kernel.pipe(pid);
@@ -769,9 +874,10 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
         }
         case 'vfsStat':
         case 'vfsLstat': {
+          const path = scopedProcPath(pid, msg.args.path as string);
           const stat = msg.call === 'vfsLstat'
-            ? await kernel.vfs.lstat(msg.args.path as string)
-            : await kernel.vfs.stat(msg.args.path as string);
+            ? await kernel.vfs.lstat(path)
+            : await kernel.vfs.stat(path);
           const enc = new TextEncoder();
           const json = JSON.stringify({
             ino: stat.ino,
@@ -795,7 +901,7 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
           break;
         }
         case 'vfsReaddir': {
-          const entries = await kernel.vfs.readDir(msg.args.path as string);
+          const entries = await kernel.vfs.readDir(scopedProcPath(pid, msg.args.path as string));
           const bytes = new TextEncoder().encode(JSON.stringify(entries));
           if (bytes.length > DATA_BUFFER_BYTES) {
             errno = 76; // EIO — response exceeds SAB capacity
@@ -806,27 +912,36 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
           break;
         }
         case 'vfsMkdir': {
-          await kernel.vfs.mkdir(msg.args.path as string);
+          await kernel.vfs.mkdir(scopedProcPath(pid, msg.args.path as string));
           break;
         }
         case 'vfsUnlink': {
-          await kernel.vfs.removeFile(msg.args.path as string);
+          await kernel.vfs.removeFile(scopedProcPath(pid, msg.args.path as string));
           break;
         }
         case 'vfsRmdir': {
-          await kernel.vfs.removeDir(msg.args.path as string);
+          await kernel.vfs.removeDir(scopedProcPath(pid, msg.args.path as string));
           break;
         }
         case 'vfsRename': {
-          await kernel.vfs.rename(msg.args.oldPath as string, msg.args.newPath as string);
+          await kernel.vfs.rename(
+            scopedProcPath(pid, msg.args.oldPath as string),
+            scopedProcPath(pid, msg.args.newPath as string),
+          );
           break;
         }
         case 'vfsSymlink': {
-          await kernel.vfs.symlink(msg.args.target as string, msg.args.linkPath as string);
+          await kernel.vfs.symlink(
+            msg.args.target as string,
+            scopedProcPath(pid, msg.args.linkPath as string),
+          );
           break;
         }
         case 'vfsReadlink': {
-          const target = await kernel.vfs.readlink(msg.args.path as string);
+          const normalizedPath = msg.args.path as string;
+          const target = normalizedPath === '/proc/self'
+            ? '/proc/' + pid
+            : await kernel.vfs.readlink(scopedProcPath(pid, normalizedPath));
           const bytes = new TextEncoder().encode(target);
           if (bytes.length > DATA_BUFFER_BYTES) {
             errno = 76; // EIO — response exceeds SAB capacity
@@ -837,7 +952,7 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
           break;
         }
         case 'vfsReadFile': {
-          const content = await kernel.vfs.readFile(msg.args.path as string);
+          const content = await kernel.vfs.readFile(scopedProcPath(pid, msg.args.path as string));
           if (content.length > DATA_BUFFER_BYTES) {
             errno = 76; // EIO — response exceeds SAB capacity
             break;
@@ -847,16 +962,22 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
           break;
         }
         case 'vfsWriteFile': {
-          await kernel.vfs.writeFile(msg.args.path as string, new Uint8Array(msg.args.data as ArrayBuffer));
+          await kernel.vfs.writeFile(
+            scopedProcPath(pid, msg.args.path as string),
+            new Uint8Array(msg.args.data as ArrayBuffer),
+          );
           break;
         }
         case 'vfsExists': {
-          const exists = await kernel.vfs.exists(msg.args.path as string);
+          const exists = await kernel.vfs.exists(scopedProcPath(pid, msg.args.path as string));
           intResult = exists ? 1 : 0;
           break;
         }
         case 'vfsRealpath': {
-          const resolved = await kernel.vfs.realpath(msg.args.path as string);
+          const normalizedPath = msg.args.path as string;
+          const resolved = normalizedPath === '/proc/self'
+            ? '/proc/' + pid
+            : await kernel.vfs.realpath(scopedProcPath(pid, normalizedPath));
           const bytes = new TextEncoder().encode(resolved);
           if (bytes.length > DATA_BUFFER_BYTES) {
             errno = 76; // EIO — response exceeds SAB capacity
@@ -866,140 +987,160 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
           responseData = bytes;
           break;
         }
-        // ----- Networking (TCP sockets) -----
+        // ----- Networking (TCP sockets via kernel socket table) -----
         case 'netSocket': {
-          const socketId = this._nextSocketId++;
-          // Allocate slot — actual connection is deferred to netConnect
-          this._sockets.set(socketId, null as unknown as Socket);
-          intResult = socketId;
+          intResult = kernel.socketTable.create(
+            normalizeSocketDomain(msg.args.domain as number),
+            normalizeSocketType(msg.args.type as number),
+            msg.args.protocol as number,
+            pid,
+          );
           break;
         }
         case 'netConnect': {
           const socketId = msg.args.fd as number;
-          if (!this._sockets.has(socketId)) {
-            errno = ERRNO_MAP.EBADF;
-            break;
-          }
+          const socket = kernel.socketTable.get(socketId);
 
           const addr = msg.args.addr as string;
-          // Parse "host:port" format
+          // Parse "host:port" or unix path
           const lastColon = addr.lastIndexOf(':');
           if (lastColon === -1) {
-            errno = ERRNO_MAP.EINVAL;
-            break;
-          }
-          const host = addr.slice(0, lastColon);
-          const port = parseInt(addr.slice(lastColon + 1), 10);
-          if (isNaN(port)) {
-            errno = ERRNO_MAP.EINVAL;
-            break;
-          }
+            if (socket && socket.domain !== AF_UNIX) {
+              errno = ERRNO_MAP.EINVAL;
+              break;
+            }
+            // Unix domain socket path
+            await kernel.socketTable.connect(socketId, { path: addr });
+          } else {
+            const host = addr.slice(0, lastColon);
+            const port = parseInt(addr.slice(lastColon + 1), 10);
+            if (isNaN(port)) {
+              errno = ERRNO_MAP.EINVAL;
+              break;
+            }
 
-          // Connect synchronously from the worker's perspective (blocking via Atomics)
-          try {
-            const sock = await new Promise<Socket>((resolve, reject) => {
-              const s = tcpConnect({ host, port }, () => resolve(s));
-              s.on('error', reject);
-            });
-            this._sockets.set(socketId, sock);
-          } catch (err) {
-            errno = ERRNO_MAP.ECONNREFUSED;
+            // Route through kernel socket table (host adapter handles real TCP)
+            await kernel.socketTable.connect(socketId, { host, port });
           }
           break;
         }
         case 'netSend': {
           const socketId = msg.args.fd as number;
-          const sock = this._sockets.get(socketId);
-          if (!sock) {
-            errno = ERRNO_MAP.EBADF;
+
+          // TLS-upgraded sockets write directly to host TLS socket
+          const tlsSock = this._tlsSockets.get(socketId);
+          if (tlsSock) {
+            const tlsData = Buffer.from(msg.args.data as number[]);
+            await new Promise<void>((resolve, reject) => {
+              tlsSock.write(tlsData, (err) => err ? reject(err) : resolve());
+            });
+            intResult = tlsData.length;
             break;
           }
 
-          const sendData = Buffer.from(msg.args.data as number[]);
-          const written = await new Promise<number>((resolve, reject) => {
-            sock.write(sendData, (err) => {
-              if (err) reject(err);
-              else resolve(sendData.length);
-            });
-          });
-          intResult = written;
+          const sendData = new Uint8Array(msg.args.data as number[]);
+          intResult = kernel.socketTable.send(socketId, sendData, msg.args.flags as number ?? 0);
           break;
         }
         case 'netRecv': {
           const socketId = msg.args.fd as number;
-          const sock = this._sockets.get(socketId);
-          if (!sock) {
-            errno = ERRNO_MAP.EBADF;
-            break;
-          }
-
           const maxLen = msg.args.length as number;
-          // Wait for data via 'data' event, or EOF via 'end'
-          const recvData = await new Promise<Uint8Array>((resolve) => {
-            const onData = (chunk: Buffer) => {
-              cleanup();
-              // Return at most maxLen bytes, push remainder back
-              if (chunk.length > maxLen) {
-                sock.unshift(chunk.subarray(maxLen));
-                resolve(new Uint8Array(chunk.subarray(0, maxLen)));
-              } else {
-                resolve(new Uint8Array(chunk));
-              }
-            };
-            const onEnd = () => {
-              cleanup();
-              resolve(new Uint8Array(0));
-            };
-            const onError = () => {
-              cleanup();
-              resolve(new Uint8Array(0));
-            };
-            const cleanup = () => {
-              sock.removeListener('data', onData);
-              sock.removeListener('end', onEnd);
-              sock.removeListener('error', onError);
-            };
-            sock.once('data', onData);
-            sock.once('end', onEnd);
-            sock.once('error', onError);
-          });
+          const flags = msg.args.flags as number ?? 0;
 
-          if (recvData.length > DATA_BUFFER_BYTES) {
-            errno = 76; // EIO
+          // TLS-upgraded sockets read directly from host TLS socket
+          const tlsRecvSock = this._tlsSockets.get(socketId);
+          if (tlsRecvSock) {
+            const tlsRecvData = await new Promise<Uint8Array>((resolve) => {
+              const onData = (chunk: Buffer) => {
+                cleanupTls();
+                if (chunk.length > maxLen) {
+                  tlsRecvSock.unshift(chunk.subarray(maxLen));
+                  resolve(new Uint8Array(chunk.subarray(0, maxLen)));
+                } else {
+                  resolve(new Uint8Array(chunk));
+                }
+              };
+              const onEnd = () => { cleanupTls(); resolve(new Uint8Array(0)); };
+              const onError = () => { cleanupTls(); resolve(new Uint8Array(0)); };
+              const cleanupTls = () => {
+                tlsRecvSock.removeListener('data', onData);
+                tlsRecvSock.removeListener('end', onEnd);
+                tlsRecvSock.removeListener('error', onError);
+              };
+              tlsRecvSock.once('data', onData);
+              tlsRecvSock.once('end', onEnd);
+              tlsRecvSock.once('error', onError);
+            });
+            if (tlsRecvData.length > DATA_BUFFER_BYTES) { errno = 76; break; }
+            if (tlsRecvData.length > 0) data.set(tlsRecvData, 0);
+            responseData = tlsRecvData;
+            intResult = tlsRecvData.length;
             break;
           }
-          if (recvData.length > 0) {
-            data.set(recvData, 0);
+
+          // Kernel socket recv — may need to wait for data from read pump
+          let recvResult = kernel.socketTable.recv(socketId, maxLen, flags);
+
+          if (recvResult === null) {
+            // Check if more data might arrive (socket still connected, EOF not received)
+            const ksock = kernel.socketTable.get(socketId);
+            if (ksock && (ksock.state === 'connected' || ksock.state === 'write-closed')) {
+              const mightHaveMore = ksock.external
+                ? !ksock.peerWriteClosed
+                : (ksock.peerId !== undefined && !ksock.peerWriteClosed);
+              if (mightHaveMore) {
+                await ksock.readWaiters.enqueue(30000).wait();
+                recvResult = kernel.socketTable.recv(socketId, maxLen, flags);
+              }
+            }
           }
+
+          const recvData = recvResult ?? new Uint8Array(0);
+          if (recvData.length > DATA_BUFFER_BYTES) { errno = 76; break; }
+          if (recvData.length > 0) data.set(recvData, 0);
           responseData = recvData;
           intResult = recvData.length;
           break;
         }
         case 'netTlsConnect': {
           const socketId = msg.args.fd as number;
-          const sock = this._sockets.get(socketId);
-          if (!sock) {
+
+          // Access the kernel socket's host socket for TLS upgrade
+          const ksockTls = kernel.socketTable.get(socketId);
+          if (!ksockTls) {
             errno = ERRNO_MAP.EBADF;
             break;
           }
+          if (!ksockTls.external || !ksockTls.hostSocket) {
+            errno = ERRNO_MAP.EINVAL; // Can't TLS-upgrade loopback sockets
+            break;
+          }
+
+          // Extract underlying net.Socket from host adapter
+          const realSock = (ksockTls.hostSocket as any).socket as Socket | undefined;
+          if (!realSock) {
+            errno = ERRNO_MAP.EINVAL;
+            break;
+          }
+
+          // Detach kernel read pump by clearing hostSocket
+          ksockTls.hostSocket = undefined;
 
           const hostname = msg.args.hostname as string;
-          // Only override rejectUnauthorized when explicitly provided
           const tlsOpts: Record<string, unknown> = {
-            socket: sock,
+            socket: realSock,
             servername: hostname, // SNI
           };
           if (msg.args.verifyPeer === false) {
             tlsOpts.rejectUnauthorized = false;
           }
           try {
-            // Upgrade existing TCP socket to TLS
             const tlsSock = await new Promise<TLSSocket>((resolve, reject) => {
               const s = tlsConnect(tlsOpts as any, () => resolve(s));
               s.on('error', reject);
             });
-            // Replace plain socket with TLS socket — send/recv transparently use it
-            this._sockets.set(socketId, tlsSock as unknown as Socket);
+            // TLS socket bypasses kernel — send/recv go directly through _tlsSockets
+            this._tlsSockets.set(socketId, tlsSock as unknown as Socket);
           } catch {
             errno = ERRNO_MAP.ECONNREFUSED;
           }
@@ -1035,9 +1176,73 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
           }
           break;
         }
+        case 'netSetsockopt': {
+          const socketId = msg.args.fd as number;
+          const optvalBytes = new Uint8Array(msg.args.optval as number[]);
+          const optval = decodeSocketOptionValue(optvalBytes);
+          kernel.socketTable.setsockopt(
+            socketId,
+            msg.args.level as number,
+            msg.args.optname as number,
+            optval,
+          );
+          break;
+        }
+        case 'netGetsockopt': {
+          const socketId = msg.args.fd as number;
+          const optlen = msg.args.optvalLen as number;
+          const optval = kernel.socketTable.getsockopt(
+            socketId,
+            msg.args.level as number,
+            msg.args.optname as number,
+          );
+          if (optval === undefined) {
+            errno = ERRNO_MAP.EINVAL;
+            break;
+          }
+
+          const encoded = encodeSocketOptionValue(optval, optlen);
+          if (encoded.length > DATA_BUFFER_BYTES) {
+            errno = ERRNO_EIO;
+            break;
+          }
+          data.set(encoded, 0);
+          responseData = encoded;
+          intResult = encoded.length;
+          break;
+        }
+        case 'kernelSocketGetLocalAddr': {
+          const socketId = msg.args.fd as number;
+          const addrBytes = new TextEncoder().encode(
+            serializeSockAddr(kernel.socketTable.getLocalAddr(socketId)),
+          );
+          if (addrBytes.length > DATA_BUFFER_BYTES) {
+            errno = ERRNO_EIO;
+            break;
+          }
+          data.set(addrBytes, 0);
+          responseData = addrBytes;
+          intResult = addrBytes.length;
+          break;
+        }
+        case 'kernelSocketGetRemoteAddr': {
+          const socketId = msg.args.fd as number;
+          const addrBytes = new TextEncoder().encode(
+            serializeSockAddr(kernel.socketTable.getRemoteAddr(socketId)),
+          );
+          if (addrBytes.length > DATA_BUFFER_BYTES) {
+            errno = ERRNO_EIO;
+            break;
+          }
+          data.set(addrBytes, 0);
+          responseData = addrBytes;
+          intResult = addrBytes.length;
+          break;
+        }
         case 'netPoll': {
           const fds = msg.args.fds as Array<{ fd: number; events: number }>;
           const timeout = msg.args.timeout as number;
+          const pollKernel = kernel as PollWaitKernel;
 
           const revents: number[] = [];
           let ready = 0;
@@ -1045,116 +1250,131 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
           // WASI poll constants
           const POLLIN = 0x1;
           const POLLOUT = 0x2;
-          const POLLERR = 0x1000;
           const POLLHUP = 0x2000;
           const POLLNVAL = 0x4000;
 
-          // Check each FD for readiness (sockets via _sockets map, pipes via kernel)
-          for (const entry of fds) {
-            const sock = this._sockets.get(entry.fd);
-            if (sock) {
+          // Check readiness helper: kernel socket table first, then kernel FD table
+          const checkFd = (fd: number, events: number): number => {
+            // TLS-upgraded sockets — use host socket readability
+            const tlsSockPoll = this._tlsSockets.get(fd);
+            if (tlsSockPoll) {
               let rev = 0;
-              if ((entry.events & POLLIN) && sock.readableLength > 0) {
-                rev |= POLLIN;
-              }
-              if ((entry.events & POLLOUT) && sock.writable) {
-                rev |= POLLOUT;
-              }
-              if (sock.destroyed) {
-                rev |= POLLHUP;
-              }
-              if (rev !== 0) ready++;
+              if ((events & POLLIN) && tlsSockPoll.readableLength > 0) rev |= POLLIN;
+              if ((events & POLLOUT) && tlsSockPoll.writable) rev |= POLLOUT;
+              if (tlsSockPoll.destroyed) rev |= POLLHUP;
+              return rev;
+            }
+
+            // Kernel socket table
+            const ksock = kernel.socketTable.get(fd);
+            if (ksock) {
+              const ps = kernel.socketTable.poll(fd);
+              let rev = 0;
+              if ((events & POLLIN) && ps.readable) rev |= POLLIN;
+              if ((events & POLLOUT) && ps.writable) rev |= POLLOUT;
+              if (ps.hangup) rev |= POLLHUP;
+              return rev;
+            }
+
+            // Kernel FD table (pipes, files)
+            try {
+              const ps = kernel.fdPoll(pid, fd);
+              if (ps.invalid) return POLLNVAL;
+              let rev = 0;
+              if ((events & POLLIN) && ps.readable) rev |= POLLIN;
+              if ((events & POLLOUT) && ps.writable) rev |= POLLOUT;
+              if (ps.hangup) rev |= POLLHUP;
+              return rev;
+            } catch {
+              return POLLNVAL;
+            }
+          };
+
+          // Recompute readiness after each wait cycle.
+          const refreshReadiness = () => {
+            ready = 0;
+            revents.length = 0;
+            for (const entry of fds) {
+              const rev = checkFd(entry.fd, entry.events);
               revents.push(rev);
-              continue;
+              if (rev !== 0) ready++;
             }
+          };
 
-            // Not a socket — check kernel for pipe/file FDs
-            if (kernel) {
-              try {
-                const ps = kernel.fdPoll(pid, entry.fd);
-                if (ps.invalid) {
-                  revents.push(POLLNVAL);
-                  ready++;
-                  continue;
-                }
-                let rev = 0;
-                if ((entry.events & POLLIN) && ps.readable) rev |= POLLIN;
-                if ((entry.events & POLLOUT) && ps.writable) rev |= POLLOUT;
-                if (ps.hangup) rev |= POLLHUP;
-                if (rev !== 0) ready++;
-                revents.push(rev);
-                continue;
-              } catch {
-                // Fall through to POLLNVAL
-              }
-            }
+          // Wait for any polled FD to change state, then re-check them all.
+          const waitForFdActivity = async (waitMs: number) => {
+            await new Promise<void>((resolve) => {
+              let settled = false;
+              const cleanups: Array<() => void> = [];
 
-            revents.push(POLLNVAL);
-            ready++;
-          }
-
-          // If no FDs ready and timeout != 0, wait for data on any socket
-          if (ready === 0 && timeout !== 0) {
-            const waitMs = timeout < 0 ? 30000 : timeout; // Cap indefinite waits
-            const waitResult = await new Promise<{ index: number; event: string }>((resolve) => {
-              const timer = setTimeout(() => {
-                cleanup();
-                resolve({ index: -1, event: 'timeout' });
-              }, waitMs);
-              const cleanups: (() => void)[] = [];
-
-              const cleanup = () => {
-                clearTimeout(timer);
-                for (const fn of cleanups) fn();
+              const finish = () => {
+                if (settled) return;
+                settled = true;
+                for (const cleanup of cleanups) cleanup();
+                resolve();
               };
 
-              for (let i = 0; i < fds.length; i++) {
-                const sock = this._sockets.get(fds[i].fd);
-                if (!sock) continue;
+              const timer = setTimeout(finish, waitMs);
+              cleanups.push(() => clearTimeout(timer));
 
-                if (fds[i].events & POLLIN) {
-                  const onData = () => { cleanup(); resolve({ index: i, event: 'data' }); };
-                  const onEnd = () => { cleanup(); resolve({ index: i, event: 'end' }); };
-                  sock.once('readable', onData);
-                  sock.once('end', onEnd);
-                  cleanups.push(() => {
-                    sock.removeListener('readable', onData);
-                    sock.removeListener('end', onEnd);
-                  });
+              for (const entry of fds) {
+                const tlsSockWait = this._tlsSockets.get(entry.fd);
+                if (tlsSockWait) {
+                  if (entry.events & POLLIN) {
+                    const onReadable = () => finish();
+                    const onEnd = () => finish();
+                    tlsSockWait.once('readable', onReadable);
+                    tlsSockWait.once('end', onEnd);
+                    cleanups.push(() => {
+                      tlsSockWait.removeListener('readable', onReadable);
+                      tlsSockWait.removeListener('end', onEnd);
+                    });
+                  }
+                  continue;
                 }
+
+                const ksock = kernel.socketTable.get(entry.fd);
+                if (ksock) {
+                  if (entry.events & POLLIN) {
+                    const waitQueue = ksock.state === 'listening'
+                      ? ksock.acceptWaiters
+                      : ksock.readWaiters;
+                    const handle = waitQueue.enqueue();
+                    void handle.wait().then(finish);
+                    cleanups.push(() => waitQueue.remove(handle));
+                  }
+                  continue;
+                }
+
+                if (!pollKernel.fdPollWait) {
+                  continue;
+                }
+                if ((entry.events & (POLLIN | POLLOUT)) === 0) {
+                  continue;
+                }
+                void pollKernel.fdPollWait(pid, entry.fd, waitMs).then(finish).catch(() => {});
               }
             });
+          };
 
-            // Re-check all FDs after wait (same logic as initial check)
-            if (waitResult.event !== 'timeout') {
-              ready = 0;
-              for (let i = 0; i < fds.length; i++) {
-                const sock = this._sockets.get(fds[i].fd);
-                if (sock) {
-                  let rev = 0;
-                  if ((fds[i].events & POLLIN) && sock.readableLength > 0) rev |= POLLIN;
-                  if ((fds[i].events & POLLOUT) && sock.writable) rev |= POLLOUT;
-                  if (sock.destroyed) rev |= POLLHUP;
-                  revents[i] = rev;
-                  if (rev !== 0) ready++;
-                } else if (kernel) {
-                  try {
-                    const ps = kernel.fdPoll(pid, fds[i].fd);
-                    if (ps.invalid) { revents[i] = POLLNVAL; ready++; continue; }
-                    let rev = 0;
-                    if ((fds[i].events & POLLIN) && ps.readable) rev |= POLLIN;
-                    if ((fds[i].events & POLLOUT) && ps.writable) rev |= POLLOUT;
-                    if (ps.hangup) rev |= POLLHUP;
-                    revents[i] = rev;
-                    if (rev !== 0) ready++;
-                  } catch {
-                    revents[i] = POLLNVAL;
-                    ready++;
-                  }
-                } else {
-                  revents[i] = POLLNVAL;
-                  ready++;
-                }
+          refreshReadiness();
+
+          if (ready === 0 && timeout !== 0) {
+            const deadline = timeout > 0 ? Date.now() + timeout : null;
+
+            while (ready === 0) {
+              const waitMs = timeout < 0
+                ? RPC_WAIT_TIMEOUT_MS
+                : Math.max(0, deadline! - Date.now());
+              if (waitMs === 0) {
+                break;
+              }
+
+              await waitForFdActivity(waitMs);
+              refreshReadiness();
+
+              if (timeout > 0 && Date.now() >= deadline!) {
+                break;
               }
             }
           }
@@ -1171,15 +1391,136 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
           intResult = ready;
           break;
         }
-        case 'netClose': {
+        case 'netBind': {
           const socketId = msg.args.fd as number;
-          const sock = this._sockets.get(socketId);
-          if (!sock) {
-            errno = ERRNO_MAP.EBADF;
+          const socket = kernel.socketTable.get(socketId);
+          const addr = msg.args.addr as string;
+
+          // Parse "host:port" or unix path
+          const lastColon = addr.lastIndexOf(':');
+          if (lastColon === -1) {
+            if (socket && socket.domain !== AF_UNIX) {
+              errno = ERRNO_MAP.EINVAL;
+              break;
+            }
+            // Unix domain socket path
+            await kernel.socketTable.bind(socketId, { path: addr });
+          } else {
+            const host = addr.slice(0, lastColon);
+            const port = parseInt(addr.slice(lastColon + 1), 10);
+            if (isNaN(port)) {
+              errno = ERRNO_MAP.EINVAL;
+              break;
+            }
+            await kernel.socketTable.bind(socketId, { host, port });
+          }
+          break;
+        }
+        case 'netListen': {
+          const socketId = msg.args.fd as number;
+          const backlog = msg.args.backlog as number;
+          await kernel.socketTable.listen(socketId, backlog);
+          break;
+        }
+        case 'netAccept': {
+          const socketId = msg.args.fd as number;
+
+          // accept() returns null if no pending connection — wait for one
+          let newSockId = kernel.socketTable.accept(socketId);
+          if (newSockId === null) {
+            const listenerSock = kernel.socketTable.get(socketId);
+            if (listenerSock) {
+              await listenerSock.acceptWaiters.enqueue(30000).wait();
+              newSockId = kernel.socketTable.accept(socketId);
+            }
+          }
+          if (newSockId === null) {
+            errno = ERRNO_MAP.EAGAIN;
             break;
           }
-          sock.destroy();
-          this._sockets.delete(socketId);
+
+          intResult = newSockId;
+
+          // Return the remote address of the accepted socket
+          const acceptedSock = kernel.socketTable.get(newSockId);
+          let addrStr = '';
+          if (acceptedSock?.remoteAddr) {
+            addrStr = serializeSockAddr(acceptedSock.remoteAddr);
+          }
+          const addrBytes = new TextEncoder().encode(addrStr);
+          if (addrBytes.length <= DATA_BUFFER_BYTES) {
+            data.set(addrBytes, 0);
+            responseData = addrBytes;
+          }
+          break;
+        }
+        case 'netSendTo': {
+          const socketId = msg.args.fd as number;
+          const sendData = new Uint8Array(msg.args.data as number[]);
+          const flags = msg.args.flags as number ?? 0;
+          const addr = msg.args.addr as string;
+
+          // Parse "host:port" destination address
+          const lastColon = addr.lastIndexOf(':');
+          if (lastColon === -1) {
+            errno = ERRNO_MAP.EINVAL;
+            break;
+          }
+          const host = addr.slice(0, lastColon);
+          const port = parseInt(addr.slice(lastColon + 1), 10);
+          if (isNaN(port)) {
+            errno = ERRNO_MAP.EINVAL;
+            break;
+          }
+
+          intResult = kernel.socketTable.sendTo(socketId, sendData, flags, { host, port });
+          break;
+        }
+        case 'netRecvFrom': {
+          const socketId = msg.args.fd as number;
+          const maxLen = msg.args.length as number;
+          const flags = msg.args.flags as number ?? 0;
+
+          // recvFrom may return null if no datagram queued — wait for one
+          let result = kernel.socketTable.recvFrom(socketId, maxLen, flags);
+          if (result === null) {
+            const sock = kernel.socketTable.get(socketId);
+            if (sock) {
+              await sock.readWaiters.enqueue(30000).wait();
+              result = kernel.socketTable.recvFrom(socketId, maxLen, flags);
+            }
+          }
+          if (result === null) {
+            errno = ERRNO_MAP.EAGAIN;
+            break;
+          }
+
+          // Pack [data | addr] into combined buffer, intResult = data length
+          const addrStr = serializeSockAddr(result.srcAddr);
+          const addrBytes = new TextEncoder().encode(addrStr);
+          const combined = new Uint8Array(result.data.length + addrBytes.length);
+          combined.set(result.data, 0);
+          combined.set(addrBytes, result.data.length);
+          if (combined.length > DATA_BUFFER_BYTES) {
+            errno = ERRNO_EIO;
+            break;
+          }
+          data.set(combined, 0);
+          responseData = combined;
+          intResult = result.data.length;
+          break;
+        }
+        case 'netClose': {
+          const socketId = msg.args.fd as number;
+
+          // Clean up TLS socket if upgraded
+          const tlsCleanup = this._tlsSockets.get(socketId);
+          if (tlsCleanup) {
+            tlsCleanup.destroy();
+            this._tlsSockets.delete(socketId);
+          }
+
+          kernel.socketTable.close(socketId, pid);
           break;
         }
 
@@ -1196,11 +1537,16 @@ class WasmVmRuntimeDriver implements RuntimeDriver {
       responseData = null;
     }
 
+    // Piggyback pending signal for cooperative delivery to WASM trampoline
+    const pendingQueue = this._wasmPendingSignals.get(pid);
+    const pendingSig = pendingQueue?.length ? pendingQueue.shift()! : 0;
+
     // Write response to signal buffer — always set DATA_LEN so workers
     // never read stale lengths from previous calls (e.g. 0-byte EOF reads)
     Atomics.store(signal, SIG_IDX_DATA_LEN, responseData ? responseData.length : 0);
     Atomics.store(signal, SIG_IDX_ERRNO, errno);
     Atomics.store(signal, SIG_IDX_INT_RESULT, intResult);
+    Atomics.store(signal, SIG_IDX_PENDING_SIGNAL, pendingSig);
     Atomics.store(signal, SIG_IDX_STATE, SIG_STATE_READY);
     Atomics.notify(signal, SIG_IDX_STATE);
   }
@@ -1221,3 +1567,4 @@ export function mapErrorToErrno(err: unknown): number {
   }
   return ERRNO_EIO;
 }
+type KernelSockAddr = { host: string; port: number } | { path: string };

@@ -41,7 +41,14 @@ export type {
 // Kernel components.
 export { FDTableManager, ProcessFDTable } from "./kernel/fd-table.js";
 export { ProcessTable } from "./kernel/process-table.js";
+export { TimerTable } from "./kernel/timer-table.js";
+export type { KernelTimer, TimerTableOptions } from "./kernel/timer-table.js";
 export { createDeviceLayer } from "./kernel/device-layer.js";
+export {
+	createProcLayer,
+	createProcessScopedFileSystem,
+	resolveProcSelfPath,
+} from "./kernel/proc-layer.js";
 export { PipeManager } from "./kernel/pipe-manager.js";
 export { PtyManager } from "./kernel/pty.js";
 export type { LineDisciplineConfig } from "./kernel/pty.js";
@@ -49,6 +56,22 @@ export { CommandRegistry } from "./kernel/command-registry.js";
 export { FileLockManager, LOCK_SH, LOCK_EX, LOCK_UN, LOCK_NB } from "./kernel/file-lock.js";
 export { UserManager } from "./kernel/user.js";
 export type { UserConfig } from "./kernel/user.js";
+
+// Socket table (kernel TCP/UDP/Unix socket management).
+export { SocketTable } from "./kernel/socket-table.js";
+export {
+	AF_INET, AF_INET6, AF_UNIX,
+	SOCK_STREAM, SOCK_DGRAM,
+} from "./kernel/socket-table.js";
+
+// Host adapter interfaces (kernel network delegation).
+export type {
+	HostNetworkAdapter,
+	HostSocket,
+	HostListener,
+	HostUdpSocket,
+	DnsResult,
+} from "./kernel/host-adapter.js";
 
 // Kernel permission helpers (kernel-level, different from SDK-level shared/permissions).
 export { checkChildProcess } from "./kernel/permissions.js";

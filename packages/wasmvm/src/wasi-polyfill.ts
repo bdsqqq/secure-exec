@@ -242,6 +242,7 @@ export class WasiPolyfill {
   private _stdinReader: StdinReader | null;
   private _stdoutWriter: StdoutWriter | null;
   private _stderrWriter: StdoutWriter | null;
+  private _sleepHook: (() => void) | null;
   private _stdoutChunks: Uint8Array[];
   private _stderrChunks: Uint8Array[];
   private _preopens: Map<number, string>;
@@ -268,6 +269,7 @@ export class WasiPolyfill {
     this._stdinReader = null;
     this._stdoutWriter = null;
     this._stderrWriter = null;
+    this._sleepHook = null;
 
     // Collected output
     this._stdoutChunks = [];
@@ -322,6 +324,11 @@ export class WasiPolyfill {
    */
   setStderrWriter(writer: StdoutWriter): void {
     this._stderrWriter = writer;
+  }
+
+  /** Set a hook to run while clock sleeps block in poll_oneoff. */
+  setSleepHook(hook: (() => void) | null): void {
+    this._sleepHook = hook;
   }
 
   /** Append raw data to the stdout collection (used by inline child execution). */
@@ -1322,7 +1329,13 @@ export class WasiPolyfill {
 
         if (sleepMs > 0) {
           const buf = new Int32Array(new SharedArrayBuffer(4));
-          Atomics.wait(buf, 0, 0, sleepMs);
+          let remainingMs = sleepMs;
+          while (remainingMs > 0) {
+            const sliceMs = Math.min(remainingMs, 10);
+            Atomics.wait(buf, 0, 0, sliceMs);
+            remainingMs -= sliceMs;
+            this._sleepHook?.();
+          }
         }
       } else if (eventType === EVENTTYPE_FD_READ || eventType === EVENTTYPE_FD_WRITE) {
         // FD subscriptions -- report ready immediately

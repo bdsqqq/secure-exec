@@ -149,7 +149,12 @@ export interface PipeResource {
   end: 'read' | 'write';
 }
 
-export type FDResource = StdioResource | VfsFileResource | PreopenResource | PipeResource;
+export interface SocketResource {
+  type: 'socket';
+  kernelId: number;
+}
+
+export type FDResource = StdioResource | VfsFileResource | PreopenResource | PipeResource | SocketResource;
 
 // ---------------------------------------------------------------------------
 // FD table types

@@ -655,6 +655,8 @@ describe.skipIf(skipReason())('C parity: native vs WASM', { timeout: 30_000 }, (
       'pipe', 'dup', 'dup2', 'getpid', 'getppid', 'spawn_waitpid', 'kill',
       // host_user
       'getuid', 'getgid', 'geteuid', 'getegid', 'isatty_stdin', 'getpwuid',
+      // host_net
+      'getsockname', 'getpeername',
     ];
     for (const name of expectedSyscalls) {
       expect(wasm.stdout).toContain(`${name}: ok`);

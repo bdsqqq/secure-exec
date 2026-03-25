@@ -35,6 +35,7 @@ import {
   SIG_IDX_ERRNO,
   SIG_IDX_INT_RESULT,
   SIG_IDX_DATA_LEN,
+  SIG_IDX_PENDING_SIGNAL,
   SIG_STATE_IDLE,
   SIG_STATE_READY,
   RPC_WAIT_TIMEOUT_MS,
@@ -121,6 +122,9 @@ function isPathInCwd(path: string): boolean {
 const signalArr = new Int32Array(init.signalBuf);
 const dataArr = new Uint8Array(init.dataBuf);
 
+// Module-level reference for cooperative signal delivery — set after WASM instantiation
+let wasmTrampoline: ((signum: number) => void) | null = null;
+
 function rpcCall(call: string, args: Record<string, unknown>): {
   errno: number;
   intResult: number;
@@ -134,8 +138,18 @@ function rpcCall(call: string, args: Record<string, unknown>): {
   port.postMessage(msg);
 
   // Block until response
-  const result = Atomics.wait(signalArr, SIG_IDX_STATE, SIG_STATE_IDLE, RPC_WAIT_TIMEOUT_MS);
-  if (result === 'timed-out') {
+  while (true) {
+    const result = Atomics.wait(signalArr, SIG_IDX_STATE, SIG_STATE_IDLE, RPC_WAIT_TIMEOUT_MS);
+    if (result !== 'timed-out') {
+      break;
+    }
+
+    // poll(-1) can legally block forever, so keep waiting instead of turning
+    // the worker RPC guard timeout into a spurious EIO.
+    if (call === 'netPoll' && typeof args.timeout === 'number' && args.timeout < 0) {
+      continue;
+    }
+
     return { errno: 76 /* EIO */, intResult: 0, data: new Uint8Array(0) };
   }
 
@@ -144,6 +158,12 @@ function rpcCall(call: string, args: Record<string, unknown>): {
   const intResult = Atomics.load(signalArr, SIG_IDX_INT_RESULT);
   const dataLen = Atomics.load(signalArr, SIG_IDX_DATA_LEN);
   const data = dataLen > 0 ? dataArr.slice(0, dataLen) : new Uint8Array(0);
+
+  // Cooperative signal delivery — check piggybacked pending signal from driver
+  const pendingSig = Atomics.load(signalArr, SIG_IDX_PENDING_SIGNAL);
+  if (pendingSig !== 0 && wasmTrampoline) {
+    wasmTrampoline(pendingSig);
+  }
 
   // Reset for next call
   Atomics.store(signalArr, SIG_IDX_STATE, SIG_STATE_IDLE);
@@ -158,6 +178,11 @@ function rpcCall(call: string, args: Record<string, unknown>): {
 // Local FD → kernel FD mapping: the local FD table has a preopen at FD 3
 // that the kernel doesn't know about, so opened-file FDs diverge.
 const localToKernelFd = new Map<number, number>();
+
+/** Translate a worker-local FD to the kernel FD/socket ID it represents. */
+function getKernelFd(localFd: number): number {
+  return localToKernelFd.get(localFd) ?? localFd;
+}
 
 // Mapping-aware FDTable: updates localToKernelFd on renumber so pipe/redirect
 // FDs remain reachable after WASI fd_renumber moves them to stdio positions.
@@ -195,14 +220,9 @@ const fdTable = new KernelFDTable();
 // -------------------------------------------------------------------------
 
 function createKernelFileIO(): WasiFileIO {
-  /** Translate local FD to kernel FD (falls back to identity for stdio FDs 0-2). */
-  function kernelFd(localFd: number): number {
-    return localToKernelFd.get(localFd) ?? localFd;
-  }
-
   return {
     fdRead(fd, maxBytes) {
-      const res = rpcCall('fdRead', { fd: kernelFd(fd), length: maxBytes });
+      const res = rpcCall('fdRead', { fd: getKernelFd(fd), length: maxBytes });
       // Sync local cursor so fd_tell returns consistent values
       if (res.errno === 0 && res.data.length > 0) {
         const entry = fdTable.get(fd);
@@ -215,7 +235,7 @@ function createKernelFileIO(): WasiFileIO {
       if (isWriteBlocked() && fd !== 1 && fd !== 2) {
         return { errno: ERRNO_EACCES, written: 0 };
       }
-      const res = rpcCall('fdWrite', { fd: kernelFd(fd), data: Array.from(data) });
+      const res = rpcCall('fdWrite', { fd: getKernelFd(fd), data: Array.from(data) });
       // Sync local cursor so fd_tell returns consistent values
       if (res.errno === 0 && res.intResult > 0) {
         const entry = fdTable.get(fd);
@@ -288,18 +308,21 @@ function createKernelFileIO(): WasiFileIO {
       return { errno: 0, fd: localFd, filetype: FILETYPE_REGULAR_FILE };
     },
     fdSeek(fd, offset, whence) {
-      const res = rpcCall('fdSeek', { fd: kernelFd(fd), offset: offset.toString(), whence });
+      const res = rpcCall('fdSeek', { fd: getKernelFd(fd), offset: offset.toString(), whence });
       return { errno: res.errno, newOffset: BigInt(res.intResult) };
     },
     fdClose(fd) {
-      const kFd = kernelFd(fd);
+      const entry = fdTable.get(fd);
+      const kFd = getKernelFd(fd);
       fdTable.close(fd);
       localToKernelFd.delete(fd);
-      const res = rpcCall('fdClose', { fd: kFd });
+      const res = entry?.resource.type === 'socket'
+        ? rpcCall('netClose', { fd: kFd })
+        : rpcCall('fdClose', { fd: kFd });
       return res.errno;
     },
     fdPread(fd, maxBytes, offset) {
-      const res = rpcCall('fdPread', { fd: kernelFd(fd), length: maxBytes, offset: offset.toString() });
+      const res = rpcCall('fdPread', { fd: getKernelFd(fd), length: maxBytes, offset: offset.toString() });
       return { errno: res.errno, data: res.data };
     },
     fdPwrite(fd, data, offset) {
@@ -307,7 +330,7 @@ function createKernelFileIO(): WasiFileIO {
       if (isWriteBlocked() && fd !== 1 && fd !== 2) {
         return { errno: ERRNO_EACCES, written: 0 };
       }
-      const res = rpcCall('fdPwrite', { fd: kernelFd(fd), data: Array.from(data), offset: offset.toString() });
+      const res = rpcCall('fdPwrite', { fd: getKernelFd(fd), data: Array.from(data), offset: offset.toString() });
       return { errno: res.errno, written: res.intResult };
     },
   };
@@ -835,15 +858,34 @@ function createHostProcessImports(getMemory: () => WebAssembly.Memory | null) {
       view.setUint32(ret_slave_fd_ptr, localSlaveFd, true);
       return ERRNO_SUCCESS;
     },
+
+    /**
+     * proc_sigaction(signal, action) -> errno
+     * Register signal disposition: 0=SIG_DFL, 1=SIG_IGN, 2=user handler.
+     * For action=2, the C sysroot holds the function pointer; the kernel
+     * only needs to know the signal should be caught (cooperative delivery).
+     */
+    proc_sigaction(signal: number, action: number): number {
+      if (signal < 1 || signal > 64) return ERRNO_EINVAL;
+      const res = rpcCall('sigaction', { signal, action });
+      return res.errno;
+    },
   };
 }
 
 // -------------------------------------------------------------------------
-// Host net imports — TCP socket operations (skeleton, returns ENOSYS)
+// Host net imports — TCP socket operations routed through the kernel
 // -------------------------------------------------------------------------
 
 function createHostNetImports(getMemory: () => WebAssembly.Memory | null) {
-  const ENOSYS = 52; // WASI ENOSYS
+  function openLocalSocketFd(kernelSocketId: number): number {
+    const localFd = fdTable.open(
+      { type: 'socket', kernelId: kernelSocketId },
+      { filetype: FILETYPE_CHARACTER_DEVICE },
+    );
+    localToKernelFd.set(localFd, kernelSocketId);
+    return localFd;
+  }
 
   return {
     /** net_socket(domain, type, protocol, ret_fd) -> errno */
@@ -855,7 +897,8 @@ function createHostNetImports(getMemory: () => WebAssembly.Memory | null) {
       const res = rpcCall('netSocket', { domain, type, protocol });
       if (res.errno !== 0) return res.errno;
 
-      new DataView(mem.buffer).setUint32(ret_fd_ptr, res.intResult, true);
+      const localFd = openLocalSocketFd(res.intResult);
+      new DataView(mem.buffer).setUint32(ret_fd_ptr, localFd, true);
       return ERRNO_SUCCESS;
     },
 
@@ -868,7 +911,7 @@ function createHostNetImports(getMemory: () => WebAssembly.Memory | null) {
       const addrBytes = new Uint8Array(mem.buffer, addr_ptr, addr_len);
       const addr = new TextDecoder().decode(addrBytes);
 
-      const res = rpcCall('netConnect', { fd, addr });
+      const res = rpcCall('netConnect', { fd: getKernelFd(fd), addr });
       return res.errno;
     },
 
@@ -879,7 +922,7 @@ function createHostNetImports(getMemory: () => WebAssembly.Memory | null) {
       if (!mem) return ERRNO_EINVAL;
 
       const sendData = new Uint8Array(mem.buffer).slice(buf_ptr, buf_ptr + buf_len);
-      const res = rpcCall('netSend', { fd, data: Array.from(sendData), flags });
+      const res = rpcCall('netSend', { fd: getKernelFd(fd), data: Array.from(sendData), flags });
       if (res.errno !== 0) return res.errno;
 
       new DataView(mem.buffer).setUint32(ret_sent_ptr, res.intResult, true);
@@ -892,7 +935,7 @@ function createHostNetImports(getMemory: () => WebAssembly.Memory | null) {
       const mem = getMemory();
       if (!mem) return ERRNO_EINVAL;
 
-      const res = rpcCall('netRecv', { fd, length: buf_len, flags });
+      const res = rpcCall('netRecv', { fd: getKernelFd(fd), length: buf_len, flags });
       if (res.errno !== 0) return res.errno;
 
       // Copy received data into WASM memory
@@ -905,7 +948,10 @@ function createHostNetImports(getMemory: () => WebAssembly.Memory | null) {
     /** net_close(fd) -> errno */
     net_close(fd: number): number {
       if (isNetworkBlocked()) return ERRNO_EACCES;
-      const res = rpcCall('netClose', { fd });
+      const res = rpcCall('netClose', { fd: getKernelFd(fd) });
+      if (res.errno === 0) {
+        localToKernelFd.delete(fd);
+      }
       return res.errno;
     },
 
@@ -920,7 +966,7 @@ function createHostNetImports(getMemory: () => WebAssembly.Memory | null) {
       const hostname = new TextDecoder().decode(hostnameBytes);
       const verifyPeer = (flags ?? 0) === 0;
 
-      const res = rpcCall('netTlsConnect', { fd, hostname, verifyPeer });
+      const res = rpcCall('netTlsConnect', { fd: getKernelFd(fd), hostname, verifyPeer });
       return res.errno;
     },
 
@@ -954,8 +1000,166 @@ function createHostNetImports(getMemory: () => WebAssembly.Memory | null) {
     },
 
     /** net_setsockopt(fd, level, optname, optval_ptr, optval_len) -> errno */
-    net_setsockopt(_fd: number, _level: number, _optname: number, _optval_ptr: number, _optval_len: number): number {
-      return ENOSYS;
+    net_setsockopt(fd: number, level: number, optname: number, optval_ptr: number, optval_len: number): number {
+      if (isNetworkBlocked()) return ERRNO_EACCES;
+      const mem = getMemory();
+      if (!mem) return ERRNO_EINVAL;
+
+      const optval = new Uint8Array(mem.buffer).slice(optval_ptr, optval_ptr + optval_len);
+      const res = rpcCall('netSetsockopt', {
+        fd: getKernelFd(fd),
+        level,
+        optname,
+        optval: Array.from(optval),
+      });
+      return res.errno;
+    },
+
+    /** net_getsockopt(fd, level, optname, optval_ptr, optval_len_ptr) -> errno */
+    net_getsockopt(fd: number, level: number, optname: number, optval_ptr: number, optval_len_ptr: number): number {
+      if (isNetworkBlocked()) return ERRNO_EACCES;
+      const mem = getMemory();
+      if (!mem) return ERRNO_EINVAL;
+
+      const view = new DataView(mem.buffer);
+      const optvalLen = view.getUint32(optval_len_ptr, true);
+      const res = rpcCall('netGetsockopt', {
+        fd: getKernelFd(fd),
+        level,
+        optname,
+        optvalLen,
+      });
+      if (res.errno !== 0) return res.errno;
+      if (res.data.length > optvalLen) return ERRNO_EINVAL;
+
+      const wasmBuf = new Uint8Array(mem.buffer);
+      wasmBuf.set(res.data, optval_ptr);
+      view.setUint32(optval_len_ptr, res.data.length, true);
+      return ERRNO_SUCCESS;
+    },
+
+    /** net_getsockname(fd, ret_addr, ret_addr_len) -> errno */
+    net_getsockname(fd: number, ret_addr_ptr: number, ret_addr_len_ptr: number): number {
+      if (isNetworkBlocked()) return ERRNO_EACCES;
+      const mem = getMemory();
+      if (!mem) return ERRNO_EINVAL;
+
+      const view = new DataView(mem.buffer);
+      const maxAddrLen = view.getUint32(ret_addr_len_ptr, true);
+      const res = rpcCall('kernelSocketGetLocalAddr', { fd: getKernelFd(fd) });
+      if (res.errno !== 0) return res.errno;
+      if (res.data.length > maxAddrLen) return ERRNO_EINVAL;
+
+      const wasmBuf = new Uint8Array(mem.buffer);
+      wasmBuf.set(res.data, ret_addr_ptr);
+      view.setUint32(ret_addr_len_ptr, res.data.length, true);
+      return ERRNO_SUCCESS;
+    },
+
+    /** net_getpeername(fd, ret_addr, ret_addr_len) -> errno */
+    net_getpeername(fd: number, ret_addr_ptr: number, ret_addr_len_ptr: number): number {
+      if (isNetworkBlocked()) return ERRNO_EACCES;
+      const mem = getMemory();
+      if (!mem) return ERRNO_EINVAL;
+
+      const view = new DataView(mem.buffer);
+      const maxAddrLen = view.getUint32(ret_addr_len_ptr, true);
+      const res = rpcCall('kernelSocketGetRemoteAddr', { fd: getKernelFd(fd) });
+      if (res.errno !== 0) return res.errno;
+      if (res.data.length > maxAddrLen) return ERRNO_EINVAL;
+
+      const wasmBuf = new Uint8Array(mem.buffer);
+      wasmBuf.set(res.data, ret_addr_ptr);
+      view.setUint32(ret_addr_len_ptr, res.data.length, true);
+      return ERRNO_SUCCESS;
+    },
+
+    /** net_bind(fd, addr_ptr, addr_len) -> errno */
+    net_bind(fd: number, addr_ptr: number, addr_len: number): number {
+      if (isNetworkBlocked()) return ERRNO_EACCES;
+      const mem = getMemory();
+      if (!mem) return ERRNO_EINVAL;
+
+      const addrBytes = new Uint8Array(mem.buffer, addr_ptr, addr_len);
+      const addr = new TextDecoder().decode(addrBytes);
+
+      const res = rpcCall('netBind', { fd: getKernelFd(fd), addr });
+      return res.errno;
+    },
+
+    /** net_listen(fd, backlog) -> errno */
+    net_listen(fd: number, backlog: number): number {
+      if (isNetworkBlocked()) return ERRNO_EACCES;
+
+      const res = rpcCall('netListen', { fd: getKernelFd(fd), backlog });
+      return res.errno;
+    },
+
+    /** net_accept(fd, ret_fd, ret_addr, ret_addr_len) -> errno */
+    net_accept(fd: number, ret_fd_ptr: number, ret_addr_ptr: number, ret_addr_len_ptr: number): number {
+      if (isNetworkBlocked()) return ERRNO_EACCES;
+      const mem = getMemory();
+      if (!mem) return ERRNO_EINVAL;
+
+      const res = rpcCall('netAccept', { fd: getKernelFd(fd) });
+      if (res.errno !== 0) return res.errno;
+
+      const view = new DataView(mem.buffer);
+      const newFd = openLocalSocketFd(res.intResult);
+      view.setUint32(ret_fd_ptr, newFd, true);
+
+      // res.data contains the remote address string as UTF-8 bytes
+      const maxAddrLen = view.getUint32(ret_addr_len_ptr, true);
+      const addrLen = Math.min(res.data.length, maxAddrLen);
+      const wasmBuf = new Uint8Array(mem.buffer);
+      wasmBuf.set(res.data.subarray(0, addrLen), ret_addr_ptr);
+      view.setUint32(ret_addr_len_ptr, addrLen, true);
+
+      return ERRNO_SUCCESS;
+    },
+
+    /** net_sendto(fd, buf_ptr, buf_len, flags, addr_ptr, addr_len, ret_sent) -> errno */
+    net_sendto(fd: number, buf_ptr: number, buf_len: number, flags: number, addr_ptr: number, addr_len: number, ret_sent_ptr: number): number {
+      if (isNetworkBlocked()) return ERRNO_EACCES;
+      const mem = getMemory();
+      if (!mem) return ERRNO_EINVAL;
+
+      const sendData = new Uint8Array(mem.buffer).slice(buf_ptr, buf_ptr + buf_len);
+      const addrBytes = new Uint8Array(mem.buffer, addr_ptr, addr_len);
+      const addr = new TextDecoder().decode(addrBytes);
+
+      const res = rpcCall('netSendTo', { fd: getKernelFd(fd), data: Array.from(sendData), flags, addr });
+      if (res.errno !== 0) return res.errno;
+
+      new DataView(mem.buffer).setUint32(ret_sent_ptr, res.intResult, true);
+      return ERRNO_SUCCESS;
+    },
+
+    /** net_recvfrom(fd, buf_ptr, buf_len, flags, ret_received, ret_addr, ret_addr_len) -> errno */
+    net_recvfrom(fd: number, buf_ptr: number, buf_len: number, flags: number, ret_received_ptr: number, ret_addr_ptr: number, ret_addr_len_ptr: number): number {
+      if (isNetworkBlocked()) return ERRNO_EACCES;
+      const mem = getMemory();
+      if (!mem) return ERRNO_EINVAL;
+
+      const res = rpcCall('netRecvFrom', { fd: getKernelFd(fd), length: buf_len, flags });
+      if (res.errno !== 0) return res.errno;
+
+      // intResult = received data length; data buffer = [data | addr bytes]
+      const dataLen = res.intResult;
+      const dest = new Uint8Array(mem.buffer, buf_ptr, buf_len);
+      dest.set(res.data.subarray(0, Math.min(dataLen, buf_len)));
+      new DataView(mem.buffer).setUint32(ret_received_ptr, dataLen, true);
+
+      // Source address bytes follow data in the buffer
+      const view = new DataView(mem.buffer);
+      const maxAddrLen = view.getUint32(ret_addr_len_ptr, true);
+      const addrBytes = res.data.subarray(dataLen);
+      const addrLen = Math.min(addrBytes.length, maxAddrLen);
+      const wasmBuf = new Uint8Array(mem.buffer);
+      wasmBuf.set(addrBytes.subarray(0, addrLen), ret_addr_ptr);
+      view.setUint32(ret_addr_len_ptr, addrLen, true);
+
+      return ERRNO_SUCCESS;
     },
 
     /** net_poll(fds_ptr, nfds, timeout_ms, ret_ready) -> errno */
@@ -972,7 +1176,7 @@ function createHostNetImports(getMemory: () => WebAssembly.Memory | null) {
         const base = fds_ptr + i * 8;
         const localFd = view.getInt32(base, true);
         const events = view.getInt16(base + 4, true);
-        fds.push({ fd: localToKernelFd.get(localFd) ?? localFd, events });
+        fds.push({ fd: getKernelFd(localFd), events });
       }
 
       const res = rpcCall('netPoll', { fds, timeout: timeout_ms });
@@ -1059,6 +1263,11 @@ async function main(): Promise<void> {
     ttyFds: init.ttyFds ? new Set(init.ttyFds) : false,
   });
 
+  // Check for pending signals while poll_oneoff sleeps inside the WASI polyfill.
+  polyfill.setSleepHook(() => {
+    rpcCall('getpid', { pid: init.pid });
+  });
+
   const hostProcess = createHostProcessImports(getMemory);
   const hostNet = createHostNetImports(getMemory);
 
@@ -1077,6 +1286,10 @@ async function main(): Promise<void> {
     const instance = await WebAssembly.instantiate(wasmModule, imports);
     wasmMemory = instance.exports.memory as WebAssembly.Memory;
     polyfill.setMemory(wasmMemory);
+
+    // Wire cooperative signal delivery trampoline (if the WASM binary exports it)
+    const trampoline = instance.exports.__wasi_signal_trampoline as ((signum: number) => void) | undefined;
+    if (trampoline) wasmTrampoline = trampoline;
 
     // Run the command
     const start = instance.exports._start as () => void;

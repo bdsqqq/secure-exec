@@ -66,7 +66,7 @@ COMMANDS_DIR ?= ../target/wasm32-wasip1/release/commands
 COMMANDS := zip unzip envsubst sqlite3 curl wget
 
 # Programs requiring patched sysroot (Tier 2+ custom host imports)
-PATCHED_PROGRAMS := isatty_test getpid_test getppid_test getppid_verify userinfo pipe_test dup_test spawn_child spawn_exit_code pipeline kill_child waitpid_return waitpid_edge syscall_coverage getpwuid_test signal_tests pipe_edge tcp_echo http_get dns_lookup sqlite3_cli curl_test curl_cli wget
+PATCHED_PROGRAMS := isatty_test getpid_test getppid_test getppid_verify userinfo pipe_test dup_test spawn_child spawn_exit_code pipeline kill_child waitpid_return waitpid_edge syscall_coverage getpwuid_test signal_tests pipe_edge tcp_echo tcp_server udp_echo unix_socket signal_handler http_get dns_lookup sqlite3_cli curl_test curl_cli wget
 
 # Discover all .c source files in programs/
 ALL_SOURCES := $(wildcard programs/*.c)
@@ -117,11 +117,11 @@ $(WASI_SDK_DIR)/bin/clang:
 # All downloads cached in libs/ — add libs/ to .gitignore.
 
 SQLITE3_URL := https://www.sqlite.org/2024/sqlite-amalgamation-3470200.zip
-ZLIB_URL    := https://github.com/nicehash/zlib/archive/refs/tags/v1.3.1.zip
+ZLIB_URL    := https://github.com/madler/zlib/archive/refs/tags/v1.3.1.zip
 CJSON_URL   := https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.18.zip
 CURL_COMMIT := main
 CURL_URL    := https://github.com/rivet-dev/secure-exec-curl/archive/refs/heads/$(CURL_COMMIT).zip
-MINIZIP_URL := https://github.com/nicehash/zlib/archive/refs/tags/v1.3.1.zip
+MINIZIP_URL := https://github.com/madler/zlib/archive/refs/tags/v1.3.1.zip
 
 LIBS_DIR    := libs
 LIBS_CACHE  := .cache/libs
@@ -387,8 +387,8 @@ $(NATIVE_DIR)/unzip: programs/unzip.c $(ZLIB_SRCS) $(MINIZIP_UNZIP_SRCS)
 CURL_SRCS := $(wildcard libs/curl/lib/*.c) $(wildcard libs/curl/lib/vauth/*.c) \
              $(wildcard libs/curl/lib/vtls/*.c) $(wildcard libs/curl/lib/vquic/*.c) \
              $(wildcard libs/curl/lib/vssh/*.c)
-CURL_INCLUDES := -Ilibs/curl/include -Ilibs/curl/lib
-CURL_DEFS := -DHAVE_CONFIG_H -DBUILDING_LIBCURL -D_WASI_EMULATED_SIGNAL
+CURL_INCLUDES := -Ilibs/curl/include -Ilibs/curl/lib -include libs/curl/lib/curl_setup.h -include libs/curl/lib/curl_printf.h
+CURL_DEFS := -DHAVE_CONFIG_H -DBUILDING_LIBCURL -D_WASI_EMULATED_SIGNAL -DHAVE_BASENAME -DHAVE_LIBGEN_H
 
 $(BUILD_DIR)/curl_test: programs/curl_test.c $(CURL_SRCS) $(WASI_SDK_DIR)/bin/clang
 	@mkdir -p $(BUILD_DIR)

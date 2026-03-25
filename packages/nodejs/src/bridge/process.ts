@@ -18,12 +18,12 @@ import type {
 	ProcessErrorBridgeRef,
 	ProcessLogBridgeRef,
 	PtySetRawModeBridgeRef,
-	ScheduleTimerBridgeRef,
 } from "../bridge-contract.js";
 import {
   exposeCustomGlobal,
   exposeMutableRuntimeStateGlobal,
 } from "@secure-exec/core/internal/shared/global-exposure";
+import { bridgeDispatchSync } from "./dispatch.js";
 
 
 /**
@@ -54,16 +54,12 @@ export interface ProcessConfig {
 declare const _processConfig: ProcessConfig | undefined;
 declare const _log: ProcessLogBridgeRef;
 declare const _error: ProcessErrorBridgeRef;
-// Timer reference for actual delays using host's event loop
-declare const _scheduleTimer: ScheduleTimerBridgeRef | undefined;
 declare const _cryptoRandomFill: CryptoRandomFillBridgeRef | undefined;
 declare const _cryptoRandomUUID: CryptoRandomUuidBridgeRef | undefined;
 // Filesystem bridge for chdir validation
 declare const _fs: FsFacadeBridge;
 // PTY setRawMode bridge ref (optional — only present when PTY is attached)
 declare const _ptySetRawMode: PtySetRawModeBridgeRef | undefined;
-// Timer budget injected by the host when resourceBudgets.maxTimers is set
-declare const _maxTimers: number | undefined;
 
 // Get config with defaults
 const config = {
@@ -971,17 +967,18 @@ export default process as unknown as typeof nodeProcess;
 // Global polyfills
 // ============================================================================
 
-// Timer implementation
-let _timerId = 0;
-const _timers = new Map<number, TimerHandle>();
-const _intervals = new Map<number, TimerHandle>();
+const TIMER_DISPATCH = {
+  create: "kernelTimerCreate",
+  arm: "kernelTimerArm",
+  clear: "kernelTimerClear",
+} as const;
 
-/** Check timer budget. _maxTimers is injected by the host when resourceBudgets.maxTimers is set. */
-function _checkTimerBudget(): void {
-  if (typeof _maxTimers !== "undefined" && (_timers.size + _intervals.size) >= _maxTimers) {
-    throw new Error("ERR_RESOURCE_BUDGET_EXCEEDED: maximum number of timers exceeded");
-  }
-}
+type TimerEntry = {
+  handle: TimerHandle;
+  callback: (...args: unknown[]) => void;
+  args: unknown[];
+  repeat: boolean;
+};
 
 // queueMicrotask fallback
 const _queueMicrotask =
@@ -990,6 +987,41 @@ const _queueMicrotask =
     : function (fn: () => void): void {
         Promise.resolve().then(fn);
       };
+
+function normalizeTimerDelay(delay: number | undefined): number {
+  const numericDelay = Number(delay ?? 0);
+  if (!Number.isFinite(numericDelay) || numericDelay <= 0) {
+    return 0;
+  }
+  return Math.floor(numericDelay);
+}
+
+function getTimerId(timer: TimerHandle | number | undefined): number | undefined {
+  if (timer && typeof timer === "object" && timer._id !== undefined) {
+    return timer._id;
+  }
+  if (typeof timer === "number") {
+    return timer;
+  }
+  return undefined;
+}
+
+function createKernelTimer(delayMs: number, repeat: boolean): number {
+  try {
+    return bridgeDispatchSync<number>(TIMER_DISPATCH.create, delayMs, repeat);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("EAGAIN")) {
+      throw new Error(
+        "ERR_RESOURCE_BUDGET_EXCEEDED: maximum number of timers exceeded",
+      );
+    }
+    throw error;
+  }
+}
+
+function armKernelTimer(timerId: number): void {
+  bridgeDispatchSync<void>(TIMER_DISPATCH.arm, timerId);
+}
 
 /**
  * Timer handle that mimics Node.js Timeout (ref/unref/Symbol.toPrimitive).
@@ -1020,58 +1052,62 @@ class TimerHandle {
   }
 }
 
+const _timerEntries = new Map<number, TimerEntry>();
+
+function timerDispatch(_eventType: string, payload: unknown): void {
+  const timerId =
+    typeof payload === "number"
+      ? payload
+      : Number((payload as { timerId?: unknown } | null)?.timerId);
+  if (!Number.isFinite(timerId)) return;
+
+  const entry = _timerEntries.get(timerId);
+  if (!entry) return;
+
+  if (!entry.repeat) {
+    entry.handle._destroyed = true;
+    _timerEntries.delete(timerId);
+  }
+
+  try {
+    entry.callback(...entry.args);
+  } catch (_e) {
+    // Ignore timer callback errors
+  }
+
+  if (entry.repeat && _timerEntries.has(timerId)) {
+    armKernelTimer(timerId);
+  }
+}
+
 export function setTimeout(
   callback: (...args: unknown[]) => void,
   delay?: number,
   ...args: unknown[]
 ): TimerHandle {
-  _checkTimerBudget();
-  const id = ++_timerId;
+  const actualDelay = normalizeTimerDelay(delay);
+  const id = createKernelTimer(actualDelay, false);
   const handle = new TimerHandle(id);
-  _timers.set(id, handle);
-
-  const actualDelay = delay ?? 0;
-
-  // Use host timer for actual delays if available and delay > 0
-  if (typeof _scheduleTimer !== "undefined" && actualDelay > 0) {
-    // _scheduleTimer.apply() returns a Promise that resolves after the delay
-    // Using { result: { promise: true } } tells the V8 runtime to wait for the
-    // host Promise to resolve before resolving the apply() Promise
-    _scheduleTimer
-      .apply(undefined, [actualDelay], { result: { promise: true } })
-      .then(() => {
-        if (_timers.has(id)) {
-          _timers.delete(id);
-          try {
-            callback(...args);
-          } catch (_e) {
-            // Ignore timer callback errors
-          }
-        }
-      });
-  } else {
-    // Use microtask for zero delay or when host timer is unavailable
-    _queueMicrotask(() => {
-      if (_timers.has(id)) {
-        _timers.delete(id);
-        try {
-          callback(...args);
-        } catch (_e) {
-          // Ignore timer callback errors
-        }
-      }
-    });
-  }
+  _timerEntries.set(id, {
+    handle,
+    callback,
+    args,
+    repeat: false,
+  });
+  armKernelTimer(id);
 
   return handle;
 }
 
 export function clearTimeout(timer: TimerHandle | number | undefined): void {
-  const id =
-    timer && typeof timer === "object" && timer._id !== undefined
-      ? timer._id
-      : (timer as number);
-  _timers.delete(id);
+  const id = getTimerId(timer);
+  if (id === undefined) return;
+  const entry = _timerEntries.get(id);
+  if (entry) {
+    entry.handle._destroyed = true;
+    _timerEntries.delete(id);
+  }
+  bridgeDispatchSync<void>(TIMER_DISPATCH.clear, id);
 }
 
 export function setInterval(
@@ -1079,62 +1115,25 @@ export function setInterval(
   delay?: number,
   ...args: unknown[]
 ): TimerHandle {
-  _checkTimerBudget();
-  const id = ++_timerId;
+  const actualDelay = Math.max(1, normalizeTimerDelay(delay));
+  const id = createKernelTimer(actualDelay, true);
   const handle = new TimerHandle(id);
-  _intervals.set(id, handle);
-
-  // Enforce minimum 1ms delay to prevent microtask CPU spin
-  const actualDelay = Math.max(1, delay ?? 0);
-
-  // Schedule interval execution
-  const scheduleNext = () => {
-    if (!_intervals.has(id)) return; // Interval was cleared
-
-    if (typeof _scheduleTimer !== "undefined" && actualDelay > 0) {
-      // Use host timer for actual delays
-      _scheduleTimer
-        .apply(undefined, [actualDelay], { result: { promise: true } })
-        .then(() => {
-          if (_intervals.has(id)) {
-            try {
-              callback(...args);
-            } catch (_e) {
-              // Ignore timer callback errors
-            }
-            // Schedule next iteration
-            scheduleNext();
-          }
-        });
-    } else {
-      // Use microtask for zero delay or when host timer unavailable
-      _queueMicrotask(() => {
-        if (_intervals.has(id)) {
-          try {
-            callback(...args);
-          } catch (_e) {
-            // Ignore timer callback errors
-          }
-          // Schedule next iteration
-          scheduleNext();
-        }
-      });
-    }
-  };
-
-  // Start the interval
-  scheduleNext();
+  _timerEntries.set(id, {
+    handle,
+    callback,
+    args,
+    repeat: true,
+  });
+  armKernelTimer(id);
 
   return handle;
 }
 
 export function clearInterval(timer: TimerHandle | number | undefined): void {
-  const id =
-    timer && typeof timer === "object" && timer._id !== undefined
-      ? timer._id
-      : (timer as number);
-  _intervals.delete(id);
+  clearTimeout(timer);
 }
+
+exposeCustomGlobal("_timerDispatch", timerDispatch);
 
 export function setImmediate(
   callback: (...args: unknown[]) => void,

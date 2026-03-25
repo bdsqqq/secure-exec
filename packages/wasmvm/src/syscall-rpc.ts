@@ -10,16 +10,17 @@
  *   5. Worker reads response and continues
  */
 
-// Signal buffer layout (Int32Array over SharedArrayBuffer, 4 slots)
+// Signal buffer layout (Int32Array over SharedArrayBuffer, 5 slots)
 export const SIG_IDX_STATE = 0;    // 0=idle, 1=response-ready
 export const SIG_IDX_ERRNO = 1;    // errno from kernel call
 export const SIG_IDX_INT_RESULT = 2; // integer result (fd, written bytes, etc.)
 export const SIG_IDX_DATA_LEN = 3;  // length of response data in data buffer
+export const SIG_IDX_PENDING_SIGNAL = 4; // pending signal for cooperative delivery (0=none)
 
 export const SIG_STATE_IDLE = 0;
 export const SIG_STATE_READY = 1;
 
-export const SIGNAL_BUFFER_BYTES = 4 * Int32Array.BYTES_PER_ELEMENT;
+export const SIGNAL_BUFFER_BYTES = 5 * Int32Array.BYTES_PER_ELEMENT;
 export const DATA_BUFFER_BYTES = 1024 * 1024; // 1MB response data buffer
 
 /** Wait timeout per Atomics.wait attempt (ms). */

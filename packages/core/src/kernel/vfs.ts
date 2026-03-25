@@ -10,6 +10,7 @@ export interface VirtualDirEntry {
 	name: string;
 	isDirectory: boolean;
 	isSymbolicLink?: boolean;
+	ino?: number;
 }
 
 export interface VirtualStat {

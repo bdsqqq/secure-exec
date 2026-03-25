@@ -7,8 +7,10 @@
  */
 
 import * as fs from "node:fs/promises";
+import * as fsSync from "node:fs";
 import * as path from "node:path";
 import type { VirtualFileSystem, VirtualStat, VirtualDirEntry } from "@secure-exec/core";
+import { KernelError, O_CREAT, O_EXCL, O_TRUNC } from "@secure-exec/core";
 
 export interface HostNodeFileSystemOptions {
 	/** Root directory on the host — all paths are relative to this. */
@@ -26,6 +28,42 @@ export class HostNodeFileSystem implements VirtualFileSystem {
 		// Map virtual path to host path under root
 		const normalized = path.posix.normalize(p);
 		return path.join(this.root, normalized);
+	}
+
+	prepareOpenSync(p: string, flags: number): boolean {
+		const hostPath = this.resolve(p);
+		const hasCreate = (flags & O_CREAT) !== 0;
+		const hasExcl = (flags & O_EXCL) !== 0;
+		const hasTrunc = (flags & O_TRUNC) !== 0;
+		const exists = fsSync.existsSync(hostPath);
+
+		if (hasCreate && hasExcl && exists) {
+			throw new KernelError("EEXIST", `file already exists, open '${p}'`);
+		}
+
+		let created = false;
+		if (!exists && hasCreate) {
+			fsSync.mkdirSync(path.dirname(hostPath), { recursive: true });
+			fsSync.writeFileSync(hostPath, new Uint8Array(0));
+			created = true;
+		}
+
+		if (hasTrunc) {
+			try {
+				fsSync.truncateSync(hostPath, 0);
+			} catch (error) {
+				const err = error as NodeJS.ErrnoException;
+				if (err.code === "ENOENT") {
+					throw new KernelError("ENOENT", `no such file or directory, open '${p}'`);
+				}
+				if (err.code === "EISDIR") {
+					throw new KernelError("EISDIR", `illegal operation on a directory, open '${p}'`);
+				}
+				throw error;
+			}
+		}
+
+		return created;
 	}
 
 	async readFile(p: string): Promise<Uint8Array> {

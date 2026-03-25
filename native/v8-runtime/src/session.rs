@@ -6,6 +6,7 @@ use std::thread;
 
 use crossbeam_channel::{Receiver, Sender};
 
+use crate::execution;
 use crate::host_call::CallIdRouter;
 #[cfg(not(test))]
 use crate::host_call::{BridgeCallContext, ChannelFrameSender};
@@ -14,7 +15,7 @@ use crate::ipc_binary::BinaryFrame;
 use crate::ipc_binary::{self, ExecutionErrorBin};
 use crate::snapshot::SnapshotCache;
 #[cfg(not(test))]
-use crate::{bridge, execution, isolate, snapshot};
+use crate::{bridge, isolate, snapshot};
 
 /// Commands sent to a session thread
 pub enum SessionCommand {
@@ -365,6 +366,9 @@ fn session_thread(
                             };
                             // Must re-apply WASM disable after every restore (not captured in snapshot)
                             execution::disable_wasm(&mut iso);
+                            iso.set_host_import_module_dynamically_callback(
+                                execution::dynamic_import_callback,
+                            );
                             let ctx = isolate::create_context(&mut iso);
                             _v8_context = Some(ctx);
                             v8_isolate = Some(iso);
@@ -484,7 +488,7 @@ fn session_thread(
                         } else {
                             Some(file_path.as_str())
                         };
-                        let (code, exports, error) = if mode == 0 {
+                        let (mut code, mut exports, mut error) = if mode == 0 {
                             let scope = &mut v8::HandleScope::new(iso);
                             let ctx = v8::Local::new(scope, &exec_context);
                             let scope = &mut v8::ContextScope::new(scope, ctx);
@@ -509,21 +513,54 @@ fn session_thread(
                             )
                         };
 
-                        // Run event loop if there are pending async promises
-                        let terminated = if pending.len() > 0 {
+                        // Re-check async ESM completion once immediately so
+                        // pure-microtask top-level await settles without
+                        // needing a bridge event-loop round-trip.
+                        if mode != 0 && error.is_none() {
                             let scope = &mut v8::HandleScope::new(iso);
                             let ctx = v8::Local::new(scope, &exec_context);
                             let scope = &mut v8::ContextScope::new(scope, ctx);
-                            !run_event_loop(
-                                scope,
-                                &rx,
-                                &pending,
-                                maybe_abort_rx.as_ref(),
-                                Some(&deferred_queue),
-                            )
-                        } else {
-                            false
-                        };
+                            if let Some((next_code, next_exports, next_error)) =
+                                execution::finalize_pending_module_evaluation(scope)
+                            {
+                                code = next_code;
+                                exports = next_exports;
+                                error = next_error;
+                            }
+                        }
+
+                        // Run event loop while bridge work or async ESM
+                        // evaluation is still pending.
+                        let terminated =
+                            if pending.len() > 0 || execution::has_pending_module_evaluation() {
+                                let scope = &mut v8::HandleScope::new(iso);
+                                let ctx = v8::Local::new(scope, &exec_context);
+                                let scope = &mut v8::ContextScope::new(scope, ctx);
+                                !run_event_loop(
+                                    scope,
+                                    &rx,
+                                    &pending,
+                                    maybe_abort_rx.as_ref(),
+                                    Some(&deferred_queue),
+                                )
+                            } else {
+                                false
+                            };
+
+                        // Finalize any entry-module top-level await that was
+                        // waiting on bridge-driven async work (timers/network).
+                        if !terminated && mode != 0 && error.is_none() {
+                            let scope = &mut v8::HandleScope::new(iso);
+                            let ctx = v8::Local::new(scope, &exec_context);
+                            let scope = &mut v8::ContextScope::new(scope, ctx);
+                            if let Some((next_code, next_exports, next_error)) =
+                                execution::finalize_pending_module_evaluation(scope)
+                            {
+                                code = next_code;
+                                exports = next_exports;
+                                error = next_error;
+                            }
+                        }
 
                         // Check if timeout fired
                         let timed_out = timeout_guard.as_ref().is_some_and(|g| g.timed_out());
@@ -573,6 +610,9 @@ fn session_thread(
                             }
                         };
 
+                        execution::clear_pending_module_evaluation();
+                        execution::clear_module_state();
+
                         send_message(&ipc_tx, &result_frame, &mut msg_frame_buf);
                     }
                     _ => {
@@ -604,7 +644,7 @@ fn session_thread(
 ///
 /// Sync functions block V8 while the host processes the call (applySync/applySyncPromise).
 /// Async functions return a Promise to V8, resolved when the host responds (apply).
-pub(crate) const SYNC_BRIDGE_FNS: [&str; 31] = [
+pub(crate) const SYNC_BRIDGE_FNS: [&str; 32] = [
     // Console
     "_log",
     "_error",
@@ -641,9 +681,10 @@ pub(crate) const SYNC_BRIDGE_FNS: [&str; 31] = [
     "_childProcessStdinClose",
     "_childProcessKill",
     "_childProcessSpawnSync",
+    "_networkHttpServerRespondRaw",
 ];
 
-pub(crate) const ASYNC_BRIDGE_FNS: [&str; 7] = [
+pub(crate) const ASYNC_BRIDGE_FNS: [&str; 8] = [
     // Module loading (async)
     "_dynamicImport",
     // Timer
@@ -654,6 +695,7 @@ pub(crate) const ASYNC_BRIDGE_FNS: [&str; 7] = [
     "_networkHttpRequestRaw",
     "_networkHttpServerListenRaw",
     "_networkHttpServerCloseRaw",
+    "_networkHttpServerWaitRaw",
 ];
 
 /// Run the session event loop: dispatch incoming messages to V8.
@@ -678,7 +720,7 @@ pub(crate) fn run_event_loop(
     abort_rx: Option<&crossbeam_channel::Receiver<()>>,
     deferred: Option<&DeferredQueue>,
 ) -> bool {
-    while pending.len() > 0 {
+    while pending.len() > 0 || execution::pending_module_evaluation_needs_wait(scope) {
         // Drain deferred messages queued by sync bridge calls before blocking
         if let Some(dq) = deferred {
             let frames: Vec<BinaryFrame> = dq.lock().unwrap().drain(..).collect();
@@ -687,7 +729,7 @@ pub(crate) fn run_event_loop(
                     return false;
                 }
             }
-            if pending.len() == 0 {
+            if pending.len() == 0 && !execution::pending_module_evaluation_needs_wait(scope) {
                 break;
             }
         }
@@ -809,7 +851,7 @@ impl ChannelResponseReceiver {
 }
 
 impl crate::host_call::ResponseReceiver for ChannelResponseReceiver {
-    fn recv_response(&self) -> Result<BinaryFrame, String> {
+    fn recv_response(&self, expected_call_id: u64) -> Result<BinaryFrame, String> {
         loop {
             // Wait for next command, with optional abort monitoring
             let cmd = if let Some(ref abort) = self.abort_rx {
@@ -831,8 +873,12 @@ impl crate::host_call::ResponseReceiver for ChannelResponseReceiver {
 
             match cmd {
                 SessionCommand::Message(frame) => {
-                    if matches!(&frame, BinaryFrame::BridgeResponse { .. }) {
-                        return Ok(frame);
+                    if let BinaryFrame::BridgeResponse { call_id, .. } = &frame {
+                        if *call_id == expected_call_id {
+                            return Ok(frame);
+                        }
+                        self.deferred.lock().unwrap().push_back(frame);
+                        continue;
                     }
                     // Queue non-BridgeResponse for later event loop processing
                     self.deferred.lock().unwrap().push_back(frame);
@@ -1005,7 +1051,7 @@ mod tests {
         .unwrap();
 
         // recv_response should skip StreamEvent and TerminateExecution, return BridgeResponse
-        let frame = receiver.recv_response().unwrap();
+        let frame = receiver.recv_response(1).unwrap();
         assert!(
             matches!(&frame, BinaryFrame::BridgeResponse { call_id: 1, .. }),
             "expected BridgeResponse with call_id=1, got {:?}",

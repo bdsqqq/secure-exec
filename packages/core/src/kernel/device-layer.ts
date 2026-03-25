@@ -87,7 +87,17 @@ const DEV_DIR_ENTRIES: VirtualDirEntry[] = [
  * Device paths are handled directly; all other paths pass through.
  */
 export function createDeviceLayer(vfs: VirtualFileSystem): VirtualFileSystem {
-	return {
+	const wrapped: VirtualFileSystem & {
+		prepareOpenSync?: (path: string, flags: number) => boolean;
+	} = {
+		prepareOpenSync(path, flags) {
+			if (isDevicePath(path) || isDeviceDir(path)) return false;
+			const syncVfs = vfs as VirtualFileSystem & {
+				prepareOpenSync?: (targetPath: string, openFlags: number) => boolean;
+			};
+			return syncVfs.prepareOpenSync?.(path, flags) ?? false;
+		},
+
 		async readFile(path) {
 			if (path === "/dev/null" || path === "/dev/full") return new Uint8Array(0);
 			if (path === "/dev/zero") return new Uint8Array(4096);
@@ -256,4 +266,5 @@ export function createDeviceLayer(vfs: VirtualFileSystem): VirtualFileSystem {
 			return vfs.truncate(path, length);
 		},
 	};
+	return wrapped;
 }

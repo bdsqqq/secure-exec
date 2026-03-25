@@ -1105,6 +1105,103 @@ describe("NodeRuntime", () => {
 		expect(capture.stdout()).toBe("7|null\n");
 	});
 
+	it("waits for entry-module top-level await before exec resolves", async () => {
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({ onStdio: capture.onStdio });
+		const result = await proc.exec(
+			`
+	      console.log("before");
+	      await new Promise((resolve) => {
+	        setTimeout(() => {
+	          console.log("during");
+	          resolve(undefined);
+	        }, 10);
+	      });
+	      console.log("after");
+	    `,
+			{ filePath: "/entry.mjs" },
+		);
+
+		expect(result.code).toBe(0);
+		expect(result).not.toHaveProperty("stdout");
+		expect(capture.stdout()).toBe("before\nduring\nafter\n");
+	});
+
+	it("waits for statically imported modules with top-level await", async () => {
+		const fs = createFs();
+		await fs.mkdir("/app");
+		await fs.writeFile(
+			"/app/dep.mjs",
+			`
+	      console.log("dep-before");
+	      await new Promise((resolve) => {
+	        setTimeout(() => {
+	          console.log("dep-after");
+	          resolve(undefined);
+	        }, 10);
+	      });
+	      export const value = "ready";
+	    `,
+		);
+
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({
+			filesystem: fs,
+			permissions: allowAllFs,
+			onStdio: capture.onStdio,
+		});
+		const result = await proc.exec(
+			`
+	      import { value } from "./dep.mjs";
+	      console.log("entry", value);
+	    `,
+			{ filePath: "/app/entry.mjs" },
+		);
+
+		expect(result.code).toBe(0);
+		expect(result).not.toHaveProperty("stdout");
+		expect(capture.stdout()).toBe("dep-before\ndep-after\nentry ready\n");
+	});
+
+	it("waits for dynamic imports of modules with top-level await", async () => {
+		const fs = createFs();
+		await fs.mkdir("/app");
+		await fs.writeFile(
+			"/app/tla.mjs",
+			`
+	      console.log("import-before");
+	      await new Promise((resolve) => {
+	        setTimeout(() => {
+	          console.log("import-after");
+	          resolve(undefined);
+	        }, 10);
+	      });
+	      export const value = 42;
+	    `,
+		);
+
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({
+			filesystem: fs,
+			permissions: allowAllFs,
+			onStdio: capture.onStdio,
+		});
+		const result = await proc.exec(
+			`
+	      console.log("before");
+	      const mod = await import("./tla.mjs");
+	      console.log("after", mod.value);
+	    `,
+			{ filePath: "/app/entry.mjs" },
+		);
+
+		expect(result.code).toBe(0);
+		expect(result).not.toHaveProperty("stdout");
+		expect(capture.stdout()).toBe(
+			"before\nimport-before\nimport-after\nafter 42\n",
+		);
+	});
+
 	it("uses frozen timing values by default", async () => {
 		proc = createTestNodeRuntime();
 		const result = await proc.run(`
@@ -1328,6 +1425,19 @@ describe("NodeRuntime", () => {
       })();
     `,
 			{ filePath: "/app/entry.js" },
+		);
+		expect(result.code).toBe(124);
+		expect(result.errorMessage).toContain("CPU time limit exceeded");
+	});
+
+	it("times out top-level await during ESM startup", async () => {
+		proc = createTestNodeRuntime({ cpuTimeLimitMs: 100 });
+		const result = await proc.exec(
+			`
+	      await new Promise((resolve) => setTimeout(resolve, 10));
+	      while (true) {}
+	    `,
+			{ filePath: "/entry.mjs" },
 		);
 		expect(result.code).toBe(124);
 		expect(result.errorMessage).toContain("CPU time limit exceeded");
@@ -1724,80 +1834,69 @@ describe("NodeRuntime", () => {
 
 	// http.Agent pooling — maxSockets limits concurrency through bridged server
 	it("http.Agent with maxSockets=1 serializes concurrent requests", async () => {
-		// Use adapter-bridged server so the port is SSRF-exempt
-		let concurrent = 0;
-		let maxConcurrent = 0;
-		const adapter = createDefaultNetworkAdapter();
-		const listenResult = await adapter.httpServerListen!({
-			serverId: 9990,
-			port: 0,
-			hostname: "127.0.0.1",
-			onRequest: async () => {
-				concurrent++;
-				maxConcurrent = Math.max(maxConcurrent, concurrent);
-				await new Promise((r) => setTimeout(r, 100));
-				concurrent--;
-				return {
-					status: 200,
-					headers: [["content-type", "text/plain"]],
-					body: String(maxConcurrent),
-				};
-			},
+		const driver = createNodeDriver({
+			filesystem: new NodeFileSystem(),
+			networkAdapter: createDefaultNetworkAdapter(),
+			permissions: allowFsNetworkEnv,
 		});
-		const port = listenResult.address!.port;
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({
+			driver,
+			processConfig: { cwd: "/" },
+			onStdio: capture.onStdio,
+		});
 
-		try {
-			const driver = createNodeDriver({
-				filesystem: new NodeFileSystem(),
-				networkAdapter: adapter,
-				permissions: allowFsNetworkEnv,
-			});
-			const capture = createConsoleCapture();
-			proc = createTestNodeRuntime({
-				driver,
-				processConfig: { cwd: "/" },
-				onStdio: capture.onStdio,
-			});
+		const result = await proc.exec(
+			`
+			(async () => {
+				const http = require('http');
+				let concurrent = 0;
+				let maxConcurrent = 0;
 
-			const result = await proc.exec(
-				`
-				(async () => {
-					const http = require('http');
-					const agent = new http.Agent({ maxSockets: 1, keepAlive: true });
+				const server = http.createServer(async (_req, res) => {
+					concurrent++;
+					maxConcurrent = Math.max(maxConcurrent, concurrent);
+					await new Promise((resolve) => setTimeout(resolve, 100));
+					concurrent--;
+					res.writeHead(200, { 'content-type': 'text/plain' });
+					res.end(String(maxConcurrent));
+				});
 
-					const makeRequest = () => new Promise((resolve, reject) => {
-						const req = http.request({
-							hostname: '127.0.0.1',
-							port: ${port},
-							path: '/',
-							agent,
-						}, (res) => {
-							let body = '';
-							res.on('data', (d) => body += d);
-							res.on('end', () => resolve(body));
-						});
-						req.on('error', reject);
-						req.end();
+				await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+				const port = server.address().port;
+				const agent = new http.Agent({ maxSockets: 1, keepAlive: true });
+
+				const makeRequest = () => new Promise((resolve, reject) => {
+					const req = http.request({
+						hostname: '127.0.0.1',
+						port,
+						path: '/',
+						agent,
+					}, (res) => {
+						let body = '';
+						res.on('data', (d) => body += d);
+						res.on('end', () => resolve(body));
 					});
+					req.on('error', reject);
+					req.end();
+				});
 
-					const results = await Promise.all([makeRequest(), makeRequest()]);
-					console.log('RESULTS:' + JSON.stringify(results));
-					agent.destroy();
-				})();
-			`,
-			);
+				const results = await Promise.all([makeRequest(), makeRequest()]);
+				console.log('RESULTS:' + JSON.stringify(results));
+				console.log('MAX:' + maxConcurrent);
+				agent.destroy();
+				await new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+			})();
+		`,
+		);
 
-			expect(result.code).toBe(0);
-			const stdout = capture.stdout();
-			const match = stdout.match(/RESULTS:(.+)/);
-			expect(match).toBeTruthy();
-			const results = JSON.parse(match![1]) as string[];
-			// With maxSockets=1, server should never see >1 concurrent request
-			expect(Math.max(...results.map(Number))).toBe(1);
-			expect(maxConcurrent).toBe(1);
-		} finally {
-			await adapter.httpServerClose!(9990);
-		}
+		expect(result.code).toBe(0);
+		const stdout = capture.stdout();
+		const match = stdout.match(/RESULTS:(.+)/);
+		expect(match).toBeTruthy();
+		const results = JSON.parse(match![1]) as string[];
+		expect(results).toHaveLength(2);
+		expect(stdout).toContain("MAX:1");
 	});
 
 	// HTTP upgrade — 101 response fires upgrade event

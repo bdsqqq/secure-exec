@@ -1,6 +1,7 @@
+import { createServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { allowAllFs, allowAllChildProcess, allowAllNetwork, NodeRuntime } from "../../../src/index.js";
-import type { CommandExecutor, NetworkAdapter, SpawnedProcess } from "../../../src/types.js";
+import type { CommandExecutor, SpawnedProcess } from "../../../src/types.js";
 import { createTestNodeRuntime } from "../../test-utils.js";
 
 const RESOURCE_BUDGET_ERROR_CODE = "ERR_RESOURCE_BUDGET_EXCEEDED";
@@ -516,45 +517,53 @@ describe("NodeRuntime resource budgets", () => {
 	// -----------------------------------------------------------------------
 
 	describe("HTTP server cleanup on timeout", () => {
-		it("closes tracked HTTP servers on recycleIsolate after timeout", async () => {
-			const closedServerIds: number[] = [];
-
-			const networkAdapter: NetworkAdapter = {
-				async httpServerListen(options) {
-					return { address: { address: "127.0.0.1", family: "IPv4", port: options.port ?? 0 } };
-				},
-				async httpServerClose(serverId: number) {
-					closedServerIds.push(serverId);
-				},
-				async fetch() {
-					return { ok: true, status: 200, statusText: "OK", headers: {}, body: "", url: "", redirected: false };
-				},
-				async dnsLookup() {
-					return { address: "127.0.0.1", family: 4 };
-				},
-				async httpRequest() {
-					return { status: 200, statusText: "OK", headers: {}, body: "", url: "" };
-				},
-			};
+		it("releases kernel-backed listeners after timeout so the port can be reused", async () => {
+			const reserved = await new Promise<number>((resolve, reject) => {
+				const server = createServer();
+				server.once("error", reject);
+				server.listen(0, "127.0.0.1", () => {
+					const address = server.address();
+					if (!address || typeof address === "string") {
+						reject(new Error("expected inet listener address"));
+						return;
+					}
+					const { port } = address;
+					server.close((err) => {
+						if (err) reject(err);
+						else resolve(port);
+					});
+				});
+			});
 
 			proc = createTestNodeRuntime({
-				networkAdapter,
 				permissions: { ...allowAllFs, ...allowAllChildProcess, ...allowAllNetwork },
 				cpuTimeLimitMs: 300,
 			});
 
-			// Create an HTTP server then spin to trigger timeout
-			// The server stays in activeHttpServerIds since it's never closed by sandbox code
-			const result = await proc.exec(`
+			const first = await proc.exec(`
 				const http = require('http');
 				const server = http.createServer((req, res) => { res.end('ok'); });
-				server.listen(0, '127.0.0.1');
+				server.listen(${reserved}, '127.0.0.1');
 				while (true) {}
 			`);
-			expect(result.code).toBe(124);
+			expect(first.code).toBe(124);
 
-			// recycleIsolate should have called httpServerClose for the tracked server
-			expect(closedServerIds.length).toBeGreaterThanOrEqual(1);
+			const capture = createConsoleCapture();
+			proc = createTestNodeRuntime({
+				permissions: { ...allowAllFs, ...allowAllChildProcess, ...allowAllNetwork },
+				onStdio: capture.onStdio,
+			});
+			const second = await proc.exec(`
+				const http = require('http');
+				(async () => {
+					const server = http.createServer((req, res) => { res.end('ok'); });
+					await new Promise((resolve, reject) => server.listen(${reserved}, '127.0.0.1', (err) => err ? reject(err) : resolve()));
+					console.log('rebound:${reserved}');
+					await new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+				})();
+			`);
+			expect(second.code).toBe(0);
+			expect(capture.stdout()).toContain(`rebound:${reserved}`);
 		});
 	});
 

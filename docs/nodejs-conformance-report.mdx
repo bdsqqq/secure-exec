@@ -1,0 +1,845 @@
+---
+title: Node.js Conformance Report
+description: Node.js v22 test/parallel/ conformance results for the secure-exec sandbox.
+icon: "chart-bar"
+---
+
+{/* AUTO-GENERATED — do not edit. Run: pnpm tsx scripts/generate-node-conformance-report.ts */}
+
+## Summary
+
+| Metric | Value |
+| --- | --- |
+| Node.js version | 22.14.0 |
+| Source | v22.14.0 (test/parallel/) |
+| Total tests | 3532 |
+| Passing (genuine) | 704 (19.9%) |
+| Passing (vacuous self-skip) | 34 |
+| Passing (total) | 738 (20.9%) |
+| Expected fail | 2723 |
+| Skip | 71 |
+| Last updated | 2026-03-25 |
+
+## Failure Categories
+
+| Category | Tests |
+| --- | --- |
+| implementation-gap | 1422 |
+| unsupported-module | 737 |
+| requires-v8-flags | 239 |
+| requires-exec-path | 200 |
+| unsupported-api | 124 |
+| test-infra | 68 |
+| vacuous-skip | 34 |
+| native-addon | 3 |
+| security-constraint | 1 |
+
+## Per-Module Results
+
+| Module | Total | Pass | Fail | Skip | Pass Rate |
+| --- | --- | --- | --- | --- | --- |
+| abortcontroller | 2 | 0 | 2 | 0 | 0.0% |
+| aborted | 1 | 0 | 1 | 0 | 0.0% |
+| abortsignal | 1 | 0 | 1 | 0 | 0.0% |
+| accessor | 1 | 0 | 1 | 0 | 0.0% |
+| arm | 1 | 0 | 1 | 0 | 0.0% |
+| assert | 17 | 1 | 16 | 0 | 5.9% |
+| async | 45 | 20 | 25 | 0 | 44.4% |
+| asyncresource | 1 | 0 | 1 | 0 | 0.0% |
+| atomics | 1 | 1 | 0 | 0 | 100.0% |
+| bad | 1 | 1 | 0 | 0 | 100.0% |
+| bash | 1 | 0 | 1 | 0 | 0.0% |
+| beforeexit | 1 | 1 | 0 | 0 | 100.0% |
+| benchmark | 1 | 0 | 1 | 0 | 0.0% |
+| binding | 1 | 0 | 1 | 0 | 0.0% |
+| blob | 3 | 0 | 3 | 0 | 0.0% |
+| blocklist | 2 | 0 | 2 | 0 | 0.0% |
+| bootstrap | 1 | 0 | 1 | 0 | 0.0% |
+| broadcastchannel | 1 | 0 | 1 | 0 | 0.0% |
+| btoa | 1 | 0 | 1 | 0 | 0.0% |
+| buffer | 63 | 20 | 43 | 0 | 31.7% |
+| c | 1 | 0 | 1 | 0 | 0.0% |
+| child | 107 | 4 (2 vacuous) | 103 | 0 | 3.7% |
+| cli | 14 | 0 | 14 | 0 | 0.0% |
+| client | 1 | 0 | 1 | 0 | 0.0% |
+| cluster | 83 | 3 | 80 | 0 | 3.6% |
+| code | 1 | 0 | 1 | 0 | 0.0% |
+| common | 5 | 0 | 5 | 0 | 0.0% |
+| compile | 15 | 0 | 15 | 0 | 0.0% |
+| compression | 1 | 0 | 1 | 0 | 0.0% |
+| console | 21 | 4 | 17 | 0 | 19.0% |
+| constants | 1 | 0 | 1 | 0 | 0.0% |
+| corepack | 1 | 0 | 1 | 0 | 0.0% |
+| coverage | 1 | 0 | 1 | 0 | 0.0% |
+| crypto | 99 | 16 (13 vacuous) | 83 | 0 | 16.2% |
+| cwd | 3 | 0 | 3 | 0 | 0.0% |
+| data | 1 | 0 | 1 | 0 | 0.0% |
+| datetime | 1 | 0 | 1 | 0 | 0.0% |
+| debug | 2 | 1 (1 vacuous) | 1 | 0 | 50.0% |
+| debugger | 25 | 0 | 25 | 0 | 0.0% |
+| delayed | 1 | 1 | 0 | 0 | 100.0% |
+| destroy | 1 | 1 | 0 | 0 | 100.0% |
+| dgram | 76 | 3 | 73 | 0 | 3.9% |
+| diagnostic | 2 | 0 | 2 | 0 | 0.0% |
+| diagnostics | 32 | 1 | 31 | 0 | 3.1% |
+| directory | 1 | 1 | 0 | 0 | 100.0% |
+| disable | 3 | 0 | 3 | 0 | 0.0% |
+| dns | 26 | 0 | 26 | 0 | 0.0% |
+| domain | 50 | 1 | 49 | 0 | 2.0% |
+| domexception | 1 | 0 | 1 | 0 | 0.0% |
+| dotenv | 3 | 0 | 3 | 0 | 0.0% |
+| double | 2 | 1 | 1 | 0 | 50.0% |
+| dsa | 1 | 0 | 1 | 0 | 0.0% |
+| dummy | 1 | 0 | 1 | 0 | 0.0% |
+| emit | 1 | 1 | 0 | 0 | 100.0% |
+| env | 2 | 0 | 2 | 0 | 0.0% |
+| err | 1 | 0 | 1 | 0 | 0.0% |
+| error | 4 | 0 | 4 | 0 | 0.0% |
+| errors | 9 | 0 | 9 | 0 | 0.0% |
+| eslint | 24 | 0 | 24 | 0 | 0.0% |
+| esm | 2 | 0 | 2 | 0 | 0.0% |
+| eval | 3 | 2 | 1 | 0 | 66.7% |
+| event | 28 | 21 | 7 | 0 | 75.0% |
+| eventemitter | 1 | 0 | 1 | 0 | 0.0% |
+| events | 8 | 1 | 7 | 0 | 12.5% |
+| eventsource | 2 | 1 | 1 | 0 | 50.0% |
+| eventtarget | 4 | 0 | 4 | 0 | 0.0% |
+| exception | 2 | 1 | 1 | 0 | 50.0% |
+| experimental | 1 | 0 | 1 | 0 | 0.0% |
+| fetch | 1 | 0 | 1 | 0 | 0.0% |
+| file | 8 | 3 | 5 | 0 | 37.5% |
+| filehandle | 2 | 2 | 0 | 0 | 100.0% |
+| finalization | 1 | 1 | 0 | 0 | 100.0% |
+| find | 1 | 0 | 1 | 0 | 0.0% |
+| fixed | 1 | 0 | 1 | 0 | 0.0% |
+| force | 2 | 0 | 2 | 0 | 0.0% |
+| freelist | 1 | 0 | 1 | 0 | 0.0% |
+| freeze | 1 | 0 | 1 | 0 | 0.0% |
+| fs | 232 | 69 (8 vacuous) | 129 | 34 | 34.8% |
+| gc | 3 | 0 | 3 | 0 | 0.0% |
+| global | 11 | 2 | 9 | 0 | 18.2% |
+| h2 | 1 | 0 | 1 | 0 | 0.0% |
+| h2leak | 1 | 0 | 1 | 0 | 0.0% |
+| handle | 2 | 1 | 1 | 0 | 50.0% |
+| heap | 11 | 0 | 11 | 0 | 0.0% |
+| heapdump | 1 | 1 | 0 | 0 | 100.0% |
+| heapsnapshot | 2 | 0 | 2 | 0 | 0.0% |
+| http | 377 | 237 (1 vacuous) | 139 | 1 | 63.0% |
+| http2 | 256 | 4 | 252 | 0 | 1.6% |
+| https | 62 | 4 | 58 | 0 | 6.5% |
+| icu | 5 | 0 | 5 | 0 | 0.0% |
+| inspect | 4 | 0 | 4 | 0 | 0.0% |
+| inspector | 61 | 0 | 61 | 0 | 0.0% |
+| instanceof | 1 | 1 | 0 | 0 | 100.0% |
+| internal | 22 | 1 | 21 | 0 | 4.5% |
+| intl | 2 | 0 | 2 | 0 | 0.0% |
+| js | 1 | 0 | 1 | 0 | 0.0% |
+| kill | 1 | 0 | 1 | 0 | 0.0% |
+| listen | 5 | 0 | 5 | 0 | 0.0% |
+| macos | 1 | 1 (1 vacuous) | 0 | 0 | 100.0% |
+| math | 1 | 0 | 1 | 0 | 0.0% |
+| memory | 2 | 0 | 2 | 0 | 0.0% |
+| messagechannel | 1 | 1 | 0 | 0 | 100.0% |
+| messageevent | 1 | 0 | 1 | 0 | 0.0% |
+| messageport | 1 | 0 | 1 | 0 | 0.0% |
+| messaging | 1 | 0 | 1 | 0 | 0.0% |
+| microtask | 3 | 3 | 0 | 0 | 100.0% |
+| mime | 2 | 0 | 2 | 0 | 0.0% |
+| module | 30 | 5 (2 vacuous) | 24 | 1 | 17.2% |
+| navigator | 1 | 0 | 1 | 0 | 0.0% |
+| net | 149 | 8 | 141 | 0 | 5.4% |
+| next | 9 | 5 | 2 | 2 | 71.4% |
+| no | 2 | 1 | 1 | 0 | 50.0% |
+| node | 1 | 0 | 1 | 0 | 0.0% |
+| nodeeventtarget | 1 | 0 | 1 | 0 | 0.0% |
+| npm | 2 | 0 | 2 | 0 | 0.0% |
+| openssl | 1 | 0 | 1 | 0 | 0.0% |
+| options | 1 | 0 | 1 | 0 | 0.0% |
+| os | 6 | 0 | 6 | 0 | 0.0% |
+| outgoing | 2 | 0 | 2 | 0 | 0.0% |
+| path | 16 | 2 | 14 | 0 | 12.5% |
+| pending | 1 | 0 | 1 | 0 | 0.0% |
+| perf | 5 | 0 | 5 | 0 | 0.0% |
+| performance | 11 | 0 | 11 | 0 | 0.0% |
+| performanceobserver | 2 | 0 | 2 | 0 | 0.0% |
+| permission | 31 | 3 | 28 | 0 | 9.7% |
+| pipe | 10 | 4 | 6 | 0 | 40.0% |
+| preload | 4 | 0 | 4 | 0 | 0.0% |
+| primitive | 1 | 0 | 1 | 0 | 0.0% |
+| primordials | 3 | 0 | 3 | 0 | 0.0% |
+| priority | 1 | 0 | 1 | 0 | 0.0% |
+| process | 83 | 14 | 66 | 3 | 17.5% |
+| promise | 19 | 7 | 12 | 0 | 36.8% |
+| promises | 4 | 3 | 0 | 1 | 100.0% |
+| punycode | 1 | 0 | 1 | 0 | 0.0% |
+| querystring | 4 | 1 | 3 | 0 | 25.0% |
+| queue | 2 | 1 | 1 | 0 | 50.0% |
+| quic | 4 | 0 | 4 | 0 | 0.0% |
+| readable | 5 | 3 | 2 | 0 | 60.0% |
+| readline | 20 | 4 | 16 | 0 | 20.0% |
+| ref | 1 | 0 | 1 | 0 | 0.0% |
+| regression | 1 | 1 | 0 | 0 | 100.0% |
+| release | 2 | 0 | 2 | 0 | 0.0% |
+| repl | 76 | 1 | 75 | 0 | 1.3% |
+| require | 22 | 9 (1 vacuous) | 13 | 0 | 40.9% |
+| resource | 1 | 1 | 0 | 0 | 100.0% |
+| runner | 40 | 0 | 40 | 0 | 0.0% |
+| safe | 1 | 0 | 1 | 0 | 0.0% |
+| security | 1 | 0 | 1 | 0 | 0.0% |
+| set | 3 | 0 | 3 | 0 | 0.0% |
+| setproctitle | 1 | 0 | 1 | 0 | 0.0% |
+| shadow | 10 | 4 | 6 | 0 | 40.0% |
+| sigint | 1 | 0 | 1 | 0 | 0.0% |
+| signal | 5 | 1 | 3 | 1 | 25.0% |
+| single | 2 | 0 | 2 | 0 | 0.0% |
+| snapshot | 27 | 0 | 27 | 0 | 0.0% |
+| socket | 5 | 0 | 5 | 0 | 0.0% |
+| socketaddress | 1 | 0 | 1 | 0 | 0.0% |
+| source | 3 | 0 | 3 | 0 | 0.0% |
+| spawn | 1 | 1 (1 vacuous) | 0 | 0 | 100.0% |
+| sqlite | 9 | 0 | 9 | 0 | 0.0% |
+| stack | 1 | 0 | 1 | 0 | 0.0% |
+| startup | 2 | 0 | 2 | 0 | 0.0% |
+| stdin | 11 | 4 | 7 | 0 | 36.4% |
+| stdio | 5 | 2 | 3 | 0 | 40.0% |
+| stdout | 7 | 1 | 5 | 1 | 16.7% |
+| strace | 1 | 1 (1 vacuous) | 0 | 0 | 100.0% |
+| stream | 169 | 78 | 85 | 6 | 47.9% |
+| stream2 | 25 | 15 | 4 | 6 | 78.9% |
+| stream3 | 4 | 3 | 0 | 1 | 100.0% |
+| streams | 1 | 0 | 1 | 0 | 0.0% |
+| string | 3 | 0 | 3 | 0 | 0.0% |
+| stringbytes | 1 | 1 | 0 | 0 | 100.0% |
+| structuredClone | 1 | 0 | 1 | 0 | 0.0% |
+| sync | 2 | 1 | 1 | 0 | 50.0% |
+| sys | 1 | 0 | 1 | 0 | 0.0% |
+| tcp | 3 | 0 | 3 | 0 | 0.0% |
+| tick | 2 | 1 (1 vacuous) | 1 | 0 | 50.0% |
+| timers | 56 | 26 | 21 | 9 | 55.3% |
+| tls | 192 | 19 | 173 | 0 | 9.9% |
+| tojson | 1 | 0 | 1 | 0 | 0.0% |
+| trace | 35 | 3 | 32 | 0 | 8.6% |
+| tracing | 1 | 0 | 1 | 0 | 0.0% |
+| tty | 3 | 1 | 2 | 0 | 33.3% |
+| ttywrap | 2 | 1 | 1 | 0 | 50.0% |
+| tz | 1 | 1 (1 vacuous) | 0 | 0 | 100.0% |
+| unhandled | 2 | 0 | 2 | 0 | 0.0% |
+| unicode | 1 | 0 | 1 | 0 | 0.0% |
+| url | 13 | 0 | 13 | 0 | 0.0% |
+| utf8 | 1 | 1 | 0 | 0 | 100.0% |
+| util | 27 | 2 | 24 | 1 | 7.7% |
+| uv | 4 | 0 | 4 | 0 | 0.0% |
+| v8 | 19 | 1 | 18 | 0 | 5.3% |
+| validators | 1 | 0 | 1 | 0 | 0.0% |
+| vfs | 1 | 0 | 1 | 0 | 0.0% |
+| vm | 79 | 11 | 67 | 1 | 14.1% |
+| warn | 2 | 0 | 2 | 0 | 0.0% |
+| weakref | 1 | 1 | 0 | 0 | 100.0% |
+| webcrypto | 28 | 15 | 13 | 0 | 53.6% |
+| websocket | 2 | 1 | 1 | 0 | 50.0% |
+| webstorage | 1 | 0 | 1 | 0 | 0.0% |
+| webstream | 4 | 0 | 4 | 0 | 0.0% |
+| webstreams | 5 | 0 | 5 | 0 | 0.0% |
+| whatwg | 60 | 1 | 59 | 0 | 1.7% |
+| windows | 2 | 1 (1 vacuous) | 1 | 0 | 50.0% |
+| worker | 133 | 11 | 122 | 0 | 8.3% |
+| wrap | 4 | 0 | 4 | 0 | 0.0% |
+| x509 | 1 | 0 | 1 | 0 | 0.0% |
+| zlib | 53 | 17 | 33 | 3 | 34.0% |
+| **Total** | **3532** | **738** | **2723** | **71** | **21.3%** |
+
+## Expectations Detail
+
+### implementation-gap (741 entries)
+
+**Glob patterns:**
+
+- `test-v8-*.js` — v8 module exposed as empty stub — no real v8 APIs (serialize, deserialize, getHeapStatistics, promiseHooks, etc.) are implemented
+- `test-dgram-*.js` — dgram module bridged via kernel UDP — most tests fail on API gaps (bind, send, multicast, cluster)
+- `test-net-*.js` — net module bridged via kernel TCP — most tests fail on API gaps (socket options, pipe, cluster, FD handling)
+- `test-tls-*.js` — tls module bridged via kernel — most tests fail on missing TLS fixture files or crypto API gaps
+- `test-https-*.js` — https depends on tls — most tests fail on missing TLS fixture files or crypto API gaps
+- `test-http2-*.js` — http2 module bridged via kernel — most tests fail on API gaps, missing fixtures, or protocol handling
+
+*735 individual tests — see expectations.json for full list.*
+
+### unsupported-module (190 entries)
+
+**Glob patterns:**
+
+- `test-cluster-*.js` — cluster module is Tier 5 (Unsupported) — require(cluster) throws by design
+- `test-worker-*.js` — worker_threads is Tier 4 (Deferred) — no cross-isolate threading support
+- `test-inspector-*.js` — inspector module is Tier 5 (Unsupported) — V8 inspector protocol not exposed
+- `test-repl-*.js` — repl module is Tier 5 (Unsupported)
+- `test-vm-*.js` — vm module not available in sandbox — no nested V8 context creation
+- `test-domain-*.js` — domain module is Tier 5 (Unsupported) — deprecated and not implemented
+- `test-trace-*.js` — trace_events module is Tier 5 (Unsupported)
+- `test-readline-*.js` — readline module is Tier 4 (Deferred)
+- `test-diagnostics-*.js` — diagnostics_channel is Tier 4 (Deferred) — stub with no-op channels
+- `test-debugger-*.js` — debugger protocol requires inspector which is Tier 5 (Unsupported)
+- `test-quic-*.js` — QUIC protocol depends on tls which is Tier 4 (Deferred)
+
+<details><summary>179 individual tests</summary>
+
+| Test | Reason |
+| --- | --- |
+| `test-assert-objects.js` | requires node:test module — not available in sandbox |
+| `test-assert.js` | requires vm module — no nested V8 context in sandbox |
+| `test-async-hooks-asyncresource-constructor.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-async-hooks-constructor.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-async-hooks-execution-async-resource-await.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-async-hooks-execution-async-resource.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-async-hooks-promise.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-async-hooks-recursive-stack-runInAsyncScope.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-async-hooks-top-level-clearimmediate.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-async-hooks-worker-asyncfn-terminate-1.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-async-hooks-worker-asyncfn-terminate-2.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-async-hooks-worker-asyncfn-terminate-3.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-async-hooks-worker-asyncfn-terminate-4.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-async-local-storage-bind.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-async-local-storage-contexts.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-async-local-storage-http-multiclients.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-async-local-storage-snapshot.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-async-wrap-constructor.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-async-wrap-tlssocket-asyncreset.js` | requires https module — depends on tls which is Tier 4 (Deferred) |
+| `test-async-wrap-uncaughtexception.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-asyncresource-bind.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-blocklist-clone.js` | requires net module which is Tier 4 (Deferred) |
+| `test-blocklist.js` | requires net module which is Tier 4 (Deferred) |
+| `test-bootstrap-modules.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-broadcastchannel-custom-inspect.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-buffer-alloc.js` | requires vm module — no nested V8 context in sandbox |
+| `test-buffer-bytelength.js` | requires vm module — no nested V8 context in sandbox |
+| `test-buffer-from.js` | requires vm module — no nested V8 context in sandbox |
+| `test-buffer-pool-untransferable.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-c-ares.js` | requires dns module — DNS resolution not available in sandbox |
+| `test-child-process-disconnect.js` | requires net module which is Tier 4 (Deferred) |
+| `test-child-process-fork-closed-channel-segfault.js` | requires net module which is Tier 4 (Deferred) |
+| `test-child-process-fork-dgram.js` | requires dgram module which is Tier 5 (Unsupported) |
+| `test-child-process-fork-getconnections.js` | requires net module which is Tier 4 (Deferred) |
+| `test-child-process-fork-net-server.js` | requires net module which is Tier 4 (Deferred) |
+| `test-child-process-fork-net-socket.js` | requires net module which is Tier 4 (Deferred) |
+| `test-child-process-fork-net.js` | requires net module which is Tier 4 (Deferred) |
+| `test-console.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-crypto-domain.js` | requires domain module which is Tier 5 (Unsupported) |
+| `test-crypto-domains.js` | requires domain module which is Tier 5 (Unsupported) |
+| `test-crypto-key-objects-messageport.js` | requires vm module — no nested V8 context in sandbox |
+| `test-crypto-verify-failure.js` | requires tls module which is Tier 4 (Deferred) |
+| `test-crypto.js` | requires tls module which is Tier 4 (Deferred) |
+| `test-datetime-change-notify.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-double-tls-client.js` | requires tls module which is Tier 4 (Deferred) |
+| `test-event-emitter-no-error-provided-to-error-event.js` | requires domain module which is Tier 5 (Unsupported) |
+| `test-eventemitter-asyncresource.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-fs-mkdir.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-fs-whatwg-url.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-fs-write-file-sync.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-h2-large-header-cause-client-to-hangup.js` | requires http2 module — createServer/createSecureServer unsupported |
+| `test-http-agent-reuse-drained-socket-only.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-autoselectfamily.js` | requires dns module — DNS resolution not available in sandbox |
+| `test-http-client-error-rawbytes.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-client-parse-error.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-client-reject-chunked-with-content-length.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-client-reject-cr-no-lf.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-client-response-domain.js` | requires domain module which is Tier 5 (Unsupported) |
+| `test-http-conn-reset.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-default-port.js` | requires https module — depends on tls which is Tier 4 (Deferred) |
+| `test-http-extra-response.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-incoming-pipelined-socket-destroy.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-invalid-urls.js` | requires https module — depends on tls which is Tier 4 (Deferred) |
+| `test-http-multi-line-headers.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-no-content-length.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-perf_hooks.js` | requires perf_hooks module which is Tier 4 (Deferred) |
+| `test-http-pipeline-requests-connection-leak.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-request-agent.js` | requires https module — depends on tls which is Tier 4 (Deferred) |
+| `test-http-response-no-headers.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-response-splitting.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-response-status-message.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-server-headers-timeout-delayed-headers.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-server-headers-timeout-interrupted-headers.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-server-headers-timeout-keepalive.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-server-headers-timeout-pipelining.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-server-multiple-client-error.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-server-request-timeout-delayed-body.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-server-request-timeout-delayed-headers.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-server-request-timeout-interrupted-body.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-server-request-timeout-interrupted-headers.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-server-request-timeout-keepalive.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-server-request-timeout-pipelining.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-server-request-timeout-upgrade.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-server.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-should-keep-alive.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-upgrade-agent.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-upgrade-binary.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-upgrade-client.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-upgrade-server.js` | requires net module which is Tier 4 (Deferred) |
+| `test-http-url.parse-https.request.js` | requires https module — depends on tls which is Tier 4 (Deferred) |
+| `test-inspect-support-for-node_options.js` | requires cluster module which is Tier 5 (Unsupported) |
+| `test-intl-v8BreakIterator.js` | requires vm module — no nested V8 context in sandbox |
+| `test-listen-fd-ebadf.js` | requires net module which is Tier 4 (Deferred) |
+| `test-messageport-hasref.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-next-tick-domain.js` | requires domain module which is Tier 5 (Unsupported) |
+| `test-no-addons-resolution-condition.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-perf-gc-crash.js` | requires perf_hooks module which is Tier 4 (Deferred) |
+| `test-perf-hooks-histogram.js` | requires perf_hooks module which is Tier 4 (Deferred) |
+| `test-perf-hooks-resourcetiming.js` | requires perf_hooks module which is Tier 4 (Deferred) |
+| `test-perf-hooks-usertiming.js` | requires perf_hooks module which is Tier 4 (Deferred) |
+| `test-perf-hooks-worker-timeorigin.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-performance-eventlooputil.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-performance-function-async.js` | requires perf_hooks module which is Tier 4 (Deferred) |
+| `test-performance-function.js` | requires perf_hooks module which is Tier 4 (Deferred) |
+| `test-performance-global.js` | requires perf_hooks module which is Tier 4 (Deferred) |
+| `test-performance-measure-detail.js` | requires perf_hooks module which is Tier 4 (Deferred) |
+| `test-performance-measure.js` | requires perf_hooks module which is Tier 4 (Deferred) |
+| `test-performance-nodetiming.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-performance-resourcetimingbufferfull.js` | requires perf_hooks module which is Tier 4 (Deferred) |
+| `test-performance-resourcetimingbuffersize.js` | requires perf_hooks module which is Tier 4 (Deferred) |
+| `test-performanceobserver-gc.js` | requires perf_hooks module which is Tier 4 (Deferred) |
+| `test-pipe-abstract-socket.js` | requires net module which is Tier 4 (Deferred) |
+| `test-pipe-address.js` | requires net module which is Tier 4 (Deferred) |
+| `test-pipe-stream.js` | requires net module which is Tier 4 (Deferred) |
+| `test-pipe-unref.js` | requires net module which is Tier 4 (Deferred) |
+| `test-pipe-writev.js` | requires net module which is Tier 4 (Deferred) |
+| `test-preload-self-referential.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-process-chdir-errormessage.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-process-chdir.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-process-env-sideeffects.js` | requires inspector module which is Tier 5 (Unsupported) |
+| `test-process-env-tz.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-process-euid-egid.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-process-getactivehandles.js` | requires net module which is Tier 4 (Deferred) |
+| `test-process-getactiveresources-track-active-handles.js` | requires net module which is Tier 4 (Deferred) |
+| `test-process-initgroups.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-process-setgroups.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-process-uid-gid.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-process-umask-mask.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-process-umask.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-querystring.js` | requires vm module — no nested V8 context in sandbox |
+| `test-readline.js` | requires readline module which is Tier 4 (Deferred) |
+| `test-ref-unref-return.js` | requires net module which is Tier 4 (Deferred) |
+| `test-repl.js` | requires net module which is Tier 4 (Deferred) |
+| `test-require-resolve-opts-paths-relative.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-set-process-debug-port.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-signal-handler.js` | hangs — signal handler test blocks waiting for process signals not available in sandbox |
+| `test-socket-address.js` | requires net module which is Tier 4 (Deferred) |
+| `test-socket-options-invalid.js` | requires net module which is Tier 4 (Deferred) |
+| `test-socket-write-after-fin-error.js` | requires net module which is Tier 4 (Deferred) |
+| `test-socket-write-after-fin.js` | requires net module which is Tier 4 (Deferred) |
+| `test-socket-writes-before-passed-to-tls-socket.js` | requires net module which is Tier 4 (Deferred) |
+| `test-stdio-pipe-redirect.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-stream-base-typechecking.js` | requires net module which is Tier 4 (Deferred) |
+| `test-stream-pipeline-http2.js` | requires http2 module — createServer/createSecureServer unsupported |
+| `test-stream-pipeline.js` | requires net module which is Tier 4 (Deferred) |
+| `test-stream-preprocess.js` | requires readline module which is Tier 4 (Deferred) |
+| `test-stream-writable-samecb-singletick.js` | async_hooks module is a deferred stub — AsyncLocalStorage, AsyncResource, createHook exported but not functional |
+| `test-timers-immediate-queue-throw.js` | requires domain module which is Tier 5 (Unsupported) |
+| `test-timers-reset-process-domain-on-throw.js` | requires domain module which is Tier 5 (Unsupported) |
+| `test-timers-socket-timeout-removes-other-socket-unref-timer.js` | requires net module which is Tier 4 (Deferred) |
+| `test-timers-unrefed-in-callback.js` | requires net module which is Tier 4 (Deferred) |
+| `test-tojson-perf_hooks.js` | requires perf_hooks module which is Tier 4 (Deferred) |
+| `test-tty-stdin-pipe.js` | requires readline module which is Tier 4 (Deferred) |
+| `test-webcrypto-cryptokey-workers.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-worker.js` | requires worker_threads module which is Tier 4 (Deferred) |
+| `test-x509-escaping.js` | requires tls module which is Tier 4 (Deferred) |
+| `test-arm-math-illegal-instruction.js` | requires node:test module which is not available in sandbox |
+| `test-assert-first-line.js` | requires node:test module which is not available in sandbox |
+| `test-corepack-version.js` | Cannot find module '/deps/corepack/package.json' — corepack is not bundled in the sandbox runtime |
+| `test-fetch-mock.js` | requires node:test module which is not available in sandbox |
+| `test-fs-operations-with-surrogate-pairs.js` | requires node:test module which is not available in sandbox |
+| `test-fs-readdir-recursive.js` | requires node:test module which is not available in sandbox |
+| `test-http-common.js` | Cannot find module '_http_common' — Node.js internal module _http_common not exposed in sandbox |
+| `test-http-invalidheaderfield2.js` | Cannot find module '_http_common' — Node.js internal module _http_common not exposed in sandbox |
+| `test-http-parser.js` | Cannot find module '_http_common' — Node.js internal module _http_common (and HTTPParser) not exposed in sandbox |
+| `test-npm-version.js` | Cannot find module '/deps/npm/package.json' — npm is not bundled in the sandbox runtime |
+| `test-outgoing-message-pipe.js` | Cannot find module '_http_outgoing' — Node.js internal module _http_outgoing not exposed in sandbox |
+| `test-process-ref-unref.js` | requires node:test module which is not available in sandbox |
+| `test-stream-aliases-legacy.js` | require('_stream_readable'), require('_stream_writable'), require('_stream_duplex'), etc. internal stream aliases not registered in sandbox module system |
+| `test-url-domain-ascii-unicode.js` | requires node:test module which is not available in sandbox |
+| `test-url-format.js` | requires node:test module which is not available in sandbox |
+| `test-url-parse-format.js` | requires node:test module which is not available in sandbox |
+| `test-util-stripvtcontrolcharacters.js` | requires node:test module which is not available in sandbox |
+| `test-util-text-decoder.js` | requires node:test module which is not available in sandbox |
+| `test-warn-stream-wrap.js` | require('_stream_wrap') module not registered in sandbox — _stream_wrap is an internal Node.js alias not exposed through readable-stream polyfill |
+| `test-vm-timeout.js` | hangs — vm.runInNewContext with timeout blocks waiting for vm module (not available) |
+| `test-assert-fail-deprecation.js` | requires 'test' module (node:test) which is not available in sandbox |
+| `test-buffer-resizable.js` | requires 'test' module (node:test) which is not available in sandbox |
+| `test-stream-consumers.js` | stream/consumers submodule not available in stream polyfill |
+
+</details>
+
+### unsupported-api (79 entries)
+
+**Glob patterns:**
+
+- `test-snapshot-*.js` — V8 snapshot/startup features not available in sandbox
+- `test-shadow-*.js` — ShadowRealm is experimental and not supported in sandbox
+- `test-compile-*.js` — V8 compile cache/code cache features not available in sandbox
+
+<details><summary>76 individual tests</summary>
+
+| Test | Reason |
+| --- | --- |
+| `test-child-process-dgram-reuseport.js` | uses child_process.fork — IPC across isolate boundary not supported |
+| `test-child-process-fork-no-shell.js` | uses child_process.fork — IPC across isolate boundary not supported |
+| `test-child-process-fork-stdio.js` | uses child_process.fork — IPC across isolate boundary not supported |
+| `test-child-process-fork3.js` | uses child_process.fork — IPC across isolate boundary not supported |
+| `test-child-process-ipc-next-tick.js` | uses child_process.fork — IPC across isolate boundary not supported |
+| `test-child-process-net-reuseport.js` | uses child_process.fork — IPC across isolate boundary not supported |
+| `test-child-process-send-after-close.js` | uses child_process.fork — IPC across isolate boundary not supported |
+| `test-child-process-send-keep-open.js` | uses child_process.fork — IPC across isolate boundary not supported |
+| `test-child-process-send-type-error.js` | uses child_process.fork — IPC across isolate boundary not supported |
+| `test-fs-options-immutable.js` | hangs — fs.watch() with frozen options waits for events that never arrive (VFS has no inotify) |
+| `test-fs-promises-watch.js` | hangs — fs.promises.watch() waits forever for filesystem events (VFS has no watcher) |
+| `test-fs-watch-file-enoent-after-deletion.js` | hangs — fs.watchFile() waits for stat changes that never arrive (VFS has no inotify) |
+| `test-fs-watch-recursive-add-file-to-existing-subfolder.js` | hangs — fs.watch({recursive}) waits for filesystem events that never arrive (VFS has no inotify) |
+| `test-fs-watch-recursive-add-file-to-new-folder.js` | hangs — fs.watch({recursive}) waits for filesystem events that never arrive (VFS has no inotify) |
+| `test-fs-watch-recursive-add-file.js` | hangs — fs.watch({recursive}) waits for filesystem events that never arrive (VFS has no inotify) |
+| `test-fs-watch-recursive-assert-leaks.js` | hangs — fs.watch({recursive}) waits for filesystem events that never arrive (VFS has no inotify) |
+| `test-fs-watch-recursive-delete.js` | hangs — fs.watch({recursive}) waits for filesystem events that never arrive (VFS has no inotify) |
+| `test-fs-watch-recursive-linux-parallel-remove.js` | hangs — fs.watch({recursive}) waits for filesystem events that never arrive (VFS has no inotify) |
+| `test-fs-watch-recursive-sync-write.js` | hangs — fs.watch() with recursive option waits forever for events |
+| `test-fs-watch-recursive-update-file.js` | hangs — fs.watch({recursive}) waits for filesystem events that never arrive (VFS has no inotify) |
+| `test-fs-watch-stop-async.js` | uses fs.watch/watchFile — inotify not available in VFS |
+| `test-fs-watch-stop-sync.js` | uses fs.watch/watchFile — inotify not available in VFS |
+| `test-fs-watch.js` | hangs — fs.watch() waits for filesystem events that never arrive (VFS has no inotify) |
+| `test-process-external-stdio-close.js` | uses child_process.fork — IPC across isolate boundary not supported |
+| `test-events-uncaught-exception-stack.js` | sandbox does not route synchronous throws from EventEmitter.emit('error') to process 'uncaughtException' handler |
+| `test-fs-promises-file-handle-writeFile.js` | Readable.from is not available in the browser — stream.Readable.from() factory not implemented in sandbox stream polyfill |
+| `test-fs-promises-writefile.js` | Readable.from is not available in the browser — stream.Readable.from() factory not implemented; used by writeFile() Readable/iterable overload |
+| `test-http-addrequest-localaddress.js` | TypeError: agent.addRequest is not a function — http.Agent.addRequest() internal method not implemented in http polyfill |
+| `test-http-agent-getname.js` | TypeError: agent.getName() is not a function — http.Agent.getName() not implemented in http polyfill |
+| `test-http-header-validators.js` | TypeError: Cannot read properties of undefined (reading 'constructor') — validateHeaderName/validateHeaderValue not exported from http polyfill module |
+| `test-http-import-websocket.js` | ReferenceError: WebSocket is not defined — WebSocket global not available in sandbox; undici WebSocket not polyfilled as a global |
+| `test-http-incoming-matchKnownFields.js` | TypeError: incomingMessage._addHeaderLine is not a function — http.IncomingMessage._addHeaderLine() internal method not implemented in http polyfill |
+| `test-http-outgoing-destroy.js` | Error: The _implicitHeader() method is not implemented — http.OutgoingMessage._implicitHeader() not implemented; required by write() after destroy() path |
+| `test-http-sync-write-error-during-continue.js` | TypeError: duplexPair is not a function — stream.duplexPair() utility not implemented in sandbox stream polyfill |
+| `test-mime-whatwg.js` | TypeError: MIMEType is not a constructor — util.MIMEType class not implemented in sandbox util polyfill |
+| `test-promise-hook-create-hook.js` | TypeError: Cannot read properties of undefined (reading 'createHook') — v8.promiseHooks.createHook() not implemented; v8 module does not expose promiseHooks in sandbox |
+| `test-promise-hook-exceptions.js` | TypeError: Cannot read properties of undefined (reading 'onInit') — v8.promiseHooks not implemented in sandbox; v8 module does not expose promiseHooks object |
+| `test-promise-hook-on-after.js` | TypeError: Cannot read properties of undefined (reading 'onAfter') — v8.promiseHooks.onAfter() not implemented; v8 module does not expose promiseHooks in sandbox |
+| `test-promise-hook-on-before.js` | TypeError: Cannot read properties of undefined (reading 'onBefore') — v8.promiseHooks.onBefore() not implemented; v8 module does not expose promiseHooks in sandbox |
+| `test-promise-hook-on-init.js` | TypeError: Cannot read properties of undefined (reading 'onInit') — v8.promiseHooks.onInit() not implemented; v8 module does not expose promiseHooks in sandbox |
+| `test-readable-from.js` | Readable.from() not available in readable-stream v3 polyfill — added in Node.js 12.3.0 / readable-stream v4 |
+| `test-stream-compose-operator.js` | stream.compose/Readable.compose not available in readable-stream polyfill |
+| `test-stream-compose.js` | stream.compose not available in readable-stream polyfill |
+| `test-stream-construct.js` | readable-stream v3 polyfill does not support the construct() option — added in Node.js 15 and not backported to readable-stream v3 |
+| `test-stream-drop-take.js` | Readable.from(), Readable.prototype.drop(), .take(), and .toArray() not available in readable-stream v3 polyfill — added in Node.js 17+ |
+| `test-stream-duplexpair.js` | duplexPair() not exported from readable-stream v3 polyfill — added in Node.js as an internal utility, not backported |
+| `test-stream-filter.js` | Readable.filter not available in readable-stream polyfill |
+| `test-stream-flatMap.js` | Readable.flatMap not available in readable-stream polyfill |
+| `test-stream-forEach.js` | Readable.from() and Readable.prototype.forEach() not available in readable-stream v3 polyfill — added in Node.js 17+ |
+| `test-stream-map.js` | Readable.map not available in readable-stream polyfill |
+| `test-stream-promises.js` | require('stream/promises') not available in readable-stream polyfill |
+| `test-stream-readable-aborted.js` | readable-stream v3 polyfill lacks readableAborted property on Readable — added in Node.js 16.14 and not backported to readable-stream v3 |
+| `test-stream-readable-async-iterators.js` | async iterator ERR_STREAM_PREMATURE_CLOSE not emitted by polyfill |
+| `test-stream-readable-destroy.js` | readable-stream v3 polyfill lacks errored property on Readable — added in Node.js 18 and not backported; also addAbortSignal not supported |
+| `test-stream-readable-didRead.js` | readable-stream v3 polyfill lacks readableDidRead, isDisturbed(), and isErrored() — added in Node.js 16.14 / 18 and not backported |
+| `test-stream-readable-dispose.js` | readable-stream v3 polyfill does not implement Symbol.asyncDispose on Readable — added in Node.js 20 explicit resource management |
+| `test-stream-readable-next-no-null.js` | Readable.from() not available in readable-stream v3 polyfill — added in Node.js 12.3.0 / readable-stream v4 |
+| `test-stream-reduce.js` | Readable.from() and Readable.prototype.reduce() not available in readable-stream v3 polyfill — added in Node.js 17+ |
+| `test-stream-set-default-hwm.js` | setDefaultHighWaterMark() and getDefaultHighWaterMark() not exported from readable-stream v3 polyfill — added in Node.js 18 |
+| `test-stream-toArray.js` | Readable.from() and Readable.prototype.toArray() not available in readable-stream v3 polyfill — added in Node.js 17+ |
+| `test-stream-transform-split-highwatermark.js` | getDefaultHighWaterMark() not exported from readable-stream v3 polyfill — added in Node.js 18; separate readableHighWaterMark/writableHighWaterMark Transform options also differ |
+| `test-stream-writable-aborted.js` | readable-stream v3 polyfill lacks writableAborted property on Writable — added in Node.js 18 and not backported |
+| `test-stream-writable-destroy.js` | readable-stream v3 polyfill lacks errored property on Writable — added in Node.js 18; also addAbortSignal on writable not supported |
+| `test-util-getcallsite.js` | util.getCallSite() (deprecated alias for getCallSites()) not implemented in util polyfill — added in Node.js 22 and not available in sandbox |
+| `test-util-types-exists.js` | require('util/types') subpath import not supported by sandbox module system |
+| `test-websocket.js` | WebSocket global is not defined in sandbox — Node.js 22 added WebSocket as a global but the sandbox does not expose it |
+| `test-webstream-readable-from.js` | ReadableStream.from() static method not implemented in sandbox WebStreams polyfill — added in Node.js 20 and not available globally in sandbox |
+| `test-webstreams-clone-unref.js` | structuredClone({ transfer: [stream] }) for ReadableStream/WritableStream not supported in sandbox — transferable stream structured clone not implemented |
+| `test-zlib-brotli-16GB.js` | getDefaultHighWaterMark() not exported from readable-stream v3 polyfill — test also relies on native zlib BrotliDecompress buffering behavior with _readableState internals |
+| `test-buffer-constructor-outside-node-modules.js` | ReferenceError: document is not defined — test uses browser DOM API not available in sandbox |
+| `test-child-process-fork.js` | child_process.fork is not supported in sandbox |
+| `test-fs-promises-file-handle-read-worker.js` | fs.promises.open (FileHandle API) not implemented |
+| `test-fs-watch-close-when-destroyed.js` | fs.watch not supported in sandbox |
+| `test-fs-watch-ref-unref.js` | fs.watch not supported in sandbox |
+| `test-fs-watchfile-ref-unref.js` | fs.watchFile not supported in sandbox |
+| `test-fs-write-stream-file-handle-2.js` | fs.promises.open (FileHandle API) not implemented |
+
+</details>
+
+### requires-v8-flags (239 entries)
+
+*239 individual tests — see expectations.json for full list.*
+
+### requires-exec-path (173 entries)
+
+**Glob patterns:**
+
+- `test-permission-*.js` — spawns child Node.js process via process.execPath — sandbox does not provide a real node binary
+
+<details><summary>172 individual tests</summary>
+
+| Test | Reason |
+| --- | --- |
+| `test-assert-builtins-not-read-from-filesystem.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-assert-esm-cjs-message-verify.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-async-hooks-fatal-error.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-async-wrap-pop-id-during-load.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-bash-completion.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-buffer-constructor-node-modules-paths.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-buffer-constructor-node-modules.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-advanced-serialization-largebuffer.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-advanced-serialization-splitted-length-field.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-advanced-serialization.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-constructor.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-detached.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-exec-abortcontroller-promisified.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-exec-encoding.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-exec-maxbuf.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-exec-std-encoding.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-exec-timeout-expire.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-exec-timeout-kill.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-exec-timeout-not-expired.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-execFile-promisified-abortController.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-execfile-maxbuf.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-execfile.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-execfilesync-maxbuf.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-execsync-maxbuf.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-fork-and-spawn.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-fork-exec-argv.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-fork-exec-path.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-no-deprecation.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-promisified.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-recv-handle.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-reject-null-bytes.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-send-returns-boolean.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-server-close.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-silent.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-spawn-argv0.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-spawn-controller.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-spawn-shell.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-spawn-timeout-kill-signal.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-spawnsync-env.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-spawnsync-input.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-spawnsync-maxbuf.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-spawnsync-timeout.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-stdin-ipc.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-stdio-big-write-end.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-stdio-inherit.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-child-process-stdout-ipc.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-cli-bad-options.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-cli-eval-event.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-cli-eval.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-cli-node-options-disallowed.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-cli-node-options.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-cli-options-negation.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-cli-options-precedence.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-cli-permission-deny-fs.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-cli-permission-multiple-allow.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-cli-syntax-eval.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-cli-syntax-piped-bad.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-cli-syntax-piped-good.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-common-expect-warning.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-common.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-coverage-with-inspector-disabled.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-cwd-enoent-preload.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-cwd-enoent-repl.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-cwd-enoent.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-dotenv-edge-cases.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-dotenv-node-options.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-dummy-stdio.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-env-var-no-warnings.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-error-prepare-stack-trace.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-error-reporting.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-experimental-shared-value-conveyor.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-file-write-stream4.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-find-package-json.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-force-repl-with-eval.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-force-repl.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-fs-readfile-eof.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-fs-readfile-error.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-fs-readfilesync-pipe-large.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-fs-realpath-pipe.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-fs-syncwritestream.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-fs-write-sigxfsz.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-heap-prof-basic.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-heap-prof-dir-absolute.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-heap-prof-dir-name.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-heap-prof-dir-relative.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-heap-prof-exec-argv.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-heap-prof-exit.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-heap-prof-interval.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-heap-prof-invalid-args.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-heap-prof-loop-drained.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-heap-prof-name.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-heap-prof-sigint.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-heapsnapshot-near-heap-limit-by-api-in-worker.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-heapsnapshot-near-heap-limit-worker.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-http-chunk-problem.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-http-debug.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-http-max-header-size.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-http-pipeline-flood.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-icu-env.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-inspect-address-in-use.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-inspect-publish-uid.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-intl.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-kill-segfault-freebsd.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-listen-fd-cluster.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-listen-fd-detached-inherit.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-listen-fd-detached.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-listen-fd-server.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-math-random.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-module-loading-globalpaths.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-module-run-main-monkey-patch.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-module-wrap.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-module-wrapper.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-node-run.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-npm-install.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-openssl-ca-options.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-os-homedir-no-envvar.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-os-userinfo-handles-getter-errors.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-performance-nodetiming-uvmetricsinfo.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-pipe-head.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-preload-print-process-argv.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-process-argv-0.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-process-exec-argv.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-process-execpath.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-process-exit-code-validation.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-process-exit-code.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-process-external-stdio-close-spawn.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-process-load-env-file.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-process-ppid.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-process-raw-debug.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-process-really-exit.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-process-remove-all-signal-listeners.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-process-uncaught-exception-monitor.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-promise-reject-callback-exception.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-promise-unhandled-flag.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-release-npm.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-require-invalid-main-no-exports.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-security-revert-unknown.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-set-http-max-http-headers.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-setproctitle.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-sigint-infinite-loop.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-single-executable-blob-config-errors.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-single-executable-blob-config.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-source-map-enable.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-sqlite.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-stack-size-limit.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-startup-empty-regexp-statics.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-startup-large-pages.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-stdin-child-proc.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-stdin-from-file-spawn.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-stdin-pipe-large.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-stdin-pipe-resume.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-stdin-script-child-option.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-stdin-script-child.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-stdio-closed.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-stdio-undestroy.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-stdout-cannot-be-closed-child-process-pipe.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-stdout-close-catch.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-stdout-close-unref.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-stdout-stderr-reading.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-stdout-to-file.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-stream-pipeline-process.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-stream-readable-unpipe-resume.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-sync-io-option.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-tracing-no-crash.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-unhandled-exception-rethrow-error.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-unhandled-exception-with-worker-inuse.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-url-parse-invalid-input.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-util-callbackify.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-util-getcallsites.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-vfs.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-webstorage.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+| `test-windows-failed-heap-allocation.js` | spawns child Node.js process via process.execPath — sandbox does not provide a real node binary |
+
+</details>
+
+### security-constraint (1 entries)
+
+<details><summary>1 individual test</summary>
+
+| Test | Reason |
+| --- | --- |
+| `test-process-binding-internalbinding-allowlist.js` | process.binding is not supported in sandbox (security constraint) |
+
+</details>
+
+### test-infra (22 entries)
+
+**Glob patterns:**
+
+- `test-runner-*.js` — Node.js test runner infrastructure — not runtime behavior
+- `test-eslint-*.js` — ESLint integration tests — Node.js CI tooling, not runtime
+
+<details><summary>20 individual tests</summary>
+
+| Test | Reason |
+| --- | --- |
+| `test-benchmark-cli.js` | Cannot find module '../../benchmark/_cli.js' — benchmark CLI helper not vendored in conformance test tree |
+| `test-http-client-req-error-dont-double-fire.js` | Cannot find module '../common/internet' — internet connectivity helper not vendored in conformance test tree |
+| `test-inspect-async-hook-setup-at-inspect.js` | TypeError: common.skipIfInspectorDisabled is not a function — skipIfInspectorDisabled() helper not implemented in conformance common shim; test requires V8 inspector |
+| `test-whatwg-events-event-constructors.js` | test uses require('../common/wpt') WPT harness which is not implemented in sandbox conformance test harness |
+| `test-cluster-dgram-ipv6only.js` | passes in sandbox — overrides glob pattern |
+| `test-cluster-net-listen-ipv6only-false.js` | passes in sandbox — overrides glob pattern |
+| `test-cluster-shared-handle-bind-privileged-port.js` | passes in sandbox — overrides glob pattern |
+| `test-domain-from-timer.js` | passes in sandbox — overrides glob pattern |
+| `test-permission-fs-windows-path.js` | passes in sandbox — overrides glob pattern |
+| `test-permission-no-addons.js` | passes in sandbox — overrides glob pattern |
+| `test-readline-input-onerror.js` | passes in sandbox — overrides glob pattern |
+| `test-repl-stdin-push-null.js` | passes in sandbox — overrides glob pattern |
+| `test-trace-events-api.js` | passes in sandbox — overrides glob pattern |
+| `test-trace-events-async-hooks-dynamic.js` | passes in sandbox — overrides glob pattern |
+| `test-trace-events-async-hooks-worker.js` | passes in sandbox — overrides glob pattern |
+| `test-v8-deserialize-buffer.js` | passes in sandbox — overrides glob pattern |
+| `test-vm-new-script-this-context.js` | passes in sandbox — overrides glob pattern |
+| `test-vm-parse-abort-on-uncaught-exception.js` | passes in sandbox — overrides glob pattern |
+| `test-worker-messaging-errors-handler.js` | passes in sandbox — overrides glob pattern |
+| `test-worker-messaging-errors-invalid.js` | passes in sandbox — overrides glob pattern |
+
+</details>
+
+### native-addon (3 entries)
+
+<details><summary>3 individual tests</summary>
+
+| Test | Reason |
+| --- | --- |
+| `test-http-parser-timeout-reset.js` | uses process.binding() or native addons — not available in sandbox |
+| `test-internal-process-binding.js` | uses process.binding() or native addons — not available in sandbox |
+| `test-process-binding-util.js` | uses process.binding() or native addons — not available in sandbox |
+
+</details>
+
+### vacuous-skip (34 entries)
+
+<details><summary>34 individual tests</summary>
+
+| Test | Reason |
+| --- | --- |
+| `test-crypto-aes-wrap.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
+| `test-crypto-des3-wrap.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
+| `test-crypto-dh-shared.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
+| `test-crypto-from-binary.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
+| `test-crypto-keygen-empty-passphrase-no-error.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
+| `test-crypto-keygen-missing-oid.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
+| `test-crypto-keygen-promisify.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
+| `test-crypto-no-algorithm.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
+| `test-crypto-op-during-process-exit.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
+| `test-crypto-padding-aes256.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
+| `test-crypto-publicDecrypt-fails-first-time.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
+| `test-crypto-randomfillsync-regression.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
+| `test-crypto-update-encoding.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
+| `test-http-dns-error.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
+| `test-strace-openat-openssl.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
+| `test-child-process-exec-any-shells-windows.js` | vacuous pass — Windows-only test self-skips on Linux sandbox |
+| `test-debug-process.js` | vacuous pass — Windows-only test self-skips on Linux sandbox |
+| `test-fs-long-path.js` | vacuous pass — Windows-only test self-skips on Linux sandbox |
+| `test-fs-readdir-pipe.js` | vacuous pass — Windows-only test self-skips on Linux sandbox |
+| `test-fs-readfilesync-enoent.js` | vacuous pass — Windows-only test self-skips on Linux sandbox |
+| `test-fs-realpath-on-substed-drive.js` | vacuous pass — Windows-only test self-skips on Linux sandbox |
+| `test-fs-write-file-invalid-path.js` | vacuous pass — Windows-only test self-skips on Linux sandbox |
+| `test-module-readonly.js` | vacuous pass — Windows-only test self-skips on Linux sandbox |
+| `test-require-long-path.js` | vacuous pass — Windows-only test self-skips on Linux sandbox |
+| `test-spawn-cmd-named-pipe.js` | vacuous pass — Windows-only test self-skips on Linux sandbox |
+| `test-windows-abort-exitcode.js` | vacuous pass — Windows-only test self-skips on Linux sandbox |
+| `test-fs-lchmod.js` | vacuous pass — macOS-only test self-skips on Linux sandbox |
+| `test-fs-readdir-buffer.js` | vacuous pass — macOS-only test self-skips on Linux sandbox |
+| `test-macos-app-sandbox.js` | vacuous pass — macOS-only test self-skips on Linux sandbox |
+| `test-module-strip-types.js` | vacuous pass — test self-skips because process.config.variables.node_use_amaro is unavailable in sandbox |
+| `test-tz-version.js` | vacuous pass — test self-skips because process.config.variables.icu_path is unavailable in sandbox |
+| `test-child-process-stdio-overlapped.js` | vacuous pass — test self-skips because required overlapped-checker binary not found in sandbox |
+| `test-fs-utimes-y2K38.js` | vacuous pass — test self-skips because child_process.spawnSync(touch) fails in sandbox |
+| `test-tick-processor-arguments.js` | vacuous pass — test self-skips because common.enoughTestMem is undefined in sandbox shim |
+
+</details>

@@ -5,6 +5,8 @@
  * kernel for filesystem, process, pipe, and FD operations.
  */
 
+import type { WaitQueue } from "./wait.js";
+
 // Re-export VFS types
 export type {
 	VirtualFileSystem,
@@ -23,6 +25,8 @@ export interface KernelOptions {
 	cwd?: string;
 	/** Maximum number of concurrent processes. Spawn beyond this limit throws EAGAIN. */
 	maxProcesses?: number;
+	/** Host network adapter for external socket routing (TCP, UDP, DNS). */
+	hostNetworkAdapter?: import("./host-adapter.js").HostNetworkAdapter;
 }
 
 export interface Kernel {
@@ -72,6 +76,11 @@ export interface Kernel {
 	readdir(path: string): Promise<string[]>;
 	stat(path: string): Promise<import("./vfs.js").VirtualStat>;
 	exists(path: string): Promise<boolean>;
+
+	// Socket table
+	readonly socketTable: import("./socket-table.js").SocketTable;
+	readonly timerTable: import("./timer-table.js").TimerTable;
+	readonly inodeTable: import("./inode-table.js").InodeTable;
 
 	// Introspection
 	readonly commands: ReadonlyMap<string, string>;
@@ -266,7 +275,7 @@ export interface KernelInterface {
 
 	// Advisory file locking
 	/** Apply or remove an advisory lock on the file referenced by fd. */
-	flock(pid: number, fd: number, operation: number): void;
+	flock(pid: number, fd: number, operation: number): Promise<void>;
 
 	// Process operations
 	spawn(
@@ -346,6 +355,13 @@ export interface KernelInterface {
 	// Directory creation with umask
 	/** Create a directory, applying the process's umask to the given mode. */
 	mkdir(pid: number, path: string, mode?: number): Promise<void>;
+
+	// Socket table
+	readonly socketTable: import("./socket-table.js").SocketTable;
+	readonly timerTable: import("./timer-table.js").TimerTable;
+
+	// Process table
+	readonly processTable: import("./process-table.js").ProcessTable;
 }
 
 // ---------------------------------------------------------------------------
@@ -361,6 +377,8 @@ export interface FDStat {
 export interface FileDescription {
 	id: number;
 	path: string;
+	/** Stable inode identity for FD I/O after the pathname is unlinked. */
+	inode?: number;
 	cursor: bigint;
 	flags: number;
 	refCount: number;
@@ -385,6 +403,7 @@ export const O_CREAT = 0o100;
 export const O_EXCL = 0o200;
 export const O_TRUNC = 0o1000;
 export const O_APPEND = 0o2000;
+export const O_NONBLOCK = 0o4;
 export const O_CLOEXEC = 0o2000000;
 
 // fcntl commands
@@ -435,6 +454,12 @@ export interface ProcessEntry {
 	cwd: string;
 	/** File mode creation mask (POSIX umask). Inherited from parent, default 0o022. */
 	umask: number;
+	/** Active handles tracked for this process (id → description). */
+	activeHandles: Map<string, string>;
+	/** Maximum number of active handles allowed for this process. 0 = unlimited. */
+	handleLimit: number;
+	/** Signal handling state: registered handlers, blocked signals, pending signals. */
+	signalState: ProcessSignalState;
 	driverProcess: DriverProcess;
 }
 
@@ -456,16 +481,22 @@ export interface ProcessInfo {
 /** POSIX error codes used by the kernel. */
 export type KernelErrorCode =
 	| "EACCES"
+	| "EADDRINUSE"
 	| "EAGAIN"
 	| "EBADF"
+	| "ECONNREFUSED"
+	| "EINPROGRESS"
+	| "EINTR"
 	| "EEXIST"
 	| "EINVAL"
 	| "EIO"
 	| "EISDIR"
 	| "EMFILE"
+	| "EMSGSIZE"
 	| "ENOENT"
 	| "ENOSPC"
 	| "ENOSYS"
+	| "ENOTCONN"
 	| "ENOTEMPTY"
 	| "ENOTDIR"
 	| "EPERM"
@@ -552,8 +583,52 @@ export const SIGSTOP = 19;
 export const SIGTSTP = 20;
 export const SIGWINCH = 28;
 
+// sigaction flags
+export const SA_RESTART = 0x10000000;
+export const SA_RESETHAND = 0x80000000;
+export const SA_NOCLDSTOP = 0x00000001;
+
+// sigprocmask how values
+export const SIG_BLOCK = 0;
+export const SIG_UNBLOCK = 1;
+export const SIG_SETMASK = 2;
+
 // waitpid options (POSIX bitmask)
 export const WNOHANG = 1;
+
+// ---------------------------------------------------------------------------
+// Signal handler types
+// ---------------------------------------------------------------------------
+
+/** Signal disposition: default kernel action, ignore, or user-defined handler. */
+export type SignalDisposition = "default" | "ignore" | ((signal: number) => void);
+
+/** Per-signal handler registration (matches POSIX struct sigaction). */
+export interface SignalHandler {
+	handler: SignalDisposition;
+	/** Signals to block during handler execution (sa_mask). */
+	mask: Set<number>;
+	/** Flags (SA_RESTART, SA_RESETHAND, SA_NOCLDSTOP, etc.). */
+	flags: number;
+}
+
+/** Per-process signal state. */
+export interface ProcessSignalState {
+	/** Signal number → registered handler. */
+	handlers: Map<number, SignalHandler>;
+	/** Currently blocked signals (sigprocmask). */
+	blockedSignals: Set<number>;
+	/** Signals queued while blocked. Standard signals (1-31) coalesce to max 1. */
+	pendingSignals: Set<number>;
+	/** Waiters blocked on signal-aware syscalls for this process. */
+	signalWaiters: WaitQueue;
+	/** Monotonic counter for delivered signals. */
+	deliverySeq: number;
+	/** Most recently delivered signal number, or null if none. */
+	lastDeliveredSignal: number | null;
+	/** Flags from the most recently delivered handler registration. */
+	lastDeliveredFlags: number;
+}
 
 // ---------------------------------------------------------------------------
 // Pipe types

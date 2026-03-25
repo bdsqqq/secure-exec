@@ -14,6 +14,10 @@ The project SHALL provide a stable sandbox execution interface through `NodeRunt
 - **WHEN** a caller creates `NodeRuntime` with a browser-target runtime driver and invokes `exec`
 - **THEN** execution MUST run through browser runtime primitives and return the same structured runtime result contract
 
+#### Scenario: Execute ESM entrypoint through exec file path
+- **WHEN** a caller invokes `exec()` with `filePath: "/entry.mjs"` or a `.js` file classified as ESM by nearest package metadata
+- **THEN** the runtime MUST evaluate the entrypoint as ESM rather than compiling it as CommonJS
+
 #### Scenario: Run CJS module and retrieve exports
 - **WHEN** a caller invokes `run()` with CommonJS code that assigns to `module.exports`
 - **THEN** the result's `exports` field MUST contain the value of `module.exports`
@@ -78,6 +82,14 @@ When a kernel is available, runtime execution SHALL be mediated through the kern
 #### Scenario: Standalone NodeRuntime construction remains supported
 - **WHEN** a caller constructs `NodeRuntime` without a kernel
 - **THEN** the existing standalone driver-based construction MUST continue to work for backward compatibility with the existing `SystemDriver` + `RuntimeDriverFactory` model
+
+#### Scenario: Standalone NodeRuntime still uses kernel-backed socket routing
+- **WHEN** a caller constructs `NodeRuntime` without `kernel.mount()` and sandboxed code uses `http.createServer()` or `net.connect()`
+- **THEN** the Node execution driver MUST provision an internal `SocketTable` with a host network adapter so listener ownership, loopback routing, and external socket delegation still flow through kernel-managed socket state
+
+#### Scenario: Timer and active-handle budgets route through kernel tables
+- **WHEN** the Node execution driver runs with kernel-provided or internally provisioned process/timer tables
+- **THEN** bridge `setTimeout`/`setInterval` bookkeeping MUST allocate through the kernel `TimerTable`, and bridge active-handle tracking MUST register through the kernel `ProcessTable` rather than isolate-local budget Maps
 
 ### Requirement: Active Handle Completion for Async Operations
 The Node runtime SHALL wait for tracked active handles before finalizing execution results so callback-driven asynchronous work can complete.
@@ -156,6 +168,21 @@ The `__dynamicImport` bridge function SHALL return a Promise that resolves to th
 - **WHEN** user code calls `await import("./nonexistent")`
 - **THEN** the returned Promise MUST reject with an error indicating the module cannot be resolved
 
+### Requirement: ESM Top-Level Await Completes Before Execution Finalization
+When sandboxed ESM execution uses top-level `await`, the runtime SHALL keep the entry-module evaluation promise alive until it settles instead of finalizing execution early.
+
+#### Scenario: ESM exec waits for entry-module top-level await
+- **WHEN** `exec()` runs an ESM entrypoint whose top-level `await` waits on later async work such as timers or promise-driven startup
+- **THEN** the execution result MUST not be returned until the awaited work finishes and post-`await` statements have run
+
+#### Scenario: Static imports wait for transitive top-level await
+- **WHEN** an ESM entrypoint statically imports a dependency that uses top-level `await`
+- **THEN** the entrypoint MUST not continue past the import until the dependency's async module evaluation has completed
+
+#### Scenario: Dynamic import waits for imported module top-level await
+- **WHEN** sandboxed code executes `await import("./mod.mjs")` and `./mod.mjs` contains top-level `await`
+- **THEN** the import Promise MUST not resolve until the imported module's async evaluation has completed and its namespace is ready
+
 ### Requirement: Configurable CPU Time Limit for Node Runtime Execution
 The Node runtime MUST support an optional `cpuTimeLimitMs` execution budget for sandboxed code and MUST enforce it as a shared per-execution deadline across runtime calls that execute user-controlled code.
 
@@ -166,6 +193,10 @@ The Node runtime MUST support an optional `cpuTimeLimitMs` execution budget for 
 #### Scenario: Shared deadline is enforced across multiple execution phases
 - **WHEN** a caller configures `cpuTimeLimitMs` and execution spends time across multiple user-code phases (for example module evaluation plus later active-handle waiting)
 - **THEN** the runtime MUST apply one shared budget across phases rather than resetting timeout per phase
+
+#### Scenario: Top-level await timeout uses the shared deadline
+- **WHEN** an ESM entrypoint is still awaiting async module startup and later awaited work exceeds `cpuTimeLimitMs`
+- **THEN** the runtime MUST surface the same timeout failure contract instead of returning a successful result early
 
 #### Scenario: Timeout contract is deterministic
 - **WHEN** execution exceeds a configured `cpuTimeLimitMs`
@@ -208,6 +239,17 @@ The runtime MUST classify JavaScript modules using Node-compatible metadata rule
 - **WHEN** a package has `package.json` with `"type": "commonjs"` (or no ESM override) and sandboxed code loads `./index.js` via `require`
 - **THEN** the runtime MUST evaluate the file as CommonJS and return `module.exports`
 
+### Requirement: ESM Resolution Uses Import Conditions
+The runtime MUST resolve ESM module loads with Node-compatible import conditions, while preserving require-condition behavior for CommonJS loaders in the same execution.
+
+#### Scenario: ESM package exports prefer import conditions
+- **WHEN** sandboxed ESM code loads a package with conditional `exports` entries for both `"import"` and `"require"`
+- **THEN** ESM loading MUST resolve the `"import"` condition target
+
+#### Scenario: createRequire preserves require conditions beside ESM loading
+- **WHEN** sandboxed code in the same execution uses `createRequire()` or `require()` to load a package with conditional `exports` entries for both `"import"` and `"require"`
+- **THEN** CommonJS loading MUST still resolve the `"require"` condition target
+
 ### Requirement: Dynamic Import Error Fidelity
 Dynamic `import()` handling MUST preserve Node-like failure behavior by surfacing ESM compile/instantiate/evaluate errors directly and avoiding unintended fallback masking.
 
@@ -218,6 +260,10 @@ Dynamic `import()` handling MUST preserve Node-like failure behavior by surfacin
 #### Scenario: ESM runtime failure rejects with module error
 - **WHEN** user code executes `await import("./throws.mjs")` and the imported module throws during evaluation
 - **THEN** the Promise MUST reject with that evaluation failure and MUST NOT re-route to CommonJS fallback
+
+#### Scenario: Async entrypoint rejection fails exec
+- **WHEN** `exec()` runs an async entrypoint that rejects through `await import(...)` failure during missing-module, syntax-error, or evaluation-error paths
+- **THEN** the execution result MUST report a non-zero exit code and preserve the underlying module error message
 
 ### Requirement: CJS Namespace Shape for Dynamic Import
 When dynamic `import()` resolves a CommonJS module, the returned namespace object MUST preserve Node-compatible default semantics for `module.exports` values across object, function, primitive, and null exports.

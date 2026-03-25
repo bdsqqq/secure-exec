@@ -114,6 +114,26 @@ export const NODE_CUSTOM_GLOBAL_INVENTORY: readonly CustomGlobalInventoryEntry[]
 		rationale: "Host-to-sandbox HTTP server dispatch entrypoint.",
 	},
 	{
+		name: "_httpServerUpgradeDispatch",
+		classification: "hardened",
+		rationale: "Host-to-sandbox HTTP upgrade dispatch entrypoint.",
+	},
+	{
+		name: "_timerDispatch",
+		classification: "hardened",
+		rationale: "Host-to-sandbox timer callback dispatch entrypoint.",
+	},
+	{
+		name: "_upgradeSocketData",
+		classification: "hardened",
+		rationale: "Host-to-sandbox HTTP upgrade socket data dispatch entrypoint.",
+	},
+	{
+		name: "_upgradeSocketEnd",
+		classification: "hardened",
+		rationale: "Host-to-sandbox HTTP upgrade socket close dispatch entrypoint.",
+	},
+	{
 		name: "ProcessExitError",
 		classification: "hardened",
 		rationale: "Runtime-owned process-exit control-path error class.",
@@ -144,6 +164,16 @@ export const NODE_CUSTOM_GLOBAL_INVENTORY: readonly CustomGlobalInventoryEntry[]
 		rationale: "Host file-loading bridge reference.",
 	},
 	{
+		name: "_resolveModuleSync",
+		classification: "hardened",
+		rationale: "Host synchronous module-resolution bridge reference.",
+	},
+	{
+		name: "_loadFileSync",
+		classification: "hardened",
+		rationale: "Host synchronous file-loading bridge reference.",
+	},
+	{
 		name: "_scheduleTimer",
 		classification: "hardened",
 		rationale: "Host timer bridge reference used by process timers.",
@@ -157,6 +187,71 @@ export const NODE_CUSTOM_GLOBAL_INVENTORY: readonly CustomGlobalInventoryEntry[]
 		name: "_cryptoRandomUUID",
 		classification: "hardened",
 		rationale: "Host entropy bridge reference for crypto.randomUUID.",
+	},
+	{
+		name: "_cryptoHashDigest",
+		classification: "hardened",
+		rationale: "Host crypto digest bridge reference.",
+	},
+	{
+		name: "_cryptoHmacDigest",
+		classification: "hardened",
+		rationale: "Host crypto HMAC bridge reference.",
+	},
+	{
+		name: "_cryptoPbkdf2",
+		classification: "hardened",
+		rationale: "Host crypto PBKDF2 bridge reference.",
+	},
+	{
+		name: "_cryptoScrypt",
+		classification: "hardened",
+		rationale: "Host crypto scrypt bridge reference.",
+	},
+	{
+		name: "_cryptoCipheriv",
+		classification: "hardened",
+		rationale: "Host crypto cipher bridge reference.",
+	},
+	{
+		name: "_cryptoDecipheriv",
+		classification: "hardened",
+		rationale: "Host crypto decipher bridge reference.",
+	},
+	{
+		name: "_cryptoCipherivCreate",
+		classification: "hardened",
+		rationale: "Host streaming cipher bridge reference.",
+	},
+	{
+		name: "_cryptoCipherivUpdate",
+		classification: "hardened",
+		rationale: "Host streaming cipher update bridge reference.",
+	},
+	{
+		name: "_cryptoCipherivFinal",
+		classification: "hardened",
+		rationale: "Host streaming cipher finalization bridge reference.",
+	},
+	{
+		name: "_cryptoSign",
+		classification: "hardened",
+		rationale: "Host crypto sign bridge reference.",
+	},
+	{
+		name: "_cryptoVerify",
+		classification: "hardened",
+		rationale: "Host crypto verify bridge reference.",
+	},
+	{
+		name: "_cryptoGenerateKeyPairSync",
+		classification: "hardened",
+		rationale: "Host crypto key-pair generation bridge reference.",
+	},
+	{
+		name: "_cryptoSubtle",
+		classification: "hardened",
+		rationale: "Host WebCrypto subtle bridge reference.",
 	},
 	{
 		name: "_fsReadFile",
@@ -307,6 +402,56 @@ export const NODE_CUSTOM_GLOBAL_INVENTORY: readonly CustomGlobalInventoryEntry[]
 		name: "_networkHttpServerCloseRaw",
 		classification: "hardened",
 		rationale: "Host network bridge reference.",
+	},
+	{
+		name: "_networkHttpServerRespondRaw",
+		classification: "hardened",
+		rationale: "Host network bridge reference for sandbox HTTP server responses.",
+	},
+	{
+		name: "_networkHttpServerWaitRaw",
+		classification: "hardened",
+		rationale: "Host network bridge reference for sandbox HTTP server lifetime tracking.",
+	},
+	{
+		name: "_upgradeSocketWriteRaw",
+		classification: "hardened",
+		rationale: "Host HTTP upgrade socket write bridge reference.",
+	},
+	{
+		name: "_upgradeSocketEndRaw",
+		classification: "hardened",
+		rationale: "Host HTTP upgrade socket half-close bridge reference.",
+	},
+	{
+		name: "_upgradeSocketDestroyRaw",
+		classification: "hardened",
+		rationale: "Host HTTP upgrade socket destroy bridge reference.",
+	},
+	{
+		name: "_netSocketConnectRaw",
+		classification: "hardened",
+		rationale: "Host net socket connect bridge reference.",
+	},
+	{
+		name: "_netSocketWriteRaw",
+		classification: "hardened",
+		rationale: "Host net socket write bridge reference.",
+	},
+	{
+		name: "_netSocketEndRaw",
+		classification: "hardened",
+		rationale: "Host net socket end bridge reference.",
+	},
+	{
+		name: "_netSocketDestroyRaw",
+		classification: "hardened",
+		rationale: "Host net socket destroy bridge reference.",
+	},
+	{
+		name: "_netSocketUpgradeTlsRaw",
+		classification: "hardened",
+		rationale: "Host net socket TLS-upgrade bridge reference.",
 	},
 	{
 		name: "_batchResolveModules",

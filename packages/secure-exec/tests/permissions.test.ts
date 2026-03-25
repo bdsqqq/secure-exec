@@ -42,10 +42,6 @@ const baseFs: VirtualFileSystem = {
 };
 
 const baseNetwork: NetworkAdapter = {
-	httpServerListen: async () => ({
-		address: { address: "127.0.0.1", family: "IPv4", port: 3000 },
-	}),
-	httpServerClose: async () => undefined,
 	fetch: async (url) => ({
 		ok: true,
 		status: 200,
@@ -201,6 +197,31 @@ describe("allow helpers", () => {
 			envThrown = error;
 		}
 		expectEacces(envThrown, "access", "HIDDEN");
+	});
+
+	it("preserves the loopback port checker hook through network permission wrapping", async () => {
+		let recordedChecker:
+			| ((hostname: string, port: number) => boolean)
+			| undefined;
+		const loopbackAwareNetwork = {
+			...baseNetwork,
+			__setLoopbackPortChecker(checker: (hostname: string, port: number) => boolean) {
+				recordedChecker = checker;
+			},
+		};
+
+		const guardedNetwork = wrapNetworkAdapter(loopbackAwareNetwork, allowAll);
+		const wrappedLoopbackAware = guardedNetwork as NetworkAdapter & {
+			__setLoopbackPortChecker?: (checker: (hostname: string, port: number) => boolean) => void;
+		};
+		const checker = (hostname: string, port: number) =>
+			hostname === "127.0.0.1" && port === 33221;
+
+		wrappedLoopbackAware.__setLoopbackPortChecker?.(checker);
+
+		expect(recordedChecker).toBe(checker);
+		expect(recordedChecker?.("127.0.0.1", 33221)).toBe(true);
+		expect(recordedChecker?.("127.0.0.1", 80)).toBe(false);
 	});
 });
 

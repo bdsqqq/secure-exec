@@ -25,6 +25,7 @@ import type { BindingTree } from './bindings.js';
 import {
   allowAllChildProcess,
   allowAllFs,
+  createProcessScopedFileSystem,
 } from '@secure-exec/core';
 import type {
   CommandExecutor,
@@ -436,7 +437,10 @@ class NodeRuntimeDriver implements RuntimeDriver {
 
       // Build kernel-backed system driver
       const commandExecutor = createKernelCommandExecutor(kernel, ctx.pid);
-      let filesystem: VirtualFileSystem = createKernelVfsAdapter(kernel.vfs);
+      let filesystem: VirtualFileSystem = createProcessScopedFileSystem(
+        createKernelVfsAdapter(kernel.vfs),
+        ctx.pid,
+      );
 
       // npm/npx need host filesystem fallback and fs permissions for module resolution
       let permissions: Partial<Permissions> = { ...this._permissions };
@@ -474,13 +478,17 @@ class NodeRuntimeDriver implements RuntimeDriver {
           }
         : undefined;
 
-      // Create a per-process isolate
+      // Create a per-process isolate with kernel socket routing
       const executionDriver = new NodeExecutionDriver({
         system: systemDriver,
         runtime: systemDriver.runtime,
         memoryLimit: this._memoryLimit,
         bindings: this._bindings,
         onPtySetRawMode,
+        socketTable: kernel.socketTable,
+        processTable: kernel.processTable,
+        timerTable: kernel.timerTable,
+        pid: ctx.pid,
       });
       this._activeDrivers.set(ctx.pid, executionDriver);
 

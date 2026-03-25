@@ -1,4 +1,5 @@
 import { exposeCustomGlobal } from "@secure-exec/core/internal/shared/global-exposure";
+import { bridgeDispatchSync } from "./dispatch.js";
 
 /**
  * Active Handles: Mechanism to keep the sandbox alive for async operations.
@@ -11,11 +12,11 @@ import { exposeCustomGlobal } from "@secure-exec/core/internal/shared/global-exp
  * See: docs-internal/node/ACTIVE_HANDLES.md
  */
 
-// _maxHandles is injected by the host when resourceBudgets.maxHandles is set.
-declare const _maxHandles: number | undefined;
-
-// Map of active handles: id -> description (for debugging)
-const _activeHandles = new Map<string, string>();
+const HANDLE_DISPATCH = {
+	register: "kernelHandleRegister",
+	unregister: "kernelHandleUnregister",
+	list: "kernelHandleList",
+} as const;
 
 // Resolvers waiting for all handles to complete
 let _waitResolvers: Array<() => void> = [];
@@ -27,11 +28,16 @@ let _waitResolvers: Array<() => void> = [];
  * @param description Human-readable description for debugging
  */
 export function _registerHandle(id: string, description: string): void {
-	// Enforce handle cap (skip check for re-registration of existing handle)
-	if (typeof _maxHandles !== "undefined" && !_activeHandles.has(id) && _activeHandles.size >= _maxHandles) {
-		throw new Error("ERR_RESOURCE_BUDGET_EXCEEDED: maximum active handles exceeded");
+	try {
+		bridgeDispatchSync<void>(HANDLE_DISPATCH.register, id, description);
+	} catch (error) {
+		if (error instanceof Error && error.message.includes("EAGAIN")) {
+			throw new Error(
+				"ERR_RESOURCE_BUDGET_EXCEEDED: maximum active handles exceeded",
+			);
+		}
+		throw error;
 	}
-	_activeHandles.set(id, description);
 }
 
 /**
@@ -39,8 +45,8 @@ export function _registerHandle(id: string, description: string): void {
  * @param id The handle identifier to unregister
  */
 export function _unregisterHandle(id: string): void {
-	_activeHandles.delete(id);
-	if (_activeHandles.size === 0 && _waitResolvers.length > 0) {
+	const remaining = bridgeDispatchSync<number>(HANDLE_DISPATCH.unregister, id);
+	if (remaining === 0 && _waitResolvers.length > 0) {
 		const resolvers = _waitResolvers;
 		_waitResolvers = [];
 		resolvers.forEach((r) => r());
@@ -52,7 +58,7 @@ export function _unregisterHandle(id: string): void {
  * Returns immediately if no handles are active.
  */
 export function _waitForActiveHandles(): Promise<void> {
-	if (_activeHandles.size === 0) {
+	if (_getActiveHandles().length === 0) {
 		return Promise.resolve();
 	}
 	return new Promise((resolve) => {
@@ -65,7 +71,7 @@ export function _waitForActiveHandles(): Promise<void> {
  * Returns array of [id, description] tuples.
  */
 export function _getActiveHandles(): Array<[string, string]> {
-	return Array.from(_activeHandles.entries());
+	return bridgeDispatchSync<Array<[string, string]>>(HANDLE_DISPATCH.list);
 }
 
 // Install on globalThis for use by other bridge modules and exec().

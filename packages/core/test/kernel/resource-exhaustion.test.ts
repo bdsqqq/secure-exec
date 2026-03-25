@@ -9,7 +9,7 @@ import { describe, it, expect } from "vitest";
 import { PipeManager, MAX_PIPE_BUFFER_BYTES } from "../../src/kernel/pipe-manager.js";
 import { ProcessFDTable, FDTableManager, MAX_FDS_PER_PROCESS, type DescriptionAllocator } from "../../src/kernel/fd-table.js";
 import { PtyManager, MAX_PTY_BUFFER_BYTES, MAX_CANON } from "../../src/kernel/pty.js";
-import { KernelError } from "../../src/kernel/types.js";
+import { KernelError, O_NONBLOCK } from "../../src/kernel/types.js";
 
 let _testDescId = 1;
 const testAllocDesc: DescriptionAllocator = (path, flags) => ({
@@ -21,9 +21,10 @@ const testAllocDesc: DescriptionAllocator = (path, flags) => ({
 });
 
 describe("pipe buffer limit", () => {
-	it("rejects writes that exceed MAX_PIPE_BUFFER_BYTES when no reader", () => {
+	it("rejects non-blocking writes that exceed MAX_PIPE_BUFFER_BYTES when no reader", () => {
 		const manager = new PipeManager();
 		const { read, write } = manager.createPipe();
+		write.description.flags |= O_NONBLOCK;
 
 		// Fill the buffer up to the limit
 		const chunk = new Uint8Array(MAX_PIPE_BUFFER_BYTES);

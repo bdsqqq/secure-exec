@@ -57,6 +57,9 @@ export type { HostNodeFileSystemOptions } from "./os-filesystem.js";
 export { NodeWorkerAdapter } from "./worker-adapter.js";
 export type { WorkerHandle } from "./worker-adapter.js";
 
+// Host network adapter (HostNetworkAdapter for kernel delegation)
+export { createNodeHostNetworkAdapter } from "./host-network-adapter.js";
+
 // Timeout utilities (re-exported from core)
 export {
 	TIMEOUT_EXIT_CODE,

@@ -50,7 +50,20 @@ function resolveBinaryPath(): string {
 	const binaryName =
 		process.platform === "win32" ? "secure-exec-v8.exe" : "secure-exec-v8";
 
-	// 1. Try platform-specific npm package
+	// 1. Try cargo-built binary at crate target path (development workspace)
+	const crateRelative = resolve(
+		__dirname,
+		"../../../native/v8-runtime/target/release/secure-exec-v8",
+	);
+	if (existsSync(crateRelative)) return crateRelative;
+
+	const crateDebug = resolve(
+		__dirname,
+		"../../../native/v8-runtime/target/debug/secure-exec-v8",
+	);
+	if (existsSync(crateDebug)) return crateDebug;
+
+	// 2. Try platform-specific npm package
 	const platformKey = `${process.platform}-${process.arch}`;
 	const platformPkg = PLATFORM_PACKAGES[platformKey];
 	if (platformPkg) {
@@ -64,22 +77,9 @@ function resolveBinaryPath(): string {
 		}
 	}
 
-	// 2. Try postinstall download location
+	// 3. Try postinstall download location
 	const downloadedBinary = resolve(__dirname, "../bin", binaryName);
 	if (existsSync(downloadedBinary)) return downloadedBinary;
-
-	// 3. Try cargo-built binary at crate target path (development)
-	const crateRelative = resolve(
-		__dirname,
-		"../../../native/v8-runtime/target/release/secure-exec-v8",
-	);
-	if (existsSync(crateRelative)) return crateRelative;
-
-	const crateDebug = resolve(
-		__dirname,
-		"../../../native/v8-runtime/target/debug/secure-exec-v8",
-	);
-	if (existsSync(crateDebug)) return crateDebug;
 
 	// 4. Fallback: assume on PATH
 	return "secure-exec-v8";

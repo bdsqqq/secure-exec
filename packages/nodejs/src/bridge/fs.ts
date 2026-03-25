@@ -9,15 +9,20 @@ import type { FsFacadeBridge } from "../bridge-contract.js";
 // Declare globals that are set up by the host environment
 declare const _fs: FsFacadeBridge;
 
-// File descriptor table — capped to prevent resource exhaustion
-const MAX_BRIDGE_FDS = 1024;
-const fdTable = new Map<number, { path: string; flags: number; position: number }>();
-let nextFd = 3;
+// Kernel FD bridge globals — dispatched through _loadPolyfill on the V8 runtime.
+// FD table is managed on the host side via kernel ProcessFDTable.
+declare const _fdOpen: { applySync(t: undefined, a: [string, number, number?]): number; applySyncPromise(t: undefined, a: [string, number, number?]): number };
+declare const _fdClose: { applySync(t: undefined, a: [number]): void; applySyncPromise(t: undefined, a: [number]): void };
+declare const _fdRead: { applySync(t: undefined, a: [number, number, number | null | undefined]): string; applySyncPromise(t: undefined, a: [number, number, number | null | undefined]): string };
+declare const _fdWrite: { applySync(t: undefined, a: [number, string, number | null | undefined]): number; applySyncPromise(t: undefined, a: [number, string, number | null | undefined]): number };
+declare const _fdFstat: { applySync(t: undefined, a: [number]): string; applySyncPromise(t: undefined, a: [number]): string };
+declare const _fdFtruncate: { applySync(t: undefined, a: [number, number?]): void; applySyncPromise(t: undefined, a: [number, number?]): void };
+declare const _fdFsync: { applySync(t: undefined, a: [number]): void; applySyncPromise(t: undefined, a: [number]): void };
+declare const _fdGetPath: { applySync(t: undefined, a: [number]): string | null; applySyncPromise(t: undefined, a: [number]): string | null };
 
 const O_RDONLY = 0;
 const O_WRONLY = 1;
 const O_RDWR = 2;
-const O_ACCMODE = 3;
 const O_CREAT = 64;
 const O_EXCL = 128;
 const O_TRUNC = 512;
@@ -764,18 +769,6 @@ function parseFlags(flags: OpenMode): number {
   throw new Error("Unknown file flag: " + flags);
 }
 
-// Check if flags allow reading
-function canRead(flags: number): boolean {
-  const mode = flags & O_ACCMODE;
-  return mode === 0 || mode === 2;
-}
-
-// Check if flags allow writing
-function canWrite(flags: number): boolean {
-  const mode = flags & O_ACCMODE;
-  return mode === 1 || mode === 2;
-}
-
 // Helper to create fs errors
 function createFsError(
   code: string,
@@ -1022,7 +1015,7 @@ const fs = {
   // Sync methods
 
   readFileSync(path: PathOrFileDescriptor, options?: ReadFileOptions): string | Buffer {
-    const rawPath = typeof path === "number" ? fdTable.get(path)?.path : toPathString(path);
+    const rawPath = typeof path === "number" ? _fdGetPath.applySync(undefined, [path]) : toPathString(path);
     if (!rawPath) throw createFsError("EBADF", "EBADF: bad file descriptor", "read");
     const pathStr = rawPath;
     const encoding =
@@ -1072,7 +1065,7 @@ const fs = {
     data: string | NodeJS.ArrayBufferView,
     _options?: WriteFileOptions
   ): void {
-    const rawPath = typeof file === "number" ? fdTable.get(file)?.path : toPathString(file);
+    const rawPath = typeof file === "number" ? _fdGetPath.applySync(undefined, [file]) : toPathString(file);
     if (!rawPath) throw createFsError("EBADF", "EBADF: bad file descriptor", "write");
     const pathStr = rawPath;
 
@@ -1325,45 +1318,29 @@ const fs = {
   // File descriptor methods
 
   openSync(path: PathLike, flags: OpenMode, _mode?: Mode | null): number {
-    // Enforce bridge-side FD limit
-    if (fdTable.size >= MAX_BRIDGE_FDS) {
-      throw createFsError("EMFILE", "EMFILE: too many open files, open '" + toPathString(path) + "'", "open", toPathString(path));
-    }
-    const rawPath = toPathString(path);
-    const pathStr = rawPath;
+    const pathStr = toPathString(path);
     const numFlags = parseFlags(flags);
-    const fd = nextFd++;
-
-    // Check if file exists (existsSync already normalizes)
-    const exists = fs.existsSync(path);
-
-    // Handle O_CREAT - create file if it doesn't exist
-    if (numFlags & 64 && !exists) {
-      fs.writeFileSync(path, "");
-    } else if (!exists && !(numFlags & 64)) {
-      throw createFsError(
-        "ENOENT",
-        `ENOENT: no such file or directory, open '${rawPath}'`,
-        "open",
-        rawPath
-      );
+    const modeNum = _mode !== null && _mode !== undefined
+      ? (typeof _mode === "string" ? parseInt(_mode as string, 8) : _mode as number)
+      : undefined;
+    try {
+      return _fdOpen.applySyncPromise(undefined, [pathStr, numFlags, modeNum]);
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      if (msg.includes("ENOENT")) throw createFsError("ENOENT", msg, "open", pathStr);
+      if (msg.includes("EMFILE")) throw createFsError("EMFILE", msg, "open", pathStr);
+      throw e;
     }
-
-    // Handle O_TRUNC - truncate file
-    if (numFlags & 512 && exists) {
-      fs.writeFileSync(path, "");
-    }
-
-    // Store normalized path in fd table for subsequent operations
-    fdTable.set(fd, { path: pathStr, flags: numFlags, position: 0 });
-    return fd;
   },
 
   closeSync(fd: number): void {
-    if (!fdTable.has(fd)) {
-      throw createFsError("EBADF", "EBADF: bad file descriptor, close", "close");
+    try {
+      _fdClose.applySyncPromise(undefined, [fd]);
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      if (msg.includes("EBADF")) throw createFsError("EBADF", "EBADF: bad file descriptor, close", "close");
+      throw e;
     }
-    fdTable.delete(fd);
   },
 
   readSync(
@@ -1373,30 +1350,24 @@ const fs = {
     length?: number | null,
     position?: nodeFs.ReadPosition | null
   ): number {
-    const entry = fdTable.get(fd);
-    if (!entry) {
-      throw createFsError("EBADF", "EBADF: bad file descriptor, read", "read");
-    }
-    if (!canRead(entry.flags)) {
-      throw createFsError("EBADF", "EBADF: bad file descriptor, read", "read");
-    }
-
-    const content = fs.readFileSync(entry.path, "utf8") as string;
     const readOffset = offset ?? 0;
     const readLength = length ?? (buffer.byteLength - readOffset);
-    const pos = position !== null && position !== undefined ? Number(position) : entry.position;
-    const toRead = content.slice(pos, pos + readLength);
-    const bytes = Buffer.from(toRead);
-    const targetBuffer = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    const pos = (position !== null && position !== undefined) ? Number(position) : undefined;
 
+    let base64: string;
+    try {
+      base64 = _fdRead.applySyncPromise(undefined, [fd, readLength, pos ?? null]);
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      if (msg.includes("EBADF")) throw createFsError("EBADF", msg, "read");
+      throw e;
+    }
+
+    const bytes = Buffer.from(base64, "base64");
+    const targetBuffer = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
     for (let i = 0; i < bytes.length && i < readLength; i++) {
       targetBuffer[readOffset + i] = bytes[i];
     }
-
-    if (position === null || position === undefined) {
-      entry.position += bytes.length;
-    }
-
     return bytes.length;
   },
 
@@ -1407,118 +1378,78 @@ const fs = {
     lengthOrEncoding?: number | BufferEncoding | null,
     position?: number | null
   ): number {
-    const entry = fdTable.get(fd);
-    if (!entry) {
-      throw createFsError("EBADF", "EBADF: bad file descriptor, write", "write");
-    }
-    // fs.writeSync
-    if (!canWrite(entry.flags)) {
-      throw createFsError("EBADF", "EBADF: bad file descriptor, write", "write");
-    }
 
-    // Handle string or buffer
-    let data: string;
+    // Encode data as base64 for bridge transfer
+    let dataBytes: Uint8Array;
     let writePosition: number | null | undefined;
 
     if (typeof buffer === "string") {
-      data = buffer;
+      dataBytes = Buffer.from(buffer);
       writePosition = offsetOrPosition;
     } else {
       const offset = offsetOrPosition ?? 0;
       const length = (typeof lengthOrEncoding === "number" ? lengthOrEncoding : null) ?? (buffer.byteLength - offset);
-      const view = new Uint8Array(buffer.buffer, buffer.byteOffset + offset, length);
-      data = new TextDecoder().decode(view);
+      dataBytes = new Uint8Array(buffer.buffer, buffer.byteOffset + offset, length);
       writePosition = position;
     }
 
-    // Read existing content
-    let content = "";
-    if (fs.existsSync(entry.path)) {
-      content = fs.readFileSync(entry.path, "utf8") as string;
+    const base64 = Buffer.from(dataBytes).toString("base64");
+    const pos = (writePosition !== null && writePosition !== undefined) ? writePosition : null;
+
+    try {
+      return _fdWrite.applySyncPromise(undefined, [fd, base64, pos]);
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      if (msg.includes("EBADF")) throw createFsError("EBADF", msg, "write");
+      throw e;
     }
-
-    // Determine write position
-    let writePos: number;
-    if (entry.flags & 1024) {
-      // O_APPEND
-      writePos = content.length;
-    } else if (writePosition !== null && writePosition !== undefined) {
-      writePos = writePosition;
-    } else {
-      writePos = entry.position;
-    }
-
-    // Pad with nulls if writing past end
-    while (content.length < writePos) {
-      content += "\0";
-    }
-
-    // Write data
-    const newContent =
-      content.slice(0, writePos) + data + content.slice(writePos + data.length);
-    fs.writeFileSync(entry.path, newContent);
-
-    // Update position if not using explicit position
-    if (writePosition === null || writePosition === undefined) {
-      entry.position = writePos + data.length;
-    }
-
-    return data.length;
   },
 
   fstatSync(fd: number): Stats {
-    const entry = fdTable.get(fd);
-    if (!entry) {
-      throw createFsError("EBADF", "EBADF: bad file descriptor, fstat", "fstat");
+    let raw: string;
+    try {
+      raw = _fdFstat.applySyncPromise(undefined, [fd]);
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      if (msg.includes("EBADF")) throw createFsError("EBADF", "EBADF: bad file descriptor, fstat", "fstat");
+      throw e;
     }
-    return fs.statSync(entry.path);
+    return new Stats(JSON.parse(raw));
   },
 
   ftruncateSync(fd: number, len?: number): void {
-    const entry = fdTable.get(fd);
-    if (!entry) {
-      throw createFsError(
-        "EBADF",
-        "EBADF: bad file descriptor, ftruncate",
-        "ftruncate"
-      );
-    }
-    const content = fs.existsSync(entry.path)
-      ? (fs.readFileSync(entry.path, "utf8") as string)
-      : "";
-    const newLen = len ?? 0;
-    if (content.length > newLen) {
-      fs.writeFileSync(entry.path, content.slice(0, newLen));
-    } else {
-      let padded = content;
-      while (padded.length < newLen) padded += "\0";
-      fs.writeFileSync(entry.path, padded);
+    try {
+      _fdFtruncate.applySyncPromise(undefined, [fd, len]);
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      if (msg.includes("EBADF")) throw createFsError("EBADF", "EBADF: bad file descriptor, ftruncate", "ftruncate");
+      throw e;
     }
   },
 
-  // fsync / fdatasync — no-op for in-memory VFS (nothing to flush to disk)
+  // fsync / fdatasync — no-op for in-memory VFS (validates FD exists)
   fsyncSync(fd: number): void {
-    if (!fdTable.has(fd)) {
-      throw createFsError("EBADF", "EBADF: bad file descriptor, fsync", "fsync");
+    try {
+      _fdFsync.applySyncPromise(undefined, [fd]);
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      if (msg.includes("EBADF")) throw createFsError("EBADF", "EBADF: bad file descriptor, fsync", "fsync");
+      throw e;
     }
   },
 
   fdatasyncSync(fd: number): void {
-    if (!fdTable.has(fd)) {
-      throw createFsError("EBADF", "EBADF: bad file descriptor, fdatasync", "fdatasync");
+    try {
+      _fdFsync.applySyncPromise(undefined, [fd]);
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      if (msg.includes("EBADF")) throw createFsError("EBADF", "EBADF: bad file descriptor, fdatasync", "fdatasync");
+      throw e;
     }
   },
 
-  // readv — scatter-read into multiple buffers
+  // readv — scatter-read into multiple buffers (delegates to readSync)
   readvSync(fd: number, buffers: ArrayBufferView[], position?: number | null): number {
-    const entry = fdTable.get(fd);
-    if (!entry) {
-      throw createFsError("EBADF", "EBADF: bad file descriptor, readv", "readv");
-    }
-    if (!canRead(entry.flags)) {
-      throw createFsError("EBADF", "EBADF: bad file descriptor, readv", "readv");
-    }
-
     let totalBytesRead = 0;
     for (const buffer of buffers) {
       const target = buffer instanceof Uint8Array

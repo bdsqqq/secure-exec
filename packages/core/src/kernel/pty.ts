@@ -404,9 +404,10 @@ export class PtyManager {
 	private processInput(state: PtyState, data: Uint8Array): number {
 		const { termios } = state;
 
-		// Fast path: no discipline processing (raw pass-through)
-		if (!termios.icanon && !termios.echo && !termios.isig && !termios.icrnl) {
-			this.deliverInput(state, data);
+		// Raw-mode input still applies ICRNL, but it must deliver atomically so
+		// oversized writes fail without partially filling the input buffer.
+		if (!termios.icanon && !termios.echo && !termios.isig) {
+			this.deliverInput(state, this.applyInputTranslations(termios.icrnl, data));
 			return data.length;
 		}
 
@@ -517,6 +518,16 @@ export class PtyManager {
 		}
 
 		return data.length;
+	}
+
+	private applyInputTranslations(icrnl: boolean, data: Uint8Array): Uint8Array {
+		if (!icrnl || !data.includes(0x0d)) return data;
+
+		const translated = new Uint8Array(data.length);
+		for (let i = 0; i < data.length; i++) {
+			translated[i] = data[i] === 0x0d ? 0x0a : data[i];
+		}
+		return translated;
 	}
 
 	/** Deliver input data to slave (input buffer / waiters). */

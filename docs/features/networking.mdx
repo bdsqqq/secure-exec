@@ -162,8 +162,6 @@ const driver = createNodeDriver({
 | `fetch(url, options?)` | `Promise<FetchResponse>` | HTTP fetch |
 | `dnsLookup(hostname)` | `Promise<DnsResult>` | DNS resolution |
 | `httpRequest(url, options?)` | `Promise<HttpResponse>` | Low-level HTTP request |
-| `httpServerListen?(options)` | `Promise<{ address }>` | Start a loopback HTTP server |
-| `httpServerClose?(serverId)` | `Promise<void>` | Close a loopback HTTP server |
 
 ## Permission gating
 

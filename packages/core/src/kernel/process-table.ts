@@ -6,8 +6,9 @@
  * shell can waitpid on a Node child process.
  */
 
-import type { DriverProcess, ProcessContext, ProcessEntry, ProcessInfo } from "./types.js";
-import { KernelError, SIGCHLD, SIGALRM, SIGCONT, SIGSTOP, SIGTSTP, WNOHANG } from "./types.js";
+import type { DriverProcess, ProcessContext, ProcessEntry, ProcessInfo, SignalHandler, ProcessSignalState } from "./types.js";
+import { KernelError, SIGCHLD, SIGALRM, SIGCONT, SIGSTOP, SIGTSTP, SIGKILL, WNOHANG, SA_RESTART, SA_RESETHAND, SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK } from "./types.js";
+import { WaitQueue } from "./wait.js";
 import { encodeExitStatus, encodeSignalStatus } from "./wstatus.js";
 
 const ZOMBIE_TTL_MS = 60_000;
@@ -62,6 +63,17 @@ export class ProcessTable {
 			env: { ...ctx.env },
 			cwd: ctx.cwd,
 			umask,
+			activeHandles: new Map(),
+			handleLimit: 0,
+			signalState: {
+				handlers: new Map(),
+				blockedSignals: new Set(),
+				pendingSignals: new Set(),
+				signalWaiters: new WaitQueue(),
+				deliverySeq: 0,
+				lastDeliveredSignal: null,
+				lastDeliveredFlags: 0,
+			},
 			driverProcess,
 		};
 		this.entries.set(pid, entry);
@@ -111,18 +123,17 @@ export class ProcessTable {
 		// Cancel pending alarm
 		this.cancelAlarm(pid);
 
+		// Clear all active handles
+		entry.activeHandles.clear();
+
 		// Clean up process resources (FD table, pipe ends)
 		this.onProcessExit?.(pid);
 
-		// Deliver SIGCHLD to parent (default action: ignore — don't terminate)
+		// Deliver SIGCHLD to parent via signal handler system
 		if (entry.ppid > 0) {
 			const parent = this.entries.get(entry.ppid);
 			if (parent && parent.status === "running") {
-				try {
-					parent.driverProcess.kill(SIGCHLD);
-				} catch {
-					// Parent may not handle SIGCHLD — ignore errors
-				}
+				this.deliverSignal(parent, SIGCHLD);
 			}
 		}
 
@@ -210,17 +221,138 @@ export class ProcessTable {
 		this.deliverSignal(entry, signal);
 	}
 
-	/** Apply signal default action: stop/cont signals update status, others forward to driver. */
+	/**
+	 * Deliver a signal to a process, respecting handlers, blocking, and coalescing.
+	 *
+	 * SIGKILL and SIGSTOP cannot be caught, blocked, or ignored (POSIX).
+	 * Blocked signals are queued in pendingSignals; standard signals (1-31) coalesce.
+	 * If a handler is registered, it is invoked with sa_mask temporarily blocked.
+	 */
 	private deliverSignal(entry: ProcessEntry, signal: number): void {
+		const { signalState } = entry;
+
+		// SIGKILL and SIGSTOP always use default action — cannot be caught/blocked/ignored
+		if (signal === SIGKILL || signal === SIGSTOP) {
+			this.applyDefaultAction(entry, signal);
+			return;
+		}
+
+		// SIGCONT always resumes a stopped process, even if blocked or caught (POSIX)
+		if (signal === SIGCONT) {
+			this.cont(entry.pid);
+			// If blocked, queue for handler delivery later; otherwise dispatch
+			if (signalState.blockedSignals.has(signal)) {
+				signalState.pendingSignals.add(signal);
+				return;
+			}
+			this.dispatchSignal(entry, signal);
+			return;
+		}
+
+		// If signal is blocked, queue it (standard signals 1-31 coalesce via Set)
+		if (signalState.blockedSignals.has(signal)) {
+			signalState.pendingSignals.add(signal);
+			return;
+		}
+
+		this.dispatchSignal(entry, signal);
+	}
+
+	/**
+	 * Dispatch a signal to a process — check handler, then apply.
+	 * Called for unblocked signals and when delivering pending signals.
+	 */
+	private dispatchSignal(entry: ProcessEntry, signal: number): void {
+		const { signalState } = entry;
+		const registration = signalState.handlers.get(signal);
+
+		if (!registration) {
+			// No handler registered — apply default action
+			if (signal !== SIGCHLD) {
+				this.recordSignalDelivery(signalState, signal, 0);
+			}
+			this.applyDefaultAction(entry, signal);
+			return;
+		}
+
+		const { handler, mask, flags } = registration;
+
+		if (handler === "ignore") return;
+
+		if (handler === "default") {
+			if (signal !== SIGCHLD) {
+				this.recordSignalDelivery(signalState, signal, 0);
+			}
+			this.applyDefaultAction(entry, signal);
+			return;
+		}
+
+		this.recordSignalDelivery(signalState, signal, flags);
+
+		// User-defined handler: temporarily block sa_mask + the signal itself during execution
+		const savedBlocked = new Set(signalState.blockedSignals);
+		for (const s of mask) signalState.blockedSignals.add(s);
+		signalState.blockedSignals.add(signal);
+
+		try {
+			handler(signal);
+		} finally {
+			// Restore previous blocked set
+			signalState.blockedSignals = savedBlocked;
+		}
+
+		// Reset one-shot handlers before any pending re-delivery.
+		if ((flags & SA_RESETHAND) !== 0) {
+			signalState.handlers.set(signal, {
+				handler: "default",
+				mask: new Set(),
+				flags: 0,
+			});
+		}
+
+		// Deliver any signals that were pending and are now unblocked
+		this.deliverPendingSignals(entry);
+	}
+
+	/** Wake signal-aware waiters after a signal has been dispatched. */
+	private recordSignalDelivery(signalState: ProcessSignalState, signal: number, flags: number): void {
+		signalState.lastDeliveredSignal = signal;
+		signalState.lastDeliveredFlags = flags;
+		signalState.deliverySeq++;
+		signalState.signalWaiters.wakeAll();
+	}
+
+	/** Apply the kernel default action for a signal. */
+	private applyDefaultAction(entry: ProcessEntry, signal: number): void {
 		if (signal === SIGTSTP || signal === SIGSTOP) {
 			this.stop(entry.pid);
 			entry.driverProcess.kill(signal);
 		} else if (signal === SIGCONT) {
 			this.cont(entry.pid);
 			entry.driverProcess.kill(signal);
+		} else if (signal === SIGCHLD) {
+			// Default SIGCHLD action: ignore (don't terminate)
+			return;
 		} else {
 			entry.termSignal = signal;
 			entry.driverProcess.kill(signal);
+		}
+	}
+
+	/** Deliver pending signals that are no longer blocked (lowest signal number first). */
+	private deliverPendingSignals(entry: ProcessEntry): void {
+		const { signalState } = entry;
+		if (signalState.pendingSignals.size === 0) return;
+
+		// Deliver in ascending signal number order
+		const pending = [...signalState.pendingSignals].sort((a, b) => a - b);
+		for (const sig of pending) {
+			// Check both: not blocked AND still pending (recursive delivery may have handled it)
+			if (!signalState.blockedSignals.has(sig) && signalState.pendingSignals.has(sig)) {
+				signalState.pendingSignals.delete(sig);
+				this.dispatchSignal(entry, sig);
+				if (entry.status === "exited") break;
+			}
 		}
 	}
 
@@ -251,13 +383,74 @@ export class ProcessTable {
 			const e = this.entries.get(pid);
 			if (!e || e.status !== "running") return;
 
-			// Default SIGALRM action: terminate with 128+14=142
-			e.termSignal = SIGALRM;
-			e.driverProcess.kill(SIGALRM);
+			// Deliver through signal handler system
+			this.deliverSignal(e, SIGALRM);
 		}, seconds * 1000);
 		this.alarmTimers.set(pid, { timer, scheduledAt, seconds });
 
 		return remaining;
+	}
+
+	// -----------------------------------------------------------------------
+	// Signal handlers (sigaction / sigprocmask)
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Register a signal handler (POSIX sigaction).
+	 * Returns the previous handler for the signal, or undefined if none was set.
+	 * SIGKILL and SIGSTOP cannot be caught or ignored.
+	 */
+	sigaction(pid: number, signal: number, handler: SignalHandler): SignalHandler | undefined {
+		const entry = this.entries.get(pid);
+		if (!entry) throw new KernelError("ESRCH", `no such process ${pid}`);
+		if (signal < 1 || signal > 64) throw new KernelError("EINVAL", `invalid signal ${signal}`);
+		if (signal === SIGKILL || signal === SIGSTOP) {
+			throw new KernelError("EINVAL", `cannot catch or ignore signal ${signal}`);
+		}
+
+		const prev = entry.signalState.handlers.get(signal);
+		entry.signalState.handlers.set(signal, handler);
+		return prev;
+	}
+
+	/**
+	 * Modify the blocked signal mask (POSIX sigprocmask).
+	 * Returns the previous blocked set.
+	 * SIGKILL and SIGSTOP cannot be blocked.
+	 */
+	sigprocmask(pid: number, how: number, set: Set<number>): Set<number> {
+		const entry = this.entries.get(pid);
+		if (!entry) throw new KernelError("ESRCH", `no such process ${pid}`);
+
+		const { signalState } = entry;
+		const prevBlocked = new Set(signalState.blockedSignals);
+
+		// Filter out uncatchable signals
+		const filtered = new Set(set);
+		filtered.delete(SIGKILL);
+		filtered.delete(SIGSTOP);
+
+		if (how === SIG_BLOCK) {
+			for (const s of filtered) signalState.blockedSignals.add(s);
+		} else if (how === SIG_UNBLOCK) {
+			for (const s of filtered) signalState.blockedSignals.delete(s);
+		} else if (how === SIG_SETMASK) {
+			signalState.blockedSignals = filtered;
+		} else {
+			throw new KernelError("EINVAL", `invalid sigprocmask how: ${how}`);
+		}
+
+		// Deliver any pending signals that are now unblocked
+		this.deliverPendingSignals(entry);
+
+		return prevBlocked;
+	}
+
+	/** Get the signal state for a process (read-only view). */
+	getSignalState(pid: number): ProcessSignalState {
+		const entry = this.entries.get(pid);
+		if (!entry) throw new KernelError("ESRCH", `no such process ${pid}`);
+		return entry.signalState;
 	}
 
 	/** Suspend a process (SIGTSTP/SIGSTOP). Sets status to 'stopped'. */
@@ -404,6 +597,43 @@ export class ProcessTable {
 			this.onProcessReap?.(pid);
 			this.entries.delete(pid);
 		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Handle tracking
+	// -----------------------------------------------------------------------
+
+	/** Register an active handle for a process. Throws EAGAIN if budget exceeded. */
+	registerHandle(pid: number, id: string, description: string): void {
+		const entry = this.entries.get(pid);
+		if (!entry) throw new KernelError("ESRCH", `no such process ${pid}`);
+		if (entry.handleLimit > 0 && entry.activeHandles.size >= entry.handleLimit) {
+			throw new KernelError("EAGAIN", `handle limit (${entry.handleLimit}) exceeded for process ${pid}`);
+		}
+		entry.activeHandles.set(id, description);
+	}
+
+	/** Unregister an active handle. Throws EBADF if handle not found. */
+	unregisterHandle(pid: number, id: string): void {
+		const entry = this.entries.get(pid);
+		if (!entry) throw new KernelError("ESRCH", `no such process ${pid}`);
+		if (!entry.activeHandles.delete(id)) {
+			throw new KernelError("EBADF", `no such handle ${id} for process ${pid}`);
+		}
+	}
+
+	/** Set the maximum number of active handles for a process. 0 = unlimited. */
+	setHandleLimit(pid: number, limit: number): void {
+		const entry = this.entries.get(pid);
+		if (!entry) throw new KernelError("ESRCH", `no such process ${pid}`);
+		entry.handleLimit = limit;
+	}
+
+	/** Get the active handles for a process (read-only copy). */
+	getHandles(pid: number): Map<string, string> {
+		const entry = this.entries.get(pid);
+		if (!entry) throw new KernelError("ESRCH", `no such process ${pid}`);
+		return new Map(entry.activeHandles);
 	}
 
 	/** Terminate all running processes and clear pending timers. */

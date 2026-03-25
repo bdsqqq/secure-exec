@@ -35,6 +35,7 @@ import type {
 	NetworkHttpServerListenRawBridgeRef,
 	ProcessErrorBridgeRef,
 	ProcessLogBridgeRef,
+	RequireFromBridgeFn,
 	RegisterHandleBridgeFn,
 	ResolveModuleBridgeRef,
 	ScheduleTimerBridgeRef,
@@ -73,6 +74,11 @@ type RuntimeCurrentModule = Record<string, unknown> & {
 	filename?: string;
 };
 
+type RuntimeResolveModuleSyncBridgeRef = {
+	applySync(ctx: undefined, args: [string, string]): string | null;
+	applySync(ctx: undefined, args: [string, string, string]): string | null;
+};
+
 declare global {
 	var __runtimeExposeCustomGlobal: RuntimeGlobalExposer | undefined;
 	var __runtimeExposeMutableGlobal: RuntimeGlobalExposer | undefined;
@@ -80,7 +86,9 @@ declare global {
 	var _dynamicImport: DynamicImportBridgeRef;
 	var _loadPolyfill: LoadPolyfillBridgeRef;
 	var _resolveModule: ResolveModuleBridgeRef;
+	var _resolveModuleSync: RuntimeResolveModuleSyncBridgeRef | undefined;
 	var _loadFile: LoadFileBridgeRef;
+	var _requireFrom: RequireFromBridgeFn | undefined;
 	var _scheduleTimer: ScheduleTimerBridgeRef;
 	var _cryptoRandomFill: CryptoRandomFillBridgeRef;
 	var _cryptoRandomUUID: CryptoRandomUuidBridgeRef;
@@ -100,6 +108,7 @@ declare global {
 	var _maxHandles: number | undefined;
 	var _registerHandle: RegisterHandleBridgeFn;
 	var _unregisterHandle: UnregisterHandleBridgeFn;
+	var _timerDispatch: ((eventType: string, payload: unknown) => void) | undefined;
 	var require: ((request: string) => unknown) | undefined;
 	var bridge: unknown;
 	var __runtimeBridgeSetupConfig: RuntimeBridgeSetupConfig | undefined;

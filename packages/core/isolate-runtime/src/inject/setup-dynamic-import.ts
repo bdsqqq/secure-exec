@@ -11,7 +11,33 @@ const __fallbackReferrer =
 		? __dynamicImportConfig.referrerPath
 		: "/";
 
-const __dynamicImportHandler = async function (
+const __dynamicImportCache = new Map<string, Record<string, unknown>>();
+
+const __resolveDynamicImportPath = function (
+	request: string,
+	referrer: string,
+): string {
+	if (!request.startsWith("./") && !request.startsWith("../") && !request.startsWith("/")) {
+		return request;
+	}
+
+	const baseDir =
+		referrer.endsWith("/")
+			? referrer
+			: referrer.slice(0, referrer.lastIndexOf("/")) || "/";
+	const segments = baseDir.split("/").filter(Boolean);
+	for (const part of request.split("/")) {
+		if (part === "." || part.length === 0) continue;
+		if (part === "..") {
+			segments.pop();
+			continue;
+		}
+		segments.push(part);
+	}
+	return `/${segments.join("/")}`;
+};
+
+const __dynamicImportHandler = function (
 	specifier: unknown,
 	fromPath: unknown,
 ): Promise<Record<string, unknown>> {
@@ -20,24 +46,49 @@ const __dynamicImportHandler = async function (
 		typeof fromPath === "string" && fromPath.length > 0
 			? fromPath
 			: __fallbackReferrer;
-	const namespace = await globalThis._dynamicImport.apply(
-		undefined,
-		[request, referrer],
-		{ result: { promise: true } },
-	);
 
-	if (namespace !== null) {
-		return namespace;
+	let resolved: string | null = null;
+	if (typeof globalThis._resolveModuleSync !== "undefined") {
+		resolved = globalThis._resolveModuleSync.applySync(
+			undefined,
+			[request, referrer, "import"],
+		);
+	}
+	const resolvedPath =
+		typeof resolved === "string" && resolved.length > 0
+			? resolved
+			: __resolveDynamicImportPath(request, referrer);
+	const cacheKey =
+		typeof resolved === "string" && resolved.length > 0
+			? resolved
+			: `${referrer}\0${request}`;
+	const cached = __dynamicImportCache.get(cacheKey);
+	if (cached) return Promise.resolve(cached);
+
+	if (typeof globalThis._requireFrom !== "function") {
+		throw new Error("Cannot load module: " + resolvedPath);
 	}
 
-	// Always fall back to require() — handles both CJS packages and ESM
-	// packages (the bridge converts ESM source to CJS at load time).
-	const runtimeRequire = globalThis.require;
-	if (typeof runtimeRequire !== "function") {
-		throw new Error("Cannot find module '" + request + "'");
+	let mod: unknown;
+	try {
+		mod = globalThis._requireFrom(resolved ?? request, referrer);
+	} catch (error) {
+		const message =
+			error instanceof Error ? error.message : String(error);
+		if (
+			error &&
+			typeof error === "object" &&
+			"code" in error &&
+			error.code === "MODULE_NOT_FOUND"
+		) {
+			throw new Error("Cannot load module: " + resolvedPath);
+		}
+		if (message.startsWith("Cannot find module ")) {
+			throw new Error("Cannot load module: " + resolvedPath);
+		}
+		throw error;
 	}
 
-	const mod = runtimeRequire(request);
 	const namespaceFallback: Record<string, unknown> = { default: mod };
 	if (isObjectLike(mod)) {
 		for (const key of Object.keys(mod)) {
@@ -46,7 +97,8 @@ const __dynamicImportHandler = async function (
 			}
 		}
 	}
-	return namespaceFallback;
+	__dynamicImportCache.set(cacheKey, namespaceFallback);
+	return Promise.resolve(namespaceFallback);
 };
 
 __runtimeExposeCustomGlobal("__dynamicImport", __dynamicImportHandler);

@@ -2,6 +2,7 @@ import { createResolutionCache } from "./package-bundler.js";
 import { getConsoleSetupCode } from "@secure-exec/core/internal/shared/console-formatter";
 import { getRequireSetupCode } from "@secure-exec/core/internal/shared/require-setup";
 import { getIsolateRuntimeSource, getInitialBridgeGlobalsSetupCode } from "@secure-exec/core";
+import { transformDynamicImport } from "@secure-exec/core/internal/shared/esm-utils";
 import {
 	createCommandExecutorStub,
 	createFsStub,
@@ -39,21 +40,27 @@ import {
 	DEFAULT_SANDBOX_HOME,
 	DEFAULT_SANDBOX_TMPDIR,
 } from "./isolate-bootstrap.js";
+import { shouldRunAsESM } from "./module-resolver.js";
 import {
 	TIMEOUT_ERROR_MESSAGE,
 	TIMEOUT_EXIT_CODE,
+	ProcessTable,
+	SocketTable,
+	TimerTable,
 } from "@secure-exec/core";
 import {
 	type BridgeHandlers,
 	buildCryptoBridgeHandlers,
 	buildConsoleBridgeHandlers,
+	buildKernelHandleDispatchHandlers,
+	buildKernelTimerDispatchHandlers,
 	buildModuleLoadingBridgeHandlers,
 	buildTimerBridgeHandlers,
 	buildFsBridgeHandlers,
+	buildKernelFdBridgeHandlers,
 	buildChildProcessBridgeHandlers,
 	buildNetworkBridgeHandlers,
 	buildNetworkSocketBridgeHandlers,
-	buildUpgradeSocketBridgeHandlers,
 	buildModuleResolutionBridgeHandlers,
 	buildPtyBridgeHandlers,
 	createProcessConfigForExecution,
@@ -74,14 +81,31 @@ import type {
 } from "@secure-exec/core/internal/shared/api-types";
 import type { BudgetState } from "./isolate-bootstrap.js";
 import { type FlattenedBinding, flattenBindingTree, BINDING_PREFIX } from "./bindings.js";
+import { createNodeHostNetworkAdapter } from "./host-network-adapter.js";
 
 export { NodeExecutionDriverOptions };
 
 const MAX_ERROR_MESSAGE_CHARS = 8192;
 
+type LoopbackAwareNetworkAdapter = NetworkAdapter & {
+	__setLoopbackPortChecker?: (checker: (hostname: string, port: number) => boolean) => void;
+};
+
 function boundErrorMessage(message: string): string {
 	if (message.length <= MAX_ERROR_MESSAGE_CHARS) return message;
 	return `${message.slice(0, MAX_ERROR_MESSAGE_CHARS)}...[Truncated]`;
+}
+
+function createBridgeDriverProcess(): import("@secure-exec/core").DriverProcess {
+	return {
+		writeStdin() {},
+		closeStdin() {},
+		kill() {},
+		wait: async () => 0,
+		onStdout: null,
+		onStderr: null,
+		onExit: null,
+	};
 }
 
 /** Internal state for the execution driver. */
@@ -104,8 +128,12 @@ interface DriverState {
 	maxHandles?: number;
 	budgetState: BudgetState;
 	activeHttpServerIds: Set<number>;
+	activeHttpServerClosers: Map<number, () => Promise<void>>;
+	pendingHttpServerStarts: { count: number };
 	activeChildProcesses: Map<number, SpawnedProcess>;
 	activeHostTimers: Set<ReturnType<typeof setTimeout>>;
+	moduleFormatCache: Map<string, "esm" | "cjs" | "json">;
+	packageTypeCache: Map<string, "module" | "commonjs" | null>;
 	resolutionCache: ResolutionCache;
 	onPtySetRawMode?: (mode: boolean) => void;
 }
@@ -297,11 +325,36 @@ export class NodeExecutionDriver implements RuntimeDriver {
 	private flattenedBindings: FlattenedBinding[] | null = null;
 	// Unwrapped filesystem for path translation (toHostPath/toSandboxPath)
 	private rawFilesystem: VirtualFileSystem | undefined;
+	// Kernel socket table for routing net.connect through kernel
+	private socketTable?: import("@secure-exec/core").SocketTable;
+	// Kernel process table for child process registration
+	private processTable?: import("@secure-exec/core").ProcessTable;
+	private timerTable: import("@secure-exec/core").TimerTable;
+	private ownsProcessTable: boolean;
+	private ownsTimerTable: boolean;
+	private configuredMaxTimers?: number;
+	private configuredMaxHandles?: number;
+	private pid?: number;
 
 	constructor(options: NodeExecutionDriverOptions) {
 		this.memoryLimit = options.memoryLimit ?? 128;
+		const budgets = options.resourceBudgets;
+		this.socketTable = options.socketTable;
+		this.processTable = options.processTable ?? new ProcessTable();
+		this.timerTable = options.timerTable ?? new TimerTable();
+		this.ownsProcessTable = options.processTable === undefined;
+		this.ownsTimerTable = options.timerTable === undefined;
+		this.configuredMaxTimers = budgets?.maxTimers;
+		this.configuredMaxHandles = budgets?.maxHandles;
+		this.pid = options.pid ?? 1;
 		const system = options.system;
 		const permissions = system.permissions;
+		if (!this.socketTable) {
+			this.socketTable = new SocketTable({
+				hostAdapter: createNodeHostNetworkAdapter(),
+				networkCheck: permissions?.network,
+			});
+		}
 		// Keep unwrapped filesystem for path translation (toHostPath/toSandboxPath)
 		this.rawFilesystem = system.filesystem;
 		const filesystem = this.rawFilesystem
@@ -310,9 +363,16 @@ export class NodeExecutionDriver implements RuntimeDriver {
 		const commandExecutor = system.commandExecutor
 			? wrapCommandExecutor(system.commandExecutor, permissions)
 			: createCommandExecutorStub();
-		const networkAdapter = system.network
-			? wrapNetworkAdapter(system.network, permissions)
+		const rawNetworkAdapter = system.network;
+		const networkAdapter = rawNetworkAdapter
+			? wrapNetworkAdapter(rawNetworkAdapter, permissions)
 			: createNetworkStub();
+		const loopbackAwareAdapter = networkAdapter as LoopbackAwareNetworkAdapter;
+		if (loopbackAwareAdapter.__setLoopbackPortChecker && this.socketTable) {
+			loopbackAwareAdapter.__setLoopbackPortChecker((_hostname, port) =>
+				this.socketTable?.findListener({ host: "127.0.0.1", port }) !== null,
+			);
+		}
 
 		const processConfig = { ...(options.runtime.process ?? {}) };
 		processConfig.cwd ??= DEFAULT_SANDBOX_CWD;
@@ -333,8 +393,6 @@ export class NodeExecutionDriver implements RuntimeDriver {
 			"payloadLimits.jsonPayloadBytes",
 		);
 
-		const budgets = options.resourceBudgets;
-
 		this.state = {
 			filesystem,
 			commandExecutor,
@@ -349,13 +407,17 @@ export class NodeExecutionDriver implements RuntimeDriver {
 			isolateJsonPayloadLimitBytes,
 			maxOutputBytes: budgets?.maxOutputBytes,
 			maxBridgeCalls: budgets?.maxBridgeCalls,
-			maxTimers: budgets?.maxTimers ?? DEFAULT_MAX_TIMERS,
 			maxChildProcesses: budgets?.maxChildProcesses,
-			maxHandles: budgets?.maxHandles ?? DEFAULT_MAX_HANDLES,
+			maxTimers: budgets?.maxTimers,
+			maxHandles: budgets?.maxHandles,
 			budgetState: createBudgetState(),
 			activeHttpServerIds: new Set(),
+			activeHttpServerClosers: new Map(),
+			pendingHttpServerStarts: { count: 0 },
 			activeChildProcesses: new Map(),
 			activeHostTimers: new Set(),
+			moduleFormatCache: new Map(),
+			packageTypeCache: new Map(),
 			resolutionCache: createResolutionCache(),
 			onPtySetRawMode: options.onPtySetRawMode,
 		};
@@ -376,6 +438,89 @@ export class NodeExecutionDriver implements RuntimeDriver {
 	}
 
 	get unsafeIsolate(): unknown { return null; }
+
+	private hasManagedResources(): boolean {
+		return (
+			this.state.pendingHttpServerStarts.count > 0 ||
+			this.state.activeHttpServerIds.size > 0 ||
+			this.state.activeChildProcesses.size > 0 ||
+			(!this.ownsProcessTable && this.state.activeHostTimers.size > 0)
+		);
+	}
+
+	private async waitForManagedResources(): Promise<void> {
+		const graceDeadline = Date.now() + 100;
+
+		// Give async bridge callbacks a moment to register their host-side handles.
+		while (!this.disposed && !this.hasManagedResources() && Date.now() < graceDeadline) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+
+		// Keep the session alive while host-managed resources are still active.
+		while (!this.disposed && this.hasManagedResources()) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+	}
+
+	private ensureBridgeProcessEntry(processConfig: ProcessConfig): void {
+		if (this.pid === undefined || !this.processTable) return;
+
+		const entry = this.processTable.get(this.pid);
+		if (!entry || entry.status === "exited") {
+			this.processTable.register(
+				this.pid,
+				"node",
+				"node",
+				[],
+				{
+					pid: this.pid,
+					ppid: 0,
+					env: processConfig.env ?? {},
+					cwd: processConfig.cwd ?? DEFAULT_SANDBOX_CWD,
+					fds: { stdin: 0, stdout: 1, stderr: 2 },
+					stdinIsTTY: processConfig.stdinIsTTY,
+					stdoutIsTTY: processConfig.stdoutIsTTY,
+					stderrIsTTY: processConfig.stderrIsTTY,
+				},
+				createBridgeDriverProcess(),
+			);
+		}
+
+		if (this.ownsProcessTable || this.configuredMaxHandles !== undefined) {
+			this.processTable.setHandleLimit(
+				this.pid,
+				this.configuredMaxHandles ?? DEFAULT_MAX_HANDLES,
+			);
+		}
+
+		if (this.ownsTimerTable || this.configuredMaxTimers !== undefined) {
+			this.timerTable.setLimit(
+				this.pid,
+				this.configuredMaxTimers ?? DEFAULT_MAX_TIMERS,
+			);
+		}
+	}
+
+	private clearKernelTimersForProcess(pid: number): void {
+		for (const timer of this.timerTable.getActiveTimers(pid)) {
+			if (timer.hostHandle !== undefined) {
+				clearTimeout(timer.hostHandle as ReturnType<typeof setTimeout>);
+				this.state.activeHostTimers.delete(
+					timer.hostHandle as ReturnType<typeof setTimeout>,
+				);
+				timer.hostHandle = undefined;
+			}
+			this.timerTable.clearTimer(timer.id);
+		}
+	}
+
+	private finalizeExecutionState(exitCode: number): void {
+		if (this.pid === undefined) return;
+		this.clearKernelTimersForProcess(this.pid);
+		if (this.ownsProcessTable && this.processTable) {
+			this.processTable.markExited(this.pid, exitCode);
+		}
+	}
 
 	async createUnsafeContext(_options: { env?: Record<string, string>; cwd?: string; filePath?: string } = {}): Promise<unknown> {
 		return null;
@@ -415,6 +560,8 @@ export class NodeExecutionDriver implements RuntimeDriver {
 
 		// Reset per-execution state
 		this.state.budgetState = createBudgetState();
+		this.state.moduleFormatCache.clear();
+		this.state.packageTypeCache.clear();
 		this.state.resolutionCache.resolveResults.clear();
 		this.state.resolutionCache.packageJsonResults.clear();
 		this.state.resolutionCache.existsResults.clear();
@@ -424,6 +571,21 @@ export class NodeExecutionDriver implements RuntimeDriver {
 		const timingMitigation = getTimingMitigation(options.timingMitigation, s.timingMitigation);
 		const frozenTimeMs = Date.now();
 		const onStdio = options.onStdio ?? s.onStdio;
+		const entryIsEsm = await shouldRunAsESM(
+			{
+				filesystem: s.filesystem,
+				packageTypeCache: s.packageTypeCache,
+				moduleFormatCache: s.moduleFormatCache,
+				isolateJsonPayloadLimitBytes: s.isolateJsonPayloadLimitBytes,
+				resolutionCache: s.resolutionCache,
+			},
+			options.code,
+			options.filePath,
+		);
+		const sessionMode = options.mode === "run" || entryIsEsm ? "run" : "exec";
+		const userCode = entryIsEsm
+			? options.code
+			: transformDynamicImport(options.code);
 
 		// Get or create V8 runtime
 		const v8Runtime = await getSharedV8Runtime();
@@ -434,8 +596,22 @@ export class NodeExecutionDriver implements RuntimeDriver {
 			cpuTimeLimitMs,
 		};
 		const session = await v8Runtime.createSession(sessionOpts);
+		let finalExitCode = 0;
 
 		try {
+			const execProcessConfig = createProcessConfigForExecution(
+				options.env || options.cwd
+					? {
+							...s.processConfig,
+							...(options.env ? { env: filterEnv(options.env, s.permissions) } : {}),
+							...(options.cwd ? { cwd: options.cwd } : {}),
+						}
+					: s.processConfig,
+				timingMitigation,
+				frozenTimeMs,
+			);
+			this.ensureBridgeProcessEntry(execProcessConfig);
+
 			// Build bridge handlers for this execution
 			const cryptoResult = buildCryptoBridgeHandlers();
 			const sendStreamEvent = (eventType: string, payload: Uint8Array) => {
@@ -451,6 +627,41 @@ export class NodeExecutionDriver implements RuntimeDriver {
 					const payload = JSON.stringify({ socketId, event, data });
 					sendStreamEvent("netSocket", Buffer.from(payload));
 				},
+				socketTable: this.socketTable,
+				pid: this.pid,
+			});
+
+			const networkBridgeResult = buildNetworkBridgeHandlers({
+				networkAdapter: s.networkAdapter,
+				budgetState: s.budgetState,
+				maxBridgeCalls: s.maxBridgeCalls,
+				isolateJsonPayloadLimitBytes: s.isolateJsonPayloadLimitBytes,
+				activeHttpServerIds: s.activeHttpServerIds,
+				activeHttpServerClosers: s.activeHttpServerClosers,
+				pendingHttpServerStarts: s.pendingHttpServerStarts,
+				sendStreamEvent,
+				socketTable: this.socketTable,
+				pid: this.pid,
+			});
+
+			const kernelFdResult = buildKernelFdBridgeHandlers({
+				filesystem: s.filesystem,
+				budgetState: s.budgetState,
+				maxBridgeCalls: s.maxBridgeCalls,
+			});
+			const kernelTimerDispatchHandlers = buildKernelTimerDispatchHandlers({
+				timerTable: this.timerTable,
+				pid: this.pid ?? 1,
+				budgetState: s.budgetState,
+				maxBridgeCalls: s.maxBridgeCalls,
+				activeHostTimers: s.activeHostTimers,
+				sendStreamEvent,
+			});
+			const kernelHandleDispatchHandlers = buildKernelHandleDispatchHandlers({
+				processTable: this.processTable,
+				pid: this.pid ?? 1,
+				budgetState: s.budgetState,
+				maxBridgeCalls: s.maxBridgeCalls,
 			});
 
 			const bridgeHandlers: BridgeHandlers = {
@@ -463,6 +674,7 @@ export class NodeExecutionDriver implements RuntimeDriver {
 				...buildModuleLoadingBridgeHandlers({
 					filesystem: s.filesystem,
 					resolutionCache: s.resolutionCache,
+					resolveMode: entryIsEsm ? "import" : "require",
 					sandboxToHostPath: (p) => {
 						const rfs = this.rawFilesystem as any;
 						return typeof rfs?.toHostPath === "function" ? rfs.toHostPath(p) : null;
@@ -471,11 +683,6 @@ export class NodeExecutionDriver implements RuntimeDriver {
 					// Dispatch handlers routed through _loadPolyfill for V8 runtime compat
 					...cryptoResult.handlers,
 					...netSocketResult.handlers,
-					...buildUpgradeSocketBridgeHandlers({
-						write: (socketId, dataBase64) => s.networkAdapter.upgradeSocketWrite?.(socketId, dataBase64),
-						end: (socketId) => s.networkAdapter.upgradeSocketEnd?.(socketId),
-						destroy: (socketId) => s.networkAdapter.upgradeSocketDestroy?.(socketId),
-					}),
 					...buildModuleResolutionBridgeHandlers({
 						sandboxToHostPath: (p) => {
 							const fs = s.filesystem as any;
@@ -490,6 +697,10 @@ export class NodeExecutionDriver implements RuntimeDriver {
 						onPtySetRawMode: s.onPtySetRawMode,
 						stdinIsTTY: s.processConfig.stdinIsTTY,
 					}),
+					// Kernel FD table handlers
+					...kernelFdResult.handlers,
+					...kernelTimerDispatchHandlers,
+					...kernelHandleDispatchHandlers,
 					// Custom bindings dispatched through _loadPolyfill
 					...(this.flattenedBindings ? Object.fromEntries(
 						this.flattenedBindings.map(b => [b.key, b.handler])
@@ -516,21 +727,11 @@ export class NodeExecutionDriver implements RuntimeDriver {
 					isolateJsonPayloadLimitBytes: s.isolateJsonPayloadLimitBytes,
 					activeChildProcesses: s.activeChildProcesses,
 					sendStreamEvent,
+					processTable: this.processTable,
+					parentPid: this.pid,
 				}),
-				...buildNetworkBridgeHandlers({
-					networkAdapter: s.networkAdapter,
-					budgetState: s.budgetState,
-					maxBridgeCalls: s.maxBridgeCalls,
-					isolateJsonPayloadLimitBytes: s.isolateJsonPayloadLimitBytes,
-					activeHttpServerIds: s.activeHttpServerIds,
-					sendStreamEvent,
-				}),
+				...networkBridgeResult.handlers,
 				...netSocketResult.handlers,
-				...buildUpgradeSocketBridgeHandlers({
-					write: (socketId, dataBase64) => s.networkAdapter.upgradeSocketWrite?.(socketId, dataBase64),
-					end: (socketId) => s.networkAdapter.upgradeSocketEnd?.(socketId),
-					destroy: (socketId) => s.networkAdapter.upgradeSocketDestroy?.(socketId),
-				}),
 				...buildModuleResolutionBridgeHandlers({
 					sandboxToHostPath: (p) => {
 						const rfs = this.rawFilesystem as any;
@@ -553,19 +754,6 @@ export class NodeExecutionDriver implements RuntimeDriver {
 					bridgeHandlers[binding.key] = binding.handler;
 				}
 			}
-
-			// Build process/os config for V8 execution
-			const execProcessConfig = createProcessConfigForExecution(
-				options.env || options.cwd
-					? {
-							...s.processConfig,
-							...(options.env ? { env: filterEnv(options.env, s.permissions) } : {}),
-							...(options.cwd ? { cwd: options.cwd } : {}),
-						}
-					: s.processConfig,
-				timingMitigation,
-				frozenTimeMs,
-			);
 
 			// Build bridge code with embedded config
 			const bridgeCode = buildFullBridgeCode();
@@ -596,8 +784,8 @@ export class NodeExecutionDriver implements RuntimeDriver {
 			const result = await session.execute({
 				bridgeCode,
 				postRestoreScript,
-				userCode: options.code,
-				mode: options.mode,
+				userCode,
+				mode: sessionMode,
 				filePath: options.filePath,
 				processConfig: {
 					cwd: execProcessConfig.cwd ?? "/",
@@ -617,7 +805,15 @@ export class NodeExecutionDriver implements RuntimeDriver {
 					if (callbackType === "httpServerResponse") {
 						try {
 							const data = JSON.parse(Buffer.from(payload).toString());
-							resolveHttpServerResponse(data.serverId, data.responseJson);
+							resolveHttpServerResponse({
+								requestId: data.requestId !== undefined
+									? Number(data.requestId)
+									: undefined,
+								serverId: data.serverId !== undefined
+									? Number(data.serverId)
+									: undefined,
+								responseJson: data.responseJson,
+							});
 						} catch {
 							// Invalid payload
 						}
@@ -625,9 +821,15 @@ export class NodeExecutionDriver implements RuntimeDriver {
 				},
 			});
 
+			if (options.mode === "exec" && !result.error) {
+				await this.waitForManagedResources();
+			}
+
 			// Clean up per-execution resources
 			cryptoResult.dispose();
 			netSocketResult.dispose();
+			kernelFdResult.dispose();
+			await networkBridgeResult.dispose();
 
 			// Map V8 execution result to RunResult
 			if (result.error) {
@@ -637,6 +839,7 @@ export class NodeExecutionDriver implements RuntimeDriver {
 
 				// Check for timeout
 				if (/timed out|time limit exceeded/i.test(errMessage)) {
+					finalExitCode = TIMEOUT_EXIT_CODE;
 					return {
 						code: TIMEOUT_EXIT_CODE,
 						errorMessage: TIMEOUT_ERROR_MESSAGE,
@@ -647,14 +850,16 @@ export class NodeExecutionDriver implements RuntimeDriver {
 				// Check for process.exit()
 				const exitMatch = errMessage.match(/process\.exit\((\d+)\)/);
 				if (exitMatch) {
+					finalExitCode = parseInt(exitMatch[1], 10);
 					return {
-						code: parseInt(exitMatch[1], 10),
+						code: finalExitCode,
 						exports: undefined as T,
 					};
 				}
 
+				finalExitCode = result.code || 1;
 				return {
-					code: result.code || 1,
+					code: finalExitCode,
 					errorMessage: boundErrorMessage(errMessage),
 					exports: undefined as T,
 				};
@@ -671,8 +876,9 @@ export class NodeExecutionDriver implements RuntimeDriver {
 				}
 			}
 
+			finalExitCode = result.code;
 			return {
-				code: result.code,
+				code: finalExitCode,
 				exports,
 			};
 		} catch (err) {
@@ -681,6 +887,7 @@ export class NodeExecutionDriver implements RuntimeDriver {
 				: String(err);
 
 			if (/timed out|time limit exceeded/i.test(errMessage)) {
+				finalExitCode = TIMEOUT_EXIT_CODE;
 				return {
 					code: TIMEOUT_EXIT_CODE,
 					errorMessage: TIMEOUT_ERROR_MESSAGE,
@@ -690,19 +897,22 @@ export class NodeExecutionDriver implements RuntimeDriver {
 
 			const exitMatch = errMessage.match(/process\.exit\((\d+)\)/);
 			if (exitMatch) {
+				finalExitCode = parseInt(exitMatch[1], 10);
 				return {
-					code: parseInt(exitMatch[1], 10),
+					code: finalExitCode,
 					exports: undefined as T,
 				};
 			}
 
+			finalExitCode = 1;
 			return {
-				code: 1,
+				code: finalExitCode,
 				errorMessage: boundErrorMessage(errMessage),
 				exports: undefined as T,
 			};
 		} finally {
 			await session.destroy().catch(() => {});
+			this.finalizeExecutionState(finalExitCode);
 		}
 	}
 
@@ -711,18 +921,22 @@ export class NodeExecutionDriver implements RuntimeDriver {
 		this.disposed = true;
 		killActiveChildProcesses(this.state);
 		clearActiveHostTimers(this.state);
+		if (this.pid !== undefined) {
+			this.clearKernelTimersForProcess(this.pid);
+		}
 	}
 
 	async terminate(): Promise<void> {
 		if (this.disposed) return;
 		killActiveChildProcesses(this.state);
-		const adapter = this.state.networkAdapter;
-		if (adapter?.httpServerClose) {
-			const ids = Array.from(this.state.activeHttpServerIds);
-			await Promise.allSettled(ids.map((id) => adapter.httpServerClose!(id)));
-		}
+		const closers = Array.from(this.state.activeHttpServerClosers.values());
+		await Promise.allSettled(closers.map((close) => close()));
 		this.state.activeHttpServerIds.clear();
+		this.state.activeHttpServerClosers.clear();
 		clearActiveHostTimers(this.state);
+		if (this.pid !== undefined) {
+			this.clearKernelTimersForProcess(this.pid);
+		}
 		this.disposed = true;
 	}
 }
@@ -757,6 +971,9 @@ function buildPostRestoreScript(
 	parts.push(getConsoleSetupCode());
 	parts.push(getRequireSetupCode());
 	parts.push(getIsolateRuntimeSource("setupFsFacade"));
+	parts.push(`globalThis.__runtimeDynamicImportConfig = ${JSON.stringify({
+		referrerPath: filePath ?? processConfig.cwd ?? bridgeConfig.initialCwd,
+	})};`);
 	parts.push(getIsolateRuntimeSource("setupDynamicImport"));
 
 	// Inject bridge setup config
