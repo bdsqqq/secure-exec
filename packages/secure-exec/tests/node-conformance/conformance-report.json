@@ -1481,5 +1481,41 @@
     "unsupported-api": 154,
     "unsupported-module": 755,
     "vacuous-skip": 50
+  },
+  "implementationIntents": {
+    "implementable": {
+      "total": 1153,
+      "fail": 1043,
+      "skip": 110,
+      "categories": {
+        "implementation-gap": 914,
+        "test-infra": 28,
+        "unsupported-api": 64,
+        "unsupported-module": 147
+      }
+    },
+    "will-not-implement": {
+      "total": 596,
+      "fail": 595,
+      "skip": 1,
+      "categories": {
+        "requires-v8-flags": 236,
+        "security-constraint": 2,
+        "test-infra": 69,
+        "unsupported-api": 6,
+        "unsupported-module": 283
+      }
+    },
+    "cannot-implement": {
+      "total": 612,
+      "fail": 610,
+      "skip": 2,
+      "categories": {
+        "native-addon": 3,
+        "requires-exec-path": 200,
+        "unsupported-api": 84,
+        "unsupported-module": 325
+      }
+    }
   }
 }

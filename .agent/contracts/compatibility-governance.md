@@ -40,6 +40,21 @@ Node conformance expectation and reporting flows SHALL reserve `category: "vacuo
 - **WHEN** secure-exec keeps a vendored file under `expected: "skip"` because functionality remains broken or intentionally unsupported
 - **THEN** that entry MUST stay under its real failure category rather than `vacuous-skip`
 
+### Requirement: Node Conformance Non-Pass Expectations Must Be Classified By Implementation Intent
+Node conformance expectation and reporting flows SHALL classify every non-passing vendored test into exactly one implementation-intent bucket: `implementable`, `will-not-implement`, or `cannot-implement`.
+
+#### Scenario: Remaining non-pass inventory is reported
+- **WHEN** expectations or the generated conformance report are updated
+- **THEN** the maintained conformance artifacts MUST expose the remaining non-pass counts grouped by implementation intent alongside the existing failure-category breakdown
+
+#### Scenario: Non-pass expectation is categorized
+- **WHEN** an expectation remains `expected: "fail"` or `expected: "skip"`
+- **THEN** it MUST resolve to exactly one implementation-intent bucket using a specific, verifiable reason that distinguishes policy/out-of-scope exclusions from fundamental architectural blockers
+
+#### Scenario: Conformance target is communicated
+- **WHEN** the generated Node conformance report is regenerated
+- **THEN** it MUST state that the tracked completion target is 100% of the `implementable` bucket rather than 100% of the upstream vendored suite
+
 ### Requirement: Node Compatibility Target Version Tracks Test Type Baseline
 The runtime compatibility target MUST align with the `@types/node` package major version used to validate secure-exec tests and type checks. Compatibility documentation and spec references MUST describe the same target major Node line.
 

@@ -53,6 +53,7 @@
 - never inflate conformance numbers — if a test self-skips (exits 0 without testing anything), mark it `vacuous-skip` in expectations.json, not as a real pass
 - reserve `category: "vacuous-skip"` for `expected: "pass"` self-skips only; if a vendored file stays `expected: "skip"` because behavior is still broken, keep a real failure category like `implementation-gap` so report category totals stay honest
 - every entry in `expectations.json` must have a specific, verifiable reason — no vague "fails in sandbox" reasons
+- every non-pass conformance expectation must also resolve to exactly one implementation-intent bucket (`implementable`, `will-not-implement`, or `cannot-implement`) via the shared classifier in `packages/secure-exec/tests/node-conformance/expectation-utils.ts`; keep the generated report aligned with that breakdown
 - when rerunning a single expected-fail conformance file through `runner.test.ts`, a green Vitest result only means the expectation still matches; only the explicit `now passes! Remove its expectation` failure proves the vendored test itself now passes and the entry is stale
 - before deleting explicit `pass` overrides behind a negated glob, rerun the exact promoted vendored files through a direct `createTestNodeRuntime()` harness or another no-expectation path; broad module cleanup can still hide stale passes
 - after changing expectations.json or adding/removing test files, regenerate both the JSON report and docs page: `pnpm tsx scripts/generate-node-conformance-report.ts`
