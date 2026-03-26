@@ -815,7 +815,7 @@
         "Typecheck passes"
       ],
       "priority": 36,
-      "passes": false,
+      "passes": true,
       "notes": "US-056 improved targeted parity, but the implementation still depends on regex-based source transforms in active loader paths."
     },
     {

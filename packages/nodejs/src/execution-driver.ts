@@ -2,7 +2,6 @@ import { createResolutionCache } from "./package-bundler.js";
 import { getConsoleSetupCode } from "@secure-exec/core/internal/shared/console-formatter";
 import { getRequireSetupCode } from "@secure-exec/core/internal/shared/require-setup";
 import { getIsolateRuntimeSource, getInitialBridgeGlobalsSetupCode } from "@secure-exec/core";
-import { transformDynamicImport } from "@secure-exec/core/internal/shared/esm-utils";
 import {
 	createCommandExecutorStub,
 	createFsStub,
@@ -40,6 +39,7 @@ import {
 	DEFAULT_SANDBOX_HOME,
 	DEFAULT_SANDBOX_TMPDIR,
 } from "./isolate-bootstrap.js";
+import { transformSourceForRequireSync } from "./module-source.js";
 import { shouldRunAsESM } from "./module-resolver.js";
 import {
 	TIMEOUT_ERROR_MESSAGE,
@@ -709,7 +709,10 @@ export class NodeExecutionDriver implements RuntimeDriver {
 		const sessionMode = options.mode === "run" || entryIsEsm ? "run" : "exec";
 		const userCode = entryIsEsm
 			? options.code
-			: transformDynamicImport(options.code);
+			: transformSourceForRequireSync(
+					options.code,
+					options.filePath ?? "/entry.js",
+				);
 
 		// Get or create V8 runtime
 		const v8Runtime = await getSharedV8Runtime();

@@ -3,8 +3,8 @@ import {
 	getPathDir,
 } from "./builtin-modules.js";
 import { resolveModule } from "./package-bundler.js";
-import { isESM } from "@secure-exec/core/internal/shared/esm-utils";
 import { parseJsonWithLimit } from "./isolate-bootstrap.js";
+import { sourceHasModuleSyntax } from "./module-source.js";
 import type { DriverDeps } from "./isolate-bootstrap.js";
 
 type ResolverDeps = Pick<
@@ -95,7 +95,7 @@ export async function getModuleFormat(
 			format = "esm";
 		} else if (packageType === "commonjs") {
 			format = "cjs";
-		} else if (sourceCode && isESM(sourceCode, filePath)) {
+		} else if (sourceCode && await sourceHasModuleSyntax(sourceCode, filePath)) {
 			// Some package managers/projected filesystems omit package.json.
 			// Fall back to syntax-based detection for plain .js modules.
 			format = "esm";
@@ -117,7 +117,7 @@ export async function shouldRunAsESM(
 ): Promise<boolean> {
 	// Keep heuristic mode for string-only snippets without file metadata.
 	if (!filePath) {
-		return isESM(code);
+		return sourceHasModuleSyntax(code);
 	}
 	return (await getModuleFormat(deps, filePath)) === "esm";
 }

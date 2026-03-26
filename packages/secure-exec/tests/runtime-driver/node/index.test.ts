@@ -945,6 +945,63 @@ describe("NodeRuntime", () => {
 		expect(capture.stdout()).toBe("before\nside-effect\nafter\n");
 	});
 
+	it("keeps CJS comment and string text from triggering ESM entry classification", async () => {
+		proc = createTestNodeRuntime();
+		const result = await proc.run(
+			`
+	      const text = "import('./not-a-real-module.mjs')";
+	      /*
+	      export const fake = true;
+	      */
+	      module.exports = text;
+	    `,
+			"/entry.js",
+		);
+
+		expect(result.code).toBe(0);
+		expect(result.exports).toBe("import('./not-a-real-module.mjs')");
+	});
+
+	it("resolves import() inside require()-loaded CJS modules without rewriting strings", async () => {
+		const fs = createFs();
+		await fs.mkdir("/app");
+		await fs.writeFile(
+			"/app/loader.cjs",
+			`
+	      const literal = "import('./fake.mjs')";
+	      module.exports = async function load() {
+	        const mod = await import("./dep.mjs");
+	        return literal + "|" + mod.value;
+	      };
+	    `,
+		);
+		await fs.writeFile(
+			"/app/dep.mjs",
+			`
+	      export const value = 42;
+	    `,
+		);
+
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({
+			filesystem: fs,
+			permissions: allowAllFs,
+			onStdio: capture.onStdio,
+		});
+		const result = await proc.exec(
+			`
+	      (async () => {
+	        const value = await require("./loader.cjs")();
+	        console.log(value);
+	      })();
+	    `,
+			{ filePath: "/app/entry.js" },
+		);
+
+		expect(result.code).toBe(0);
+		expect(capture.stdout()).toBe("import('./fake.mjs')|42\n");
+	});
+
 	it("does not evaluate dynamic imports in untaken branches", async () => {
 		const fs = createFs();
 		await fs.mkdir("/app");

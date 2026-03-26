@@ -1,4 +1,5 @@
 ## Codebase Patterns
+- Replace active Node loader rewrites with parser-backed transforms: use `es-module-lexer` for `.js` module-syntax detection and `esbuild` CJS transforms with `supported: { "dynamic-import": false }` plus `define: { "import.meta.url": "__filename" }` so `require()` keeps module-relative `import()` behavior without touching strings/comments.
 - Standalone `NodeExecutionDriver` should always keep an internal `SocketTable` for sandbox loopback routing, but it must only attach `createNodeHostNetworkAdapter()` when `SystemDriver.network` is explicitly configured; otherwise omitted network capability silently regains host TCP access.
 - Bridge-level HTTP/fetch client work needs explicit in-flight tracking in `NodeExecutionDriver` state; otherwise `runtime.exec()` can finish before async bridge requests settle and payload-limit failures turn into false green exits.
 - Kernel-backed HTTP client routing should be limited to the loopback-aware default Node adapter path; preserve a documented legacy fallback for custom `NetworkAdapter` injections so adapter-focused tests and no-network stubs still exercise their own behavior.
@@ -515,4 +516,13 @@
   - Kernel socket permission stories need both halves of the fix: `KernelImpl` must pass `permissions.network` into `SocketTable`, and external socket methods must call `checkNetworkPermission()` unconditionally or “no policy” still leaks through.
   - Loopback exemptions should stay localized to the listener-routing branch in `SocketTable.connect()` and UDP loopback delivery, rather than guarding whole permission checks on `networkCheck` presence.
   - `packages/core/test/kernel/network-permissions.test.ts` is the right place to verify deny-by-default semantics at both levels: direct `SocketTable` behavior and `createTestKernel()` wiring through the real kernel constructor.
+---
+## [2026-03-26 09:49 PDT] - US-036
+- Replaced the active Node loader regex path with parser-backed helpers in `packages/nodejs/src/module-source.ts`, using `es-module-lexer` for fallback `.js` ESM detection and `esbuild` CJS transforms for `require()`-loaded ESM and module-relative `import()` support.
+- Removed `convertEsmToCjs` / `transformDynamicImport` usage from the Node execution and bridge loading paths, rebuilt `@secure-exec/nodejs`, and added runtime-driver regressions for comment/string false positives plus `require()`-loaded CJS modules that call `import()` without corrupting string literals.
+- Files changed: `packages/nodejs/package.json`, `packages/nodejs/src/module-source.ts`, `packages/nodejs/src/execution-driver.ts`, `packages/nodejs/src/module-resolver.ts`, `packages/nodejs/src/bridge-handlers.ts`, `packages/secure-exec/tests/runtime-driver/node/index.test.ts`, `pnpm-lock.yaml`, `scripts/ralph/prd.json`, `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+  - `packages/secure-exec/src/index.ts` re-exports `@secure-exec/nodejs`, so loader changes are invisible to tests until `pnpm --filter @secure-exec/nodejs build` refreshes the package `dist/` output.
+  - `esbuild` only rewrites CJS `import()` when `supported: { "dynamic-import": false }` is set; otherwise it preserves the syntax and the sandbox loses module-relative resolution for `require()`-loaded files.
+  - `runtime.run()` serializes exports, so loader regressions that return Promises are easier to verify with `runtime.exec()` plus `onStdio` than with Promise-valued `module.exports`.
 ---

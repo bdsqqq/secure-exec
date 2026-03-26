@@ -68,13 +68,16 @@ import {
 } from "@secure-exec/core";
 import { normalizeBuiltinSpecifier } from "./builtin-modules.js";
 import { resolveModule, loadFile } from "./package-bundler.js";
-import { transformDynamicImport, isESM } from "@secure-exec/core/internal/shared/esm-utils";
 import { bundlePolyfill, hasPolyfill } from "./polyfills.js";
 import {
 	createBuiltinESMWrapper,
 	getStaticBuiltinWrapperSource,
 	getEmptyBuiltinESMWrapper,
 } from "./esm-compiler.js";
+import {
+	transformSourceForRequire,
+	transformSourceForRequireSync,
+} from "./module-source.js";
 import {
 	checkBridgeBudget,
 	assertPayloadByteLength,
@@ -2852,138 +2855,6 @@ export interface ModuleResolutionBridgeDeps {
 }
 
 /**
- * Convert ESM source to CJS-compatible code for require() loading.
- * Handles import declarations, export declarations, and re-exports.
- */
-/** Strip // and /* comments from an export/import list string. */
-function stripComments(s: string): string {
-	return s.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
-}
-
-function convertEsmToCjs(source: string, filePath: string): string {
-	if (!isESM(source, filePath)) return source;
-
-	let code = source;
-
-	// Remove const __filename/dirname declarations (already provided by CJS wrapper)
-	code = code.replace(/^\s*(?:const|let|var)\s+__filename\s*=\s*[^;]+;?\s*$/gm, "// __filename provided by CJS wrapper");
-	code = code.replace(/^\s*(?:const|let|var)\s+__dirname\s*=\s*[^;]+;?\s*$/gm, "// __dirname provided by CJS wrapper");
-
-	// import X from 'Y' → const X = require('Y')
-	code = code.replace(
-		/^\s*import\s+(\w+)\s+from\s+['"]([^'"]+)['"]\s*;?/gm,
-		"const $1 = (function(m) { return m && m.__esModule ? m.default : m; })(require('$2'));",
-	);
-
-	// import { a, b as c } from 'Y' → const { a, b: c } = require('Y')
-	code = code.replace(
-		/^\s*import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]\s*;?/gm,
-		(_match, imports: string, mod: string) => {
-			const mapped = stripComments(imports).split(",").map((s: string) => {
-				const t = s.trim();
-				if (!t) return null;
-				const parts = t.split(/\s+as\s+/);
-				return parts.length === 2 ? `${parts[0].trim()}: ${parts[1].trim()}` : t;
-			}).filter(Boolean).join(", ");
-			return `const { ${mapped} } = require('${mod}');`;
-		},
-	);
-
-	// import * as X from 'Y' → const X = require('Y')
-	code = code.replace(
-		/^\s*import\s+\*\s+as\s+(\w+)\s+from\s+['"]([^'"]+)['"]\s*;?/gm,
-		"const $1 = require('$2');",
-	);
-
-	// Side-effect imports: import 'Y' → require('Y')
-	code = code.replace(
-		/^\s*import\s+['"]([^'"]+)['"]\s*;?/gm,
-		"require('$1');",
-	);
-
-	// export { a, b } from 'Y' → re-export
-	code = code.replace(
-		/^\s*export\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]\s*;?/gm,
-		(_match, exports: string, mod: string) => {
-			return stripComments(exports).split(",").map((s: string) => {
-				const t = s.trim();
-				if (!t) return "";
-				const parts = t.split(/\s+as\s+/);
-				const local = parts[0].trim();
-				const exported = parts.length === 2 ? parts[1].trim() : local;
-				return `Object.defineProperty(exports, '${exported}', { get: () => require('${mod}').${local}, enumerable: true });`;
-			}).filter(Boolean).join("\n");
-		},
-	);
-
-	// export * from 'Y'
-	code = code.replace(
-		/^\s*export\s+\*\s+from\s+['"]([^'"]+)['"]\s*;?/gm,
-		"Object.assign(exports, require('$1'));",
-	);
-
-	// export default X → module.exports.default = X
-	code = code.replace(
-		/^\s*export\s+default\s+/gm,
-		"module.exports.default = ",
-	);
-
-	// export const/let/var X = ... → const/let/var X = ...; exports.X = X;
-	code = code.replace(
-		/^\s*export\s+(const|let|var)\s+(\w+)\s*=/gm,
-		"$1 $2 =",
-	);
-	// Capture the names separately to add exports at the end
-	const exportedVars: string[] = [];
-	for (const m of source.matchAll(/^\s*export\s+(?:const|let|var)\s+(\w+)\s*=/gm)) {
-		exportedVars.push(m[1]);
-	}
-
-	// export function X(...) → function X(...); exports.X = X;
-	code = code.replace(
-		/^\s*export\s+function\s+(\w+)/gm,
-		"function $1",
-	);
-	for (const m of source.matchAll(/^\s*export\s+function\s+(\w+)/gm)) {
-		exportedVars.push(m[1]);
-	}
-
-	// export class X → class X; exports.X = X;
-	code = code.replace(
-		/^\s*export\s+class\s+(\w+)/gm,
-		"class $1",
-	);
-	for (const m of source.matchAll(/^\s*export\s+class\s+(\w+)/gm)) {
-		exportedVars.push(m[1]);
-	}
-
-	// export { a, b } (local re-export without from)
-	code = code.replace(
-		/^\s*export\s+\{([^}]+)\}\s*;?/gm,
-		(_match, exports: string) => {
-			return stripComments(exports).split(",").map((s: string) => {
-				const t = s.trim();
-				if (!t) return "";
-				const parts = t.split(/\s+as\s+/);
-				const local = parts[0].trim();
-				const exported = parts.length === 2 ? parts[1].trim() : local;
-				return `Object.defineProperty(exports, '${exported}', { get: () => ${local}, enumerable: true });`;
-			}).filter(Boolean).join("\n");
-		},
-	);
-
-	// Append named exports for exported vars/functions/classes
-	if (exportedVars.length > 0) {
-		const lines = exportedVars.map(
-			(name) => `Object.defineProperty(exports, '${name}', { get: () => ${name}, enumerable: true });`,
-		);
-		code += "\n" + lines.join("\n");
-	}
-
-	return code;
-}
-
-/**
  * Resolve a package specifier by walking up directories and reading package.json exports.
  * Handles both root imports ('pkg') and subpath imports ('pkg/sub').
  */
@@ -3100,17 +2971,15 @@ export function buildModuleResolutionBridgeHandlers(
 		return null;
 	};
 
-	// Sync file read — translates sandbox path and reads via readFileSync.
-	// Transforms dynamic import() to __dynamicImport() and converts ESM to CJS
-	// for npm packages so require() can load ESM-only dependencies.
+	// Sync file read — translates sandbox path and applies parser-backed
+	// CJS transforms when require() needs ESM or import() support.
 	handlers[K.loadFileSync] = (filePath: unknown) => {
 		const sandboxPath = String(filePath);
 		const hostPath = deps.sandboxToHostPath(sandboxPath) ?? sandboxPath;
 
 		try {
-			let source = readFileSync(hostPath, "utf-8");
-			source = convertEsmToCjs(source, hostPath);
-			return transformDynamicImport(source);
+			const source = readFileSync(hostPath, "utf-8");
+			return transformSourceForRequireSync(source, hostPath);
 		} catch {
 			return null;
 		}
@@ -3298,7 +3167,7 @@ export function buildModuleLoadingBridgeHandlers(
 	// this handler covers the __dynamicImport() path used in exec mode.
 	handlers[K.dynamicImport] = async (): Promise<null> => null;
 
-	// Async file read + dynamic import transform.
+	// Async file read for CommonJS and ESM loader paths.
 	// Also serves ESM wrappers for built-in modules (fs, path, etc.) when
 	// used from V8's ES module system which calls _loadFile after _resolveModule.
 	handlers[K.loadFile] = async (
@@ -3322,12 +3191,12 @@ export function buildModuleLoadingBridgeHandlers(
 			);
 		}
 		// Regular files load differently for CommonJS require() vs V8's ESM loader.
-		let source = await loadFile(p, deps.filesystem);
+		const source = await loadFile(p, deps.filesystem);
 		if (source === null) return null;
 		if (loadMode === "require") {
-			source = convertEsmToCjs(source, p);
+			return transformSourceForRequire(source, p);
 		}
-		return transformDynamicImport(source);
+		return source;
 	};
 
 	return handlers;
