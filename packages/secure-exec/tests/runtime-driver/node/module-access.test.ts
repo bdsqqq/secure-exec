@@ -62,6 +62,7 @@ async function writePackage(
 	options: {
 		main?: string;
 		dependencies?: Record<string, string>;
+		packageJsonFields?: Record<string, unknown>;
 		files: PackageFiles;
 	},
 ): Promise<string> {
@@ -75,6 +76,7 @@ async function writePackage(
 		name: packageName,
 		main: options.main ?? "index.js",
 		dependencies: options.dependencies,
+		...options.packageJsonFields,
 	};
 	await writeFile(
 		path.join(packageDir, "package.json"),
@@ -214,6 +216,44 @@ describe("moduleAccess overlay", () => {
 		expect(result.code).toBe(0);
 		expect(result).not.toHaveProperty("stdout");
 		expect(capture.stdout()).toBe("42:host-file\n");
+	});
+
+	it("allows sync fs access to host absolute paths within the projected module tree", async () => {
+		const projectDir = await createTempProject();
+		tempDirs.push(projectDir);
+		const entryPath = path.join(
+			projectDir,
+			"node_modules",
+			"asset-probe",
+			"dist",
+			"config.js",
+		);
+		const packageJsonPath = path.join(
+			projectDir,
+			"node_modules",
+			"asset-probe",
+			"package.json",
+		);
+
+		await writePackage(projectDir, "asset-probe", {
+			files: {
+				"dist/config.js": "module.exports = { ok: true };",
+			},
+		});
+
+		const driver = createModuleAccessDriver({
+			moduleAccess: {
+				cwd: projectDir,
+			},
+		});
+		const filesystem = driver.filesystem!;
+
+		expect(await filesystem.exists(entryPath)).toBe(true);
+		expect(await filesystem.realpath(entryPath)).toBe(entryPath);
+		expect(await filesystem.exists(packageJsonPath)).toBe(true);
+		expect(await filesystem.readTextFile(packageJsonPath)).toContain(
+			'"name": "asset-probe"',
+		);
 	});
 
 	it("keeps projected node_modules read-only", async () => {

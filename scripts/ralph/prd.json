@@ -1141,7 +1141,7 @@
         "Typecheck passes"
       ],
       "priority": 53.2,
-      "passes": false,
+      "passes": true,
       "notes": "Next blocker exposed by US-067. Exact repro as of 2026-03-26: after the `__filename` collision fix, importing `@mariozechner/pi-coding-agent@0.60.0` through NodeRuntime reaches `dist/config.js` and then fails with `ENOENT: no such file or directory, open '<repo>/node_modules/.pnpm/.../@mariozechner/pi-coding-agent/dist/package.json'`. Proposed unblock path: inspect how the sandboxed FS / path resolution is handling Pi's package-root detection and why `getPackageDir()` stops at `dist/` instead of the package root."
     },
     {

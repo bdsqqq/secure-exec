@@ -147,6 +147,7 @@
 - bridge exports that userland constructs with `new` must be assigned as constructable function properties, not object-literal method shorthands; shorthand methods like `createReadStream() {}` are not constructable and vendored fs coverage calls `new fs.createReadStream(...)`
 - `/proc/sys/kernel/hostname` conformance hits both kernel-backed and standalone NodeRuntime paths; a procfs fix that only lands in the kernel layer still leaves `createTestNodeRuntime()` fs/FileHandle coverage red
 - require-transformed ESM must not rely on the CommonJS wrapper's `__filename` / `__dirname` parameter names; keep wrapper internals on private names, synthesize local CJS bindings only for plain CommonJS sources, and compute transformed `import.meta.url` from `pathToFileURL(__secureExecFilename).href`
+- `ModuleAccessFileSystem` must treat host-absolute package asset paths derived from `import.meta.url`, `__filename`, or `realpath()` as part of the same read-only projected `node_modules` closure when they canonicalize inside the configured overlay; Pi and similar SDKs walk to sibling `package.json`/README/theme assets that way
 
 ## Virtual Kernel Architecture
 

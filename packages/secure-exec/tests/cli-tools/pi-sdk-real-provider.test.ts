@@ -196,8 +196,8 @@ describe.skipIf(skipReason)('Pi SDK real-provider E2E (sandbox VM)', () => {
       const error = String(payload.error ?? '');
       expect(payload.ok).toBe(false);
       expect(error).toContain('@mariozechner/pi-coding-agent');
-      expect(error).toContain('dist/config.js');
-      expect(error).toContain("Identifier '__filename' has already been declared");
+      expect(error).not.toContain("Identifier '__filename' has already been declared");
+      expect(error).not.toContain('/dist/package.json');
     },
     55_000,
   );
