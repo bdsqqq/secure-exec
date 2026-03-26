@@ -266,19 +266,34 @@ function buildBridgeDispatchShim(): string {
 	return `
 (function() {
   var _origApply = Function.prototype.apply;
+  function encodeDispatchArgs(args) {
+    return JSON.stringify(args, function(_key, value) {
+      if (value === undefined) {
+        return { __secureExecDispatchType: 'undefined' };
+      }
+      return value;
+    });
+  }
   var names = ${JSON.stringify(allGlobals)};
   for (var i = 0; i < names.length; i++) {
     var name = names[i];
     if (typeof globalThis[name] === 'function') continue;
     (function(n) {
+      function reviveDispatchError(payload) {
+        var error = new Error(payload && payload.message ? payload.message : String(payload));
+        if (payload && payload.name) error.name = payload.name;
+        if (payload && payload.code !== undefined) error.code = payload.code;
+        if (payload && payload.stack) error.stack = payload.stack;
+        return error;
+      }
       var fn = function() {
         var args = Array.prototype.slice.call(arguments);
-        var encoded = "__bd:" + n + ":" + JSON.stringify(args);
+        var encoded = "__bd:" + n + ":" + encodeDispatchArgs(args);
         var resultJson = _loadPolyfill.applySyncPromise(undefined, [encoded]);
         if (resultJson === null) return undefined;
         try {
           var parsed = JSON.parse(resultJson);
-          if (parsed.__bd_error) throw new Error(parsed.__bd_error);
+          if (parsed.__bd_error) throw reviveDispatchError(parsed.__bd_error);
           return parsed.__bd_result;
         } catch (e) {
           if (e.message && e.message.startsWith('No handler:')) return undefined;

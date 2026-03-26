@@ -1,17 +1,17 @@
 {
   "nodeVersion": "22.14.0",
   "sourceCommit": "v22.14.0",
-  "lastUpdated": "2026-03-25",
-  "generatedAt": "2026-03-25",
+  "lastUpdated": "2026-03-26",
+  "generatedAt": "2026-03-26",
   "summary": {
     "total": 3532,
-    "pass": 738,
-    "genuinePass": 704,
-    "vacuousPass": 34,
-    "fail": 2723,
+    "pass": 787,
+    "genuinePass": 754,
+    "vacuousPass": 33,
+    "fail": 2674,
     "skip": 71,
-    "passRate": "20.9%",
-    "genuinePassRate": "19.9%"
+    "passRate": "22.3%",
+    "genuinePassRate": "21.3%"
   },
   "modules": {
     "abortcontroller": {
@@ -247,9 +247,9 @@
     },
     "crypto": {
       "total": 99,
-      "pass": 16,
-      "vacuousPass": 13,
-      "fail": 83,
+      "pass": 56,
+      "vacuousPass": 12,
+      "fail": 43,
       "skip": 0
     },
     "cwd": {
@@ -569,9 +569,9 @@
     },
     "global": {
       "total": 11,
-      "pass": 2,
+      "pass": 3,
       "vacuousPass": 0,
-      "fail": 9,
+      "fail": 8,
       "skip": 0
     },
     "h2": {
@@ -618,9 +618,9 @@
     },
     "http": {
       "total": 377,
-      "pass": 237,
+      "pass": 243,
       "vacuousPass": 1,
-      "fail": 139,
+      "fail": 133,
       "skip": 1
     },
     "http2": {
@@ -1395,9 +1395,9 @@
     },
     "webcrypto": {
       "total": 28,
-      "pass": 15,
+      "pass": 17,
       "vacuousPass": 0,
-      "fail": 13,
+      "fail": 11,
       "skip": 0
     },
     "websocket": {
@@ -1472,14 +1472,14 @@
     }
   },
   "categories": {
-    "implementation-gap": 1422,
+    "implementation-gap": 1372,
     "native-addon": 3,
     "requires-exec-path": 200,
     "requires-v8-flags": 239,
-    "security-constraint": 1,
+    "security-constraint": 2,
     "test-infra": 68,
-    "unsupported-api": 124,
-    "unsupported-module": 737,
-    "vacuous-skip": 34
+    "unsupported-api": 123,
+    "unsupported-module": 738,
+    "vacuous-skip": 33
   }
 }

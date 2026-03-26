@@ -1,7 +1,7 @@
 {
   "nodeVersion": "22.14.0",
   "sourceCommit": "v22.14.0",
-  "lastUpdated": "2026-03-24",
+  "lastUpdated": "2026-03-25",
   "expectations": {
     "test-cluster-*.js": {
       "reason": "cluster module is Tier 5 (Unsupported) — require(cluster) throws by design",
@@ -1856,16 +1856,6 @@
       "category": "requires-exec-path",
       "expected": "fail"
     },
-    "test-crypto-authenticated-stream.js": {
-      "reason": "CCM cipher mode requires authTagLength parameter — bridge does not support CCM-specific options (setAAD length, authTagLength)",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-cipheriv-decipheriv.js": {
-      "reason": "Cipheriv/Decipheriv constructors require 'new' keyword — calling without 'new' throws instead of returning new instance",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
     "test-crypto-dh-constructor.js": {
       "reason": "DiffieHellman bridge does not handle 'buffer' encoding parameter — generateKeys/computeSecret fail",
       "category": "implementation-gap",
@@ -1881,11 +1871,6 @@
       "category": "implementation-gap",
       "expected": "fail"
     },
-    "test-crypto-dh-generate-keys.js": {
-      "reason": "DiffieHellman.generateKeys() returns undefined instead of Buffer — bridge does not return key data",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
     "test-crypto-dh-modp2-views.js": {
       "reason": "DiffieHellman.computeSecret() returns undefined instead of Buffer — bridge does not return computed secret",
       "category": "implementation-gap",
@@ -1893,11 +1878,6 @@
     },
     "test-crypto-dh-modp2.js": {
       "reason": "DiffieHellman.computeSecret() returns undefined instead of Buffer — bridge does not return computed secret",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-dh-padding.js": {
-      "reason": "DiffieHellman.computeSecret() produces incorrect result — key exchange computation has bridge-level fidelity gap",
       "category": "implementation-gap",
       "expected": "fail"
     },
@@ -1921,11 +1901,6 @@
       "category": "unsupported-module",
       "expected": "fail"
     },
-    "test-crypto-ecb.js": {
-      "reason": "uses Blowfish-ECB cipher which is unsupported by OpenSSL 3.x (legacy provider not enabled)",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
     "test-crypto-ecdh-convert-key.js": {
       "reason": "ECDH.convertKey() error validation missing ERR_INVALID_ARG_TYPE error code on TypeError",
       "category": "implementation-gap",
@@ -1941,198 +1916,33 @@
       "category": "unsupported-module",
       "expected": "fail"
     },
-    "test-crypto-key-objects-to-crypto-key.js": {
-      "reason": "KeyObject.toCryptoKey() method not implemented in bridge — cannot convert KeyObject to WebCrypto CryptoKey",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
     "test-crypto-key-objects.js": {
-      "reason": "fs.readFileSync encoding argument handled as path component — test reads fixture PEM keys which fail to load",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-dsa-key-object.js": {
-      "reason": "DSA key generation fails — OpenSSL 'bad ffc parameters' error for DSA modulusLength/divisorLength combinations",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-dsa.js": {
-      "reason": "DSA key generation fails — OpenSSL 'bad ffc parameters' error for DSA modulusLength/divisorLength combinations",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-elliptic-curve-jwk-ec.js": {
-      "reason": "generateKeyPair with JWK encoding returns key as string instead of parsed object — bridge does not parse JWK output",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-elliptic-curve-jwk-rsa.js": {
-      "reason": "generateKeyPair with JWK encoding returns key as string instead of parsed object — bridge does not parse JWK output",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-elliptic-curve-jwk.js": {
-      "reason": "generateKeyPair with JWK encoding returns key as string instead of parsed object — bridge does not parse JWK output",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-encrypted-private-key-der.js": {
-      "reason": "generateKeyPair with encrypted DER private key encoding produces invalid output — key validation fails",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-encrypted-private-key.js": {
-      "reason": "generateKeyPair with encrypted PEM private key encoding produces invalid output — key validation fails",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-explicit-elliptic-curve-encrypted-p256.js": {
-      "reason": "generateKeyPair returns KeyObject with undefined asymmetricKeyType — assertion helper fails checking key properties",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-explicit-elliptic-curve-encrypted.js.js": {
-      "reason": "generateKeyPair returns KeyObject with undefined asymmetricKeyType — assertion helper fails checking key properties",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-explicit-elliptic-curve.js": {
-      "reason": "generateKeyPair returns KeyObject with undefined asymmetricKeyType — assertion helper fails checking key properties",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-named-elliptic-curve-encrypted-p256.js": {
-      "reason": "generateKeyPair returns KeyObject with undefined asymmetricKeyType — assertion helper fails checking key properties",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-named-elliptic-curve-encrypted.js": {
-      "reason": "generateKeyPair returns KeyObject with undefined asymmetricKeyType — assertion helper fails checking key properties",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-named-elliptic-curve.js": {
-      "reason": "generateKeyPair returns KeyObject with undefined asymmetricKeyType — assertion helper fails checking key properties",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-async-rsa.js": {
-      "reason": "generateKeyPair RSA key output validation fails — exported key format does not match expected PEM structure",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-bit-length.js": {
-      "reason": "KeyObject.asymmetricKeyDetails is undefined — bridge does not populate modulusLength, publicExponent on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-deprecation.js": {
-      "reason": "KeyObject.asymmetricKeyType is undefined — bridge does not set type metadata (rsa, rsa-pss, ec, etc.) on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-dh-classic.js": {
-      "reason": "KeyObject.asymmetricKeyType is undefined — bridge does not set type metadata on DH generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-duplicate-deprecated-option.js": {
-      "reason": "KeyObject.asymmetricKeyType is undefined — bridge does not set type metadata on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-eddsa.js": {
-      "reason": "generateKeyPair callback invocation broken for ed25519/ed448 key types — callback not called correctly",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-empty-passphrase-no-prompt.js": {
-      "reason": "KeyObject.asymmetricKeyType is undefined — bridge does not set type metadata on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-invalid-parameter-encoding-dsa.js": {
-      "reason": "generateKeyPairSync does not throw for invalid DSA parameter encoding — error validation missing",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-invalid-parameter-encoding-ec.js": {
-      "reason": "generateKeyPairSync does not throw for invalid EC parameter encoding — error validation missing",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-key-object-without-encoding.js": {
-      "reason": "KeyObject.asymmetricKeyType is undefined — bridge does not set type metadata on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-key-objects.js": {
-      "reason": "KeyObject.asymmetricKeyType is undefined — bridge does not set type metadata on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-no-rsassa-pss-params.js": {
-      "reason": "KeyObject.asymmetricKeyDetails is undefined — bridge does not populate modulusLength, publicExponent, hash details on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-non-standard-public-exponent.js": {
-      "reason": "KeyObject.asymmetricKeyType is undefined — bridge does not set type metadata on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-rfc8017-9-1.js": {
-      "reason": "KeyObject.asymmetricKeyDetails is undefined — bridge does not populate RSA-PSS key details (modulusLength, hashAlgorithm, mgf1HashAlgorithm, saltLength)",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-rfc8017-a-2-3.js": {
-      "reason": "KeyObject.asymmetricKeyDetails is undefined — bridge does not populate RSA-PSS key details (modulusLength, hashAlgorithm, mgf1HashAlgorithm, saltLength)",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-rsa-pss.js": {
-      "reason": "KeyObject.asymmetricKeyType is undefined — bridge does not set type metadata on generated keys",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen-sync.js": {
-      "reason": "generateKeyPairSync returns KeyObject with undefined asymmetricKeyType — assertion helper fails checking key properties",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-keygen.js": {
-      "reason": "generateKeyPairSync does not validate required options — missing TypeError for invalid arguments",
+      "reason": "fs.readFileSync() still folds the encoding argument into the VFS path for PEM fixtures, so the test tries to open '/test/fixtures/rsa_public.pem/ascii'",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-crypto-padding.js": {
-      "reason": "createCipheriv/createDecipheriv do not throw expected exceptions for invalid padding options",
+      "reason": "OpenSSL cipher errors still miss Node's `reason` field snapshot shape, so invalid-padding assertions on `ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH` fail",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-crypto-pbkdf2.js": {
-      "reason": "pbkdf2/pbkdf2Sync error validation missing ERR_INVALID_ARG_TYPE code — TypeError thrown without .code property",
-      "category": "implementation-gap",
+      "reason": "SharedArrayBuffer is intentionally removed by sandbox hardening, so the vendored TypedArray coverage loop aborts before the remaining pbkdf2 assertions run",
+      "category": "security-constraint",
       "expected": "fail"
     },
     "test-crypto-private-decrypt-gh32240.js": {
-      "reason": "publicEncrypt/privateDecrypt bridge returns undefined instead of Buffer — asymmetric encryption result not propagated",
+      "reason": "encrypted private-key decrypt path does not throw the expected failure, so the test hits `Missing expected exception`",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-crypto-psychic-signatures.js": {
-      "reason": "ECDSA key import fails with unsupported key format — bridge cannot decode the specific ECDSA public key encoding used in test",
+      "reason": "ECDSA psychic-signature fixture parsing still crashes with `TypeError: Cannot read properties of null (reading '2')`",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-crypto-rsa-dsa.js": {
-      "reason": "fs.readFileSync encoding argument handled as path component — test reads fixture PEM/cert files which fail to load",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-secret-keygen.js": {
-      "reason": "crypto.generateKey() function not implemented in bridge — only generateKeyPairSync/generateKeyPair are bridged",
+      "reason": "crypto cert fixtures are incomplete in the conformance VFS, so the test fails opening `/test/fixtures/rsa_cert.crt`",
       "category": "implementation-gap",
       "expected": "fail"
     },
@@ -2142,12 +1952,7 @@
       "expected": "fail"
     },
     "test-crypto-sign-verify.js": {
-      "reason": "fs.readFileSync encoding argument handled as path component — test reads fixture PEM/cert files which fail to load",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-stream.js": {
-      "reason": "crypto Hash/Cipher objects do not implement Node.js Stream interface — .pipe() method not available",
+      "reason": "crypto cert fixtures are incomplete in the conformance VFS, so the test fails opening `/test/fixtures/rsa_cert.crt`",
       "category": "implementation-gap",
       "expected": "fail"
     },
@@ -3446,7 +3251,7 @@
       "expected": "fail"
     },
     "test-webcrypto-sign-verify-eddsa.js": {
-      "reason": "WebCrypto subtle.importKey() not implemented — crypto.subtle API methods return undefined",
+      "reason": "EdDSA WebCrypto path still fails runtime assertions during sign/verify coverage (`AssertionError2: false == true`)",
       "category": "implementation-gap",
       "expected": "fail"
     },
@@ -3801,67 +3606,57 @@
       "expected": "fail"
     },
     "test-crypto-async-sign-verify.js": {
-      "reason": "uses crypto/webcrypto APIs not fully bridged in sandbox",
+      "reason": "crypto fixture set is incomplete in the conformance VFS, so async sign/verify fails opening `/test/fixtures/rsa_public.pem`",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-crypto-certificate.js": {
-      "reason": "tests Node.js-specific error codes (ERR_*) — sandbox polyfills throw plain errors",
+      "reason": "crypto certificate fixtures are incomplete in the conformance VFS, so the test fails opening `/test/fixtures/rsa_spkac.spkac`",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-crypto-classes.js": {
-      "reason": "uses crypto/webcrypto APIs not fully bridged in sandbox",
+      "reason": "constructor/factory parity is incomplete for crypto classes, so `createX()` instances fail `instanceof crypto.X` assertions",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-crypto-dh-group-setters.js": {
-      "reason": "uses crypto/webcrypto APIs not fully bridged in sandbox",
+      "reason": "ECDH instances still expose `setPrivateKey()` where Node expects `undefined`, so the group-setter surface mismatches Node",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-crypto-getcipherinfo.js": {
-      "reason": "tests Node.js-specific error codes (ERR_*) — sandbox polyfills throw plain errors",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-hash-stream-pipe.js": {
-      "reason": "uses crypto/webcrypto APIs not fully bridged in sandbox",
+      "reason": "`crypto.getCipherInfo()` is still missing from the sandbox crypto surface",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-crypto-hash.js": {
-      "reason": "tests Node.js-specific error codes (ERR_*) — sandbox polyfills throw plain errors",
+      "reason": "hash parity still breaks Node's identity-sensitive output assertions (`Values identical but not reference-equal`) in the vendored hash suite",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-crypto-hkdf.js": {
-      "reason": "tests Node.js-specific error codes (ERR_*) — sandbox polyfills throw plain errors",
+      "reason": "`crypto.hkdf()` is still missing from the sandbox crypto surface, so the test gets `hkdf is not a function`",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-crypto-hmac.js": {
-      "reason": "tests Node.js-specific error codes (ERR_*) — sandbox polyfills throw plain errors",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-crypto-lazy-transform-writable.js": {
-      "reason": "uses crypto/webcrypto APIs not fully bridged in sandbox",
+      "reason": "`crypto.Hmac` constructor parity is incomplete, so calling it without `new` does not return a fresh Hmac instance like Node",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-crypto-oneshot-hash.js": {
-      "reason": "tests Node.js-specific error codes (ERR_*) — sandbox polyfills throw plain errors",
+      "reason": "one-shot hash argument validation still misses Node's `ERR_INVALID_ARG_TYPE` error shape",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-crypto-randomuuid.js": {
-      "reason": "tests Node.js-specific error codes (ERR_*) — sandbox polyfills throw plain errors",
+      "reason": "`require('crypto').randomUUID` is still missing from the module overlay, so the test gets `TypeError: randomUUID is not a function`",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-crypto-webcrypto-aes-decrypt-tag-too-small.js": {
-      "reason": "crypto polyfill behavior gap",
+      "reason": "AES-GCM decrypt rejects undersized tags with `TypeError: Invalid authentication tag length: 0` instead of Node's `OperationError`",
       "category": "implementation-gap",
       "expected": "fail"
     },
@@ -4435,11 +4230,6 @@
       "category": "implementation-gap",
       "expected": "fail"
     },
-    "test-global-webcrypto.js": {
-      "reason": "uses crypto/webcrypto APIs not fully bridged in sandbox",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
     "test-global-webstreams.js": {
       "reason": "require('stream/web') fails — stream/web ESM wrapper contains 'export' syntax that the CJS compilation path cannot parse (SyntaxError: Unexpected token 'export')",
       "category": "implementation-gap",
@@ -4465,42 +4255,12 @@
       "category": "implementation-gap",
       "expected": "fail"
     },
-    "test-http-agent-destroyed-socket.js": {
-      "reason": "uses http.createServer/listen — HTTP server behavior has gaps in sandbox",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-http-agent-getname.js": {
-      "reason": "TypeError: agent.getName() is not a function — http.Agent.getName() not implemented in http polyfill",
-      "category": "unsupported-api",
-      "expected": "fail"
-    },
-    "test-http-agent-keepalive-delay.js": {
-      "reason": "uses http.createServer/listen — HTTP server behavior has gaps in sandbox",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
     "test-http-agent-keepalive.js": {
       "reason": "uses http.createServer/listen — HTTP server behavior has gaps in sandbox",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-http-agent-maxsockets-respected.js": {
-      "reason": "uses http.createServer/listen — HTTP server behavior has gaps in sandbox",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-http-agent-maxsockets.js": {
-      "reason": "uses http.createServer/listen — HTTP server behavior has gaps in sandbox",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-http-agent-maxtotalsockets.js": {
-      "reason": "needs http.createServer with real connection handling + maxTotalSockets API",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-http-agent.js": {
       "reason": "uses http.createServer/listen — HTTP server behavior has gaps in sandbox",
       "category": "implementation-gap",
       "expected": "fail"
@@ -5909,42 +5669,32 @@
       "expected": "fail"
     },
     "test-webcrypto-constructors.js": {
-      "reason": "crypto.subtle (WebCrypto) API not fully implemented in sandbox",
+      "reason": "WebCrypto constructors still throw the wrong error shape (`TypeError` with missing `ERR_ILLEGAL_CONSTRUCTOR` metadata)",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-webcrypto-derivebits-hkdf.js": {
-      "reason": "crypto.subtle (WebCrypto) API not fully implemented in sandbox",
+      "reason": "HKDF deriveBits/deriveKey parity is still broken, and the vendored test aborts with `Deriving bits failed`",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-webcrypto-digest.js": {
-      "reason": "uses crypto/webcrypto APIs not fully bridged in sandbox",
+      "reason": "WebCrypto digest argument validation still misses Node's `ERR_INVALID_ARG_TYPE` error metadata",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-webcrypto-export-import-cfrg.js": {
-      "reason": "uses crypto/webcrypto APIs not fully bridged in sandbox",
+      "reason": "WebCrypto import/export fixture set is incomplete in the conformance VFS, so the test fails opening `/test/fixtures/rsa_public_2048.pem`",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-webcrypto-export-import-ec.js": {
-      "reason": "uses crypto/webcrypto APIs not fully bridged in sandbox",
+      "reason": "WebCrypto import/export fixture set is incomplete in the conformance VFS, so the test fails opening `/test/fixtures/rsa_public_2048.pem`",
       "category": "implementation-gap",
       "expected": "fail"
     },
     "test-webcrypto-export-import-rsa.js": {
-      "reason": "uses crypto/webcrypto APIs not fully bridged in sandbox",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-webcrypto-getRandomValues.js": {
-      "reason": "globalThis.crypto.getRandomValues called without receiver does not throw ERR_INVALID_THIS in sandbox — WebCrypto polyfill does not enforce receiver binding",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-webcrypto-random.js": {
-      "reason": "sandbox crypto.getRandomValues() throws plain TypeError instead of DOMException TypeMismatchError (code 17) for invalid typed array argument types",
+      "reason": "WebCrypto import/export fixture set is incomplete in the conformance VFS, so the test fails opening `/test/fixtures/ec_p256_public.pem`",
       "category": "implementation-gap",
       "expected": "fail"
     },
@@ -6797,11 +6547,6 @@
       "reason": "vacuous pass — test self-skips via common.skip() because common.hasCrypto is false",
       "category": "vacuous-skip"
     },
-    "test-crypto-dh-odd-key.js": {
-      "expected": "fail",
-      "reason": "crypto.getFips is not a function — FIPS detection API not implemented",
-      "category": "implementation-gap"
-    },
     "test-crypto-dh-shared.js": {
       "expected": "pass",
       "reason": "vacuous pass — test self-skips via common.skip() because common.hasCrypto is false",
@@ -6828,9 +6573,9 @@
       "category": "vacuous-skip"
     },
     "test-crypto-no-algorithm.js": {
-      "expected": "pass",
-      "reason": "vacuous pass — test self-skips via common.skip() because common.hasCrypto is false",
-      "category": "vacuous-skip"
+      "expected": "fail",
+      "reason": "require('node:assert/strict') alias is not wired in the sandbox stdlib loader yet",
+      "category": "implementation-gap"
     },
     "test-crypto-op-during-process-exit.js": {
       "expected": "pass",
@@ -6856,6 +6601,11 @@
       "expected": "pass",
       "reason": "vacuous pass — test self-skips via common.skip() because common.hasCrypto is false",
       "category": "vacuous-skip"
+    },
+    "test-crypto-worker-thread.js": {
+      "expected": "fail",
+      "reason": "requires worker_threads module which is Tier 4 (Deferred)",
+      "category": "unsupported-module"
     },
     "test-dsa-fips-invalid-key.js": {
       "expected": "fail",

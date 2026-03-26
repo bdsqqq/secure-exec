@@ -94,6 +94,44 @@ Bridge-provided randomness for global `crypto` APIs MUST delegate to host `node:
 - **WHEN** host `node:crypto` randomness primitives are unavailable or fail
 - **THEN** the bridge MUST throw a deterministic error matching the unsupported API format (`"<module>.<api> is not supported in sandbox"`) for the invoked randomness API and MUST NOT fall back to non-cryptographic randomness
 
+### Requirement: Global WebCrypto Surface Matches The `crypto.webcrypto` Bridge
+The bridge SHALL expose a single WebCrypto surface so global `crypto` APIs and `require('crypto').webcrypto` share the same object graph and constructor semantics.
+
+#### Scenario: Sandboxed code compares global and module WebCrypto objects
+- **WHEN** sandboxed code reads both `globalThis.crypto` and `require('crypto').webcrypto`
+- **THEN** those references MUST point at the same WebCrypto object
+- **AND** `crypto.subtle` MUST expose the same `SubtleCrypto` instance through both paths
+
+#### Scenario: WebCrypto constructors stay non-user-constructible
+- **WHEN** sandboxed code calls `new Crypto()`, `new SubtleCrypto()`, or `new CryptoKey()`
+- **THEN** the bridge MUST throw a Node-compatible illegal-constructor `TypeError`
+- **AND** prototype method receiver validation MUST reject detached calls with `ERR_INVALID_THIS`
+
+### Requirement: Diffie-Hellman And ECDH Bridge Uses Host Node Crypto Objects
+Bridge-provided `crypto` Diffie-Hellman and ECDH APIs SHALL delegate to host `node:crypto` objects so constructor validation, session state, encodings, and shared-secret derivation match Node.js semantics.
+
+#### Scenario: Sandbox creates a Diffie-Hellman session
+- **WHEN** sandboxed code calls `crypto.createDiffieHellman(...)`, `crypto.getDiffieHellman(...)`, or `crypto.createECDH(...)`
+- **THEN** the bridge MUST construct the corresponding host `node:crypto` object
+- **AND** subsequent method calls such as `generateKeys()`, `computeSecret()`, `getPublicKey()`, and `setPrivateKey()` MUST execute against that host object rather than an isolate-local reimplementation
+
+#### Scenario: Sandbox uses stateless crypto.diffieHellman
+- **WHEN** sandboxed code calls `crypto.diffieHellman({ privateKey, publicKey })`
+- **THEN** the bridge MUST delegate to host `node:crypto.diffieHellman`
+- **AND** the returned shared secret and thrown validation errors MUST preserve Node-compatible behavior
+
+### Requirement: Crypto Stream Wrappers Preserve Transform Semantics And Validation Errors
+Bridge-backed `crypto` hash and cipher wrappers SHALL remain compatible with Node stream semantics and MUST preserve Node-style validation error codes for callback-driven APIs.
+
+#### Scenario: Sandbox hashes or encrypts data through stream piping
+- **WHEN** sandboxed code uses `crypto.Hash`, `crypto.Cipheriv`, or `crypto.Decipheriv` as stream destinations or sources
+- **THEN** those objects MUST be `stream.Transform` instances
+- **AND** piping data through them MUST emit the same digest or ciphertext/plaintext bytes that the corresponding direct `update()`/`final()` calls would produce
+
+#### Scenario: Sandbox calls pbkdf2 with invalid arguments
+- **WHEN** sandboxed code calls `crypto.pbkdf2()` or `crypto.pbkdf2Sync()` with invalid callback, digest, password, salt, iteration, or key length arguments
+- **THEN** the bridge MUST throw or surface Node-compatible `ERR_INVALID_ARG_TYPE` / `ERR_OUT_OF_RANGE` errors instead of plain untyped exceptions
+
 ### Requirement: Bridge FS Open Flag Translation Uses Named Constants
 The bridge `fs` implementation MUST express string-flag translation using named open-flag constants (for example `O_WRONLY | O_CREAT | O_TRUNC`) aligned with Node `fs.constants` semantics, and MUST NOT rely on undocumented numeric literals.
 
@@ -160,3 +198,29 @@ The bridge global key registry consumed by host runtime setup, bridge modules, a
 #### Scenario: Native V8 bridge registries stay aligned with async and sync lifecycle hooks
 - **WHEN** bridge modules depend on a host bridge global via async `.apply(..., { result: { promise: true } })` or sync `.applySync(...)` semantics
 - **THEN** the native V8 bridge function registries MUST expose a matching callable shape for that global (or an equivalent tested shim), and automated verification MUST cover the registry alignment
+
+### Requirement: Dispatch-Multiplexed Bridge Errors Preserve Structured Metadata
+Bridge globals routed through the `_loadPolyfill` dispatch multiplexer SHALL preserve host error metadata needed for Node-compatible assertions.
+
+#### Scenario: Host bridge throws typed crypto validation error
+- **WHEN** a dispatch-multiplexed bridge handler throws a host error with `name` and `code` (for example `TypeError` + `ERR_INVALID_ARG_VALUE`)
+- **THEN** the sandbox-visible error MUST preserve that `name` and `code`
+- **AND** the bridge MUST NOT collapse the error to a plain `Error` with only a message
+
+### Requirement: HTTP Agent Bridge Preserves Node Pooling Semantics
+Bridge-provided `http.Agent` behavior SHALL preserve the observable pooling state that Node.js userland and conformance tests inspect.
+
+#### Scenario: Sandboxed code inspects agent bookkeeping
+- **WHEN** sandboxed code uses `http.Agent` or `require('_http_agent').Agent`
+- **THEN** the bridge MUST expose matching `Agent` constructors through both module paths
+- **AND** `getName()`, `requests`, `sockets`, `freeSockets`, and `totalSocketCount` MUST reflect request queueing and socket reuse state with Node-compatible key shapes
+
+#### Scenario: Keepalive sockets are reused or discarded
+- **WHEN** sandboxed code enables `keepAlive` and reuses pooled HTTP connections
+- **THEN** the bridge MUST mark reused requests via `request.reusedSocket`
+- **AND** destroyed or remotely closed sockets MUST be removed from the pool instead of being reassigned to queued requests
+
+#### Scenario: Total socket limits are configured
+- **WHEN** sandboxed code constructs an `http.Agent` with `maxSockets`, `maxFreeSockets`, or `maxTotalSockets`
+- **THEN** invalid argument types and ranges MUST throw Node-compatible `ERR_INVALID_ARG_TYPE` / `ERR_OUT_OF_RANGE` errors
+- **AND** queued requests across origins MUST respect both per-origin and total socket limits

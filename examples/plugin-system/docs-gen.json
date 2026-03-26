@@ -1,0 +1,6 @@
+{
+  "kind": "namedTsBlock",
+  "docsPath": "../../docs/use-cases/plugin-systems.mdx",
+  "title": "Plugin Runner",
+  "examplePath": "src/index.ts"
+}

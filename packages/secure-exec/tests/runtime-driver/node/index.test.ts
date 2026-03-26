@@ -1899,6 +1899,307 @@ describe("NodeRuntime", () => {
 		expect(stdout).toContain("MAX:1");
 	});
 
+	it("http.Agent exposes Node-compatible naming and _http_agent aliasing", async () => {
+		const driver = createNodeDriver({
+			filesystem: new NodeFileSystem(),
+			networkAdapter: createDefaultNetworkAdapter(),
+			permissions: allowFsNetworkEnv,
+		});
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({
+			driver,
+			processConfig: { cwd: "/" },
+			onStdio: capture.onStdio,
+		});
+
+		const result = await proc.exec(
+			`
+			(() => {
+				const assert = require('node:assert');
+				const http = require('http');
+				const httpAgent = require('_http_agent');
+
+				assert.strictEqual(httpAgent.Agent, http.Agent);
+				assert.strictEqual(httpAgent.globalAgent, http.globalAgent);
+
+				const agent = new http.Agent({ maxSockets: 2, maxTotalSockets: 3 });
+				assert.strictEqual(agent.getName(), 'localhost::');
+				assert.strictEqual(agent.getName({ port: 80, localAddress: '192.168.1.1' }), 'localhost:80:192.168.1.1');
+				assert.strictEqual(agent.getName({ socketPath: '/tmp/test.sock' }), 'localhost:::/tmp/test.sock');
+				assert.strictEqual(agent.getName({ family: 6 }), 'localhost:::6');
+				assert.throws(() => new http.Agent({ maxTotalSockets: 'bad' }), (err) => err && err.code === 'ERR_INVALID_ARG_TYPE');
+				assert.throws(() => new http.Agent({ maxTotalSockets: 0 }), (err) => err && err.code === 'ERR_OUT_OF_RANGE');
+				console.log('AGENT_OK');
+			})();
+		`,
+		);
+
+		expect(result.code).toBe(0);
+		expect(capture.stdout()).toContain("AGENT_OK");
+	});
+
+	it("http.Agent does not reuse a destroyed keepalive socket for queued requests", async () => {
+		const driver = createNodeDriver({
+			filesystem: new NodeFileSystem(),
+			networkAdapter: createDefaultNetworkAdapter(),
+			permissions: allowFsNetworkEnv,
+		});
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({
+			driver,
+			processConfig: { cwd: "/" },
+			onStdio: capture.onStdio,
+		});
+
+		const result = await proc.exec(
+			`
+			(async () => {
+				const assert = require('node:assert');
+				const http = require('http');
+
+				const server = http.createServer((_req, res) => {
+					res.end('ok');
+				});
+
+				await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+				const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+				const options = {
+					host: '127.0.0.1',
+					port: server.address().port,
+					path: '/',
+					agent,
+				};
+
+				const req1 = http.get(options, (res) => {
+					res.resume();
+					res.on('end', () => {
+						req1.socket.destroy();
+					});
+				});
+
+				const req2 = http.get(options, (res) => {
+					res.resume();
+					res.on('end', async () => {
+						assert.notStrictEqual(req1.socket, req2.socket);
+						assert.strictEqual(req2.reusedSocket, false);
+						await new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+						agent.destroy();
+						console.log('DESTROY_OK');
+					});
+				});
+
+				await new Promise((resolve, reject) => {
+					req1.on('error', reject);
+					req2.on('error', reject);
+					req1.on('socket', (socket) => {
+						socket.once('close', resolve);
+					});
+				});
+			})();
+		`,
+		);
+
+		expect(result.code).toBe(0);
+		expect(capture.stdout()).toContain("DESTROY_OK");
+	});
+
+	it("http.Agent keeps aborted sockets visible during the response turn", async () => {
+		const driver = createNodeDriver({
+			filesystem: new NodeFileSystem(),
+			networkAdapter: createDefaultNetworkAdapter(),
+			permissions: allowFsNetworkEnv,
+		});
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({
+			driver,
+			processConfig: { cwd: "/" },
+			onStdio: capture.onStdio,
+		});
+
+		const result = await proc.exec(
+			`
+			(async () => {
+				const assert = require('node:assert');
+				const http = require('http');
+
+				const agent = new http.Agent({
+					keepAlive: true,
+					keepAliveMsecs: 1000,
+					maxSockets: 2,
+					maxFreeSockets: 2,
+				});
+
+				const server = http.createServer((_req, res) => {
+					res.end('hello world');
+				});
+
+				await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+				await new Promise((resolve, reject) => {
+					let responses = 0;
+					for (let i = 0; i < 6; i += 1) {
+						const req = http.get({
+							host: 'localhost',
+							port: server.address().port,
+							agent,
+							path: '/',
+						}, () => {});
+
+						req.on('response', () => {
+							req.abort();
+							const key = Object.keys(agent.sockets)[0];
+							const sockets = key ? agent.sockets[key] : undefined;
+							assert.ok(sockets);
+							assert.ok(sockets.length <= 2);
+							responses += 1;
+							if (responses === 6) {
+								server.close((err) => {
+									if (err) reject(err);
+									else resolve(undefined);
+								});
+							}
+						});
+
+						req.on('error', reject);
+					}
+				});
+
+				agent.destroy();
+				console.log('ABORT_BOOKKEEPING_OK');
+			})();
+		`,
+		);
+
+		expect(result.code).toBe(0);
+		expect(capture.stdout()).toContain("ABORT_BOOKKEEPING_OK");
+	});
+
+	it("http fake sockets remove once listeners via the original callback", async () => {
+		const driver = createNodeDriver({
+			filesystem: new NodeFileSystem(),
+			networkAdapter: createDefaultNetworkAdapter(),
+			permissions: allowFsNetworkEnv,
+		});
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({
+			driver,
+			processConfig: { cwd: "/" },
+			onStdio: capture.onStdio,
+		});
+
+		const result = await proc.exec(
+			`
+			(async () => {
+				const http = require('http');
+
+				const server = http.createServer((_req, res) => {
+					res.end('ok');
+				});
+
+				await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+				const agent = new http.Agent({ keepAlive: true });
+
+				await new Promise((resolve, reject) => {
+					const req = http.get({
+						host: 'localhost',
+						port: server.address().port,
+						path: '/',
+						agent,
+					}, (res) => {
+						res.resume();
+						res.on('end', async () => {
+							const onClose = () => {
+								throw new Error('close listener should have been removed');
+							};
+							req.socket.once('close', onClose);
+							req.socket.off('close', onClose);
+							req.socket.destroy();
+							await new Promise((resolve) => setTimeout(resolve, 0));
+							await new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+							agent.destroy();
+							console.log('SOCKET_ONCE_OFF_OK');
+						});
+					});
+
+					req.on('error', reject);
+					req.on('close', resolve);
+				});
+			})();
+		`,
+		);
+
+		expect(result.code).toBe(0);
+		expect(capture.stdout()).toContain("SOCKET_ONCE_OFF_OK");
+	});
+
+	it("http.Agent evicts a kept-alive socket after the server closes it on the next turn", async () => {
+		const driver = createNodeDriver({
+			filesystem: new NodeFileSystem(),
+			networkAdapter: createDefaultNetworkAdapter(),
+			permissions: allowFsNetworkEnv,
+		});
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({
+			driver,
+			processConfig: { cwd: "/" },
+			onStdio: capture.onStdio,
+		});
+
+		const result = await proc.exec(
+			`
+			(async () => {
+				const assert = require('node:assert');
+				const http = require('http');
+
+				const agent = new http.Agent({
+					keepAlive: true,
+					keepAliveMsecs: 1000,
+					maxSockets: 1,
+					maxFreeSockets: 1,
+				});
+
+				const server = http.createServer((_req, res) => {
+					const socket = res.connection;
+					setImmediate(() => socket.end());
+					res.end('hello world');
+				});
+
+				await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+				const name = 'localhost:' + server.address().port + ':';
+
+				await new Promise((resolve, reject) => {
+					const req = http.get({
+						host: 'localhost',
+						port: server.address().port,
+						path: '/',
+						agent,
+					}, (res) => {
+						res.resume();
+						res.on('end', () => {
+							process.nextTick(() => {
+								assert.strictEqual(agent.freeSockets[name].length, 1);
+								setTimeout(async () => {
+									assert.strictEqual(agent.freeSockets[name], undefined);
+									assert.strictEqual(agent.totalSocketCount, 0);
+									await new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+									agent.destroy();
+									console.log('REMOTE_CLOSE_EVICT_OK');
+									resolve(undefined);
+								}, 200);
+							});
+						});
+					});
+
+					req.on('error', reject);
+				});
+			})();
+		`,
+		);
+
+		expect(result.code).toBe(0);
+		expect(capture.stdout()).toContain("REMOTE_CLOSE_EVICT_OK");
+	});
+
 	// HTTP upgrade — 101 response fires upgrade event
 	it("upgrade request fires upgrade event with response and socket", async () => {
 		// Upgrade requires raw socket handling — use external server with SSRF exemption

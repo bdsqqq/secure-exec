@@ -91,6 +91,11 @@
         __requireExposeCustomGlobal('structuredClone', structuredClonePolyfill);
       }
 
+      if (typeof globalThis.SharedArrayBuffer === 'undefined') {
+        globalThis.SharedArrayBuffer = ArrayBuffer;
+        __requireExposeCustomGlobal('SharedArrayBuffer', ArrayBuffer);
+      }
+
       if (typeof globalThis.btoa !== 'function') {
         __requireExposeCustomGlobal('btoa', function btoa(input) {
           return Buffer.from(String(input), 'binary').toString('base64');
@@ -221,6 +226,9 @@
           result.formatWithOptions = function formatWithOptions(inspectOptions, ...args) {
             return result.format.apply(null, args);
           };
+        }
+
+        if (name === 'util') {
           return result;
         }
 
@@ -315,45 +323,180 @@
         }
 
         if (name === 'crypto') {
+          // Avoid bare `require` here so built dist bundles don't rewrite it to
+          // an ESM helper that throws before the sandbox installs globalThis.require.
+          var _runtimeRequire = globalThis.require;
+          var _streamModule = _runtimeRequire && _runtimeRequire('stream');
+          var _utilModule = _runtimeRequire && _runtimeRequire('util');
+          var _Transform = _streamModule && _streamModule.Transform;
+          var _inherits = _utilModule && _utilModule.inherits;
+
+          function createCryptoRangeError(name, message) {
+            var error = new RangeError(message);
+            error.code = 'ERR_OUT_OF_RANGE';
+            error.name = 'RangeError';
+            return error;
+          }
+
+          function createCryptoError(code, message) {
+            var error = new Error(message);
+            error.code = code;
+            return error;
+          }
+
+          function encodeCryptoResult(buffer, encoding) {
+            if (!encoding || encoding === 'buffer') return buffer;
+            return buffer.toString(encoding);
+          }
+
+          function isSharedArrayBufferInstance(value) {
+            return typeof SharedArrayBuffer !== 'undefined' &&
+              value instanceof SharedArrayBuffer;
+          }
+
+          function isBinaryLike(value) {
+            return Buffer.isBuffer(value) ||
+              ArrayBuffer.isView(value) ||
+              value instanceof ArrayBuffer ||
+              isSharedArrayBufferInstance(value);
+          }
+
+          function normalizeByteSource(value, name, options) {
+            var allowNull = options && options.allowNull;
+            if (allowNull && value === null) {
+              return null;
+            }
+            if (typeof value === 'string') {
+              return Buffer.from(value, 'utf8');
+            }
+            if (Buffer.isBuffer(value)) {
+              return Buffer.from(value);
+            }
+            if (ArrayBuffer.isView(value)) {
+              return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+            }
+            if (value instanceof ArrayBuffer || isSharedArrayBufferInstance(value)) {
+              return Buffer.from(value);
+            }
+            throw createInvalidArgTypeError(
+              name,
+              'of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView',
+              value,
+            );
+          }
+
+          function serializeCipherBridgeOptions(options) {
+            if (!options) {
+              return '';
+            }
+            var serialized = {};
+            if (options.authTagLength !== undefined) {
+              serialized.authTagLength = options.authTagLength;
+            }
+            if (options.authTag) {
+              serialized.authTag = options.authTag.toString('base64');
+            }
+            if (options.aad) {
+              serialized.aad = options.aad.toString('base64');
+            }
+            if (options.aadOptions !== undefined) {
+              serialized.aadOptions = options.aadOptions;
+            }
+            if (options.autoPadding !== undefined) {
+              serialized.autoPadding = options.autoPadding;
+            }
+            if (options.validateOnly !== undefined) {
+              serialized.validateOnly = options.validateOnly;
+            }
+            return JSON.stringify(serialized);
+          }
+
           // Overlay host-backed createHash on top of crypto-browserify polyfill
           if (typeof _cryptoHashDigest !== 'undefined') {
-            function SandboxHash(algorithm) {
+            function SandboxHash(algorithm, options) {
+              if (!(this instanceof SandboxHash)) {
+                return new SandboxHash(algorithm, options);
+              }
+              if (!_Transform || !_inherits) {
+                throw new Error('stream.Transform is required for crypto.Hash');
+              }
+              if (typeof algorithm !== 'string') {
+                throw createInvalidArgTypeError('algorithm', 'of type string', algorithm);
+              }
+              _Transform.call(this, options);
               this._algorithm = algorithm;
               this._chunks = [];
+              this._finalized = false;
+              this._cachedDigest = null;
+              this._allowCachedDigest = false;
             }
+            _inherits(SandboxHash, _Transform);
             SandboxHash.prototype.update = function update(data, inputEncoding) {
+              if (this._finalized) {
+                throw createCryptoError('ERR_CRYPTO_HASH_FINALIZED', 'Digest already called');
+              }
               if (typeof data === 'string') {
                 this._chunks.push(Buffer.from(data, inputEncoding || 'utf8'));
-              } else {
+              } else if (isBinaryLike(data)) {
                 this._chunks.push(Buffer.from(data));
+              } else {
+                throw createInvalidArgTypeError(
+                  'data',
+                  'one of type string, Buffer, TypedArray, or DataView',
+                  data,
+                );
               }
               return this;
             };
-            SandboxHash.prototype.digest = function digest(encoding) {
+            SandboxHash.prototype._finishDigest = function _finishDigest() {
+              if (this._cachedDigest) {
+                return this._cachedDigest;
+              }
               var combined = Buffer.concat(this._chunks);
               var resultBase64 = _cryptoHashDigest.applySync(undefined, [
                 this._algorithm,
                 combined.toString('base64'),
               ]);
-              var resultBuffer = Buffer.from(resultBase64, 'base64');
-              if (!encoding || encoding === 'buffer') return resultBuffer;
-              return resultBuffer.toString(encoding);
+              this._cachedDigest = Buffer.from(resultBase64, 'base64');
+              this._finalized = true;
+              return this._cachedDigest;
+            };
+            SandboxHash.prototype.digest = function digest(encoding) {
+              if (this._finalized && !this._allowCachedDigest) {
+                throw createCryptoError('ERR_CRYPTO_HASH_FINALIZED', 'Digest already called');
+              }
+              var resultBuffer = this._finishDigest();
+              this._allowCachedDigest = false;
+              return encodeCryptoResult(resultBuffer, encoding);
             };
             SandboxHash.prototype.copy = function copy() {
+              if (this._finalized) {
+                throw createCryptoError('ERR_CRYPTO_HASH_FINALIZED', 'Digest already called');
+              }
               var c = new SandboxHash(this._algorithm);
               c._chunks = this._chunks.slice();
               return c;
             };
-            // Minimal stream interface
-            SandboxHash.prototype.write = function write(data, encoding) {
-              this.update(data, encoding);
-              return true;
+            SandboxHash.prototype._transform = function _transform(chunk, encoding, callback) {
+              try {
+                this.update(chunk, encoding === 'buffer' ? undefined : encoding);
+                callback();
+              } catch (error) {
+                callback(normalizeCryptoBridgeError(error));
+              }
             };
-            SandboxHash.prototype.end = function end(data, encoding) {
-              if (data) this.update(data, encoding);
+            SandboxHash.prototype._flush = function _flush(callback) {
+              try {
+                var output = this._finishDigest();
+                this._allowCachedDigest = true;
+                this.push(output);
+                callback();
+              } catch (error) {
+                callback(normalizeCryptoBridgeError(error));
+              }
             };
-            result.createHash = function createHash(algorithm) {
-              return new SandboxHash(algorithm);
+            result.createHash = function createHash(algorithm, options) {
+              return new SandboxHash(algorithm, options);
             };
             result.Hash = SandboxHash;
           }
@@ -364,6 +507,8 @@
               this._algorithm = algorithm;
               if (typeof key === 'string') {
                 this._key = Buffer.from(key, 'utf8');
+              } else if (key && typeof key === 'object' && key._raw !== undefined) {
+                this._key = Buffer.from(key._raw, 'base64');
               } else if (key && typeof key === 'object' && key._pem !== undefined) {
                 // SandboxKeyObject — extract underlying key material
                 this._key = Buffer.from(key._pem, 'utf8');
@@ -533,24 +678,93 @@
 
           // Overlay host-backed pbkdf2/pbkdf2Sync
           if (typeof _cryptoPbkdf2 !== 'undefined') {
+            function createPbkdf2ArgTypeError(name, value) {
+              var received;
+              if (value == null) {
+                received = ' Received ' + value;
+              } else if (typeof value === 'object') {
+                received = value.constructor && value.constructor.name ?
+                  ' Received an instance of ' + value.constructor.name :
+                  ' Received [object Object]';
+              } else {
+                var inspected = typeof value === 'string' ? "'" + value + "'" : String(value);
+                received = ' Received type ' + typeof value + ' (' + inspected + ')';
+              }
+              var error = new TypeError('The "' + name + '" argument must be of type number.' + received);
+              error.code = 'ERR_INVALID_ARG_TYPE';
+              return error;
+            }
+
+            function validatePbkdf2Args(password, salt, iterations, keylen, digest) {
+              var pwBuf = normalizeByteSource(password, 'password');
+              var saltBuf = normalizeByteSource(salt, 'salt');
+              if (typeof iterations !== 'number') {
+                throw createPbkdf2ArgTypeError('iterations', iterations);
+              }
+              if (!Number.isInteger(iterations)) {
+                throw createCryptoRangeError(
+                  'iterations',
+                  'The value of "iterations" is out of range. It must be an integer. Received ' + iterations,
+                );
+              }
+              if (iterations < 1 || iterations > 2147483647) {
+                throw createCryptoRangeError(
+                  'iterations',
+                  'The value of "iterations" is out of range. It must be >= 1 && <= 2147483647. Received ' + iterations,
+                );
+              }
+              if (typeof keylen !== 'number') {
+                throw createPbkdf2ArgTypeError('keylen', keylen);
+              }
+              if (!Number.isInteger(keylen)) {
+                throw createCryptoRangeError(
+                  'keylen',
+                  'The value of "keylen" is out of range. It must be an integer. Received ' + keylen,
+                );
+              }
+              if (keylen < 0 || keylen > 2147483647) {
+                throw createCryptoRangeError(
+                  'keylen',
+                  'The value of "keylen" is out of range. It must be >= 0 && <= 2147483647. Received ' + keylen,
+                );
+              }
+              if (typeof digest !== 'string') {
+                throw createInvalidArgTypeError('digest', 'of type string', digest);
+              }
+              return {
+                password: pwBuf,
+                salt: saltBuf,
+              };
+            }
+
             result.pbkdf2Sync = function pbkdf2Sync(password, salt, iterations, keylen, digest) {
-              var pwBuf = typeof password === 'string' ? Buffer.from(password, 'utf8') : Buffer.from(password);
-              var saltBuf = typeof salt === 'string' ? Buffer.from(salt, 'utf8') : Buffer.from(salt);
-              var resultBase64 = _cryptoPbkdf2.applySync(undefined, [
-                pwBuf.toString('base64'),
-                saltBuf.toString('base64'),
-                iterations,
-                keylen,
-                digest,
-              ]);
-              return Buffer.from(resultBase64, 'base64');
+              var normalized = validatePbkdf2Args(password, salt, iterations, keylen, digest);
+              try {
+                var resultBase64 = _cryptoPbkdf2.applySync(undefined, [
+                  normalized.password.toString('base64'),
+                  normalized.salt.toString('base64'),
+                  iterations,
+                  keylen,
+                  digest,
+                ]);
+                return Buffer.from(resultBase64, 'base64');
+              } catch (error) {
+                throw normalizeCryptoBridgeError(error);
+              }
             };
             result.pbkdf2 = function pbkdf2(password, salt, iterations, keylen, digest, callback) {
+              if (typeof digest === 'function' && callback === undefined) {
+                callback = digest;
+                digest = undefined;
+              }
+              if (typeof callback !== 'function') {
+                throw createInvalidArgTypeError('callback', 'of type function', callback);
+              }
               try {
                 var derived = result.pbkdf2Sync(password, salt, iterations, keylen, digest);
-                callback(null, derived);
+                scheduleCryptoCallback(callback, [null, derived]);
               } catch (e) {
-                callback(e);
+                throw normalizeCryptoBridgeError(e);
               }
             };
           }
@@ -600,45 +814,94 @@
           if (typeof _cryptoCipheriv !== 'undefined') {
             var _useSessionCipher = typeof _cryptoCipherivCreate !== 'undefined';
 
-            function SandboxCipher(algorithm, key, iv) {
+            function SandboxCipher(algorithm, key, iv, options) {
+              if (!(this instanceof SandboxCipher)) {
+                return new SandboxCipher(algorithm, key, iv, options);
+              }
+              if (typeof algorithm !== 'string') {
+                throw createInvalidArgTypeError('cipher', 'of type string', algorithm);
+              }
+              _Transform.call(this);
               this._algorithm = algorithm;
-              this._key = typeof key === 'string' ? Buffer.from(key, 'utf8') : Buffer.from(key);
-              this._iv = typeof iv === 'string' ? Buffer.from(iv, 'utf8') : Buffer.from(iv);
+              this._key = normalizeByteSource(key, 'key');
+              this._iv = normalizeByteSource(iv, 'iv', { allowNull: true });
+              this._options = options || undefined;
               this._authTag = null;
               this._finalized = false;
-              if (_useSessionCipher) {
-                this._sessionId = _cryptoCipherivCreate.applySync(undefined, [
-                  'cipher', algorithm,
+              this._sessionCreated = false;
+              this._sessionId = undefined;
+              this._aad = null;
+              this._aadOptions = undefined;
+              this._autoPadding = undefined;
+              this._chunks = [];
+              this._bufferedMode = !_useSessionCipher || !!options;
+              if (!this._bufferedMode) {
+                this._ensureSession();
+              } else if (!options) {
+                _cryptoCipheriv.applySync(undefined, [
+                  this._algorithm,
                   this._key.toString('base64'),
-                  this._iv.toString('base64'),
+                  this._iv === null ? null : this._iv.toString('base64'),
                   '',
+                  serializeCipherBridgeOptions({ validateOnly: true }),
                 ]);
-              } else {
-                this._chunks = [];
               }
             }
+            _inherits(SandboxCipher, _Transform);
+            SandboxCipher.prototype._ensureSession = function _ensureSession() {
+              if (this._bufferedMode || this._sessionCreated) {
+                return;
+              }
+              this._sessionCreated = true;
+              this._sessionId = _cryptoCipherivCreate.applySync(undefined, [
+                'cipher',
+                this._algorithm,
+                this._key.toString('base64'),
+                this._iv === null ? null : this._iv.toString('base64'),
+                serializeCipherBridgeOptions(this._getBridgeOptions()),
+              ]);
+            };
+            SandboxCipher.prototype._getBridgeOptions = function _getBridgeOptions() {
+              var options = {};
+              if (this._options && this._options.authTagLength !== undefined) {
+                options.authTagLength = this._options.authTagLength;
+              }
+              if (this._aad) {
+                options.aad = this._aad;
+              }
+              if (this._aadOptions !== undefined) {
+                options.aadOptions = this._aadOptions;
+              }
+              if (this._autoPadding !== undefined) {
+                options.autoPadding = this._autoPadding;
+              }
+              return Object.keys(options).length === 0 ? null : options;
+            };
             SandboxCipher.prototype.update = function update(data, inputEncoding, outputEncoding) {
+              if (this._finalized) {
+                throw new Error('Attempting to call update() after final()');
+              }
               var buf;
               if (typeof data === 'string') {
                 buf = Buffer.from(data, inputEncoding || 'utf8');
               } else {
-                buf = Buffer.from(data);
+                buf = normalizeByteSource(data, 'data');
               }
-              if (_useSessionCipher) {
+              if (!this._bufferedMode) {
+                this._ensureSession();
                 var resultBase64 = _cryptoCipherivUpdate.applySync(undefined, [this._sessionId, buf.toString('base64')]);
                 var resultBuffer = Buffer.from(resultBase64, 'base64');
-                if (outputEncoding && outputEncoding !== 'buffer') return resultBuffer.toString(outputEncoding);
-                return resultBuffer;
+                return encodeCryptoResult(resultBuffer, outputEncoding);
               }
               this._chunks.push(buf);
-              if (outputEncoding && outputEncoding !== 'buffer') return '';
-              return Buffer.alloc(0);
+              return encodeCryptoResult(Buffer.alloc(0), outputEncoding);
             };
             SandboxCipher.prototype.final = function final(outputEncoding) {
               if (this._finalized) throw new Error('Attempting to call final() after already finalized');
               this._finalized = true;
               var parsed;
-              if (_useSessionCipher) {
+              if (!this._bufferedMode) {
+                this._ensureSession();
                 var resultJson = _cryptoCipherivFinal.applySync(undefined, [this._sessionId]);
                 parsed = JSON.parse(resultJson);
               } else {
@@ -646,8 +909,9 @@
                 var resultJson2 = _cryptoCipheriv.applySync(undefined, [
                   this._algorithm,
                   this._key.toString('base64'),
-                  this._iv.toString('base64'),
+                  this._iv === null ? null : this._iv.toString('base64'),
                   combined.toString('base64'),
+                  serializeCipherBridgeOptions(this._getBridgeOptions()),
                 ]);
                 parsed = JSON.parse(resultJson2);
               }
@@ -655,72 +919,140 @@
                 this._authTag = Buffer.from(parsed.authTag, 'base64');
               }
               var resultBuffer = Buffer.from(parsed.data, 'base64');
-              if (outputEncoding && outputEncoding !== 'buffer') return resultBuffer.toString(outputEncoding);
-              return resultBuffer;
+              return encodeCryptoResult(resultBuffer, outputEncoding);
             };
             SandboxCipher.prototype.getAuthTag = function getAuthTag() {
               if (!this._finalized) throw new Error('Cannot call getAuthTag before final()');
-              if (!this._authTag) throw new Error('Auth tag is only available for GCM ciphers');
+              if (!this._authTag) throw new Error('Auth tag is not available');
               return this._authTag;
             };
-            SandboxCipher.prototype.setAAD = function setAAD() { return this; };
-            SandboxCipher.prototype.setAutoPadding = function setAutoPadding() { return this; };
-            result.createCipheriv = function createCipheriv(algorithm, key, iv) {
-              return new SandboxCipher(algorithm, key, iv);
+            SandboxCipher.prototype.setAAD = function setAAD(aad, options) {
+              this._bufferedMode = true;
+              this._aad = normalizeByteSource(aad, 'buffer');
+              this._aadOptions = options;
+              return this;
+            };
+            SandboxCipher.prototype.setAutoPadding = function setAutoPadding(autoPadding) {
+              this._bufferedMode = true;
+              this._autoPadding = autoPadding !== false;
+              return this;
+            };
+            SandboxCipher.prototype._transform = function _transform(chunk, encoding, callback) {
+              try {
+                var output = this.update(chunk, encoding === 'buffer' ? undefined : encoding);
+                if (output.length) {
+                  this.push(output);
+                }
+                callback();
+              } catch (error) {
+                callback(normalizeCryptoBridgeError(error));
+              }
+            };
+            SandboxCipher.prototype._flush = function _flush(callback) {
+              try {
+                var output = this.final();
+                if (output.length) {
+                  this.push(output);
+                }
+                callback();
+              } catch (error) {
+                callback(normalizeCryptoBridgeError(error));
+              }
+            };
+            result.createCipheriv = function createCipheriv(algorithm, key, iv, options) {
+              return new SandboxCipher(algorithm, key, iv, options);
             };
             result.Cipheriv = SandboxCipher;
           }
 
           if (typeof _cryptoDecipheriv !== 'undefined') {
-            function SandboxDecipher(algorithm, key, iv) {
+            function SandboxDecipher(algorithm, key, iv, options) {
+              if (!(this instanceof SandboxDecipher)) {
+                return new SandboxDecipher(algorithm, key, iv, options);
+              }
+              if (typeof algorithm !== 'string') {
+                throw createInvalidArgTypeError('cipher', 'of type string', algorithm);
+              }
+              _Transform.call(this);
               this._algorithm = algorithm;
-              this._key = typeof key === 'string' ? Buffer.from(key, 'utf8') : Buffer.from(key);
-              this._iv = typeof iv === 'string' ? Buffer.from(iv, 'utf8') : Buffer.from(iv);
+              this._key = normalizeByteSource(key, 'key');
+              this._iv = normalizeByteSource(iv, 'iv', { allowNull: true });
+              this._options = options || undefined;
               this._authTag = null;
               this._finalized = false;
               this._sessionCreated = false;
-              if (!_useSessionCipher) {
-                this._chunks = [];
+              this._aad = null;
+              this._aadOptions = undefined;
+              this._autoPadding = undefined;
+              this._chunks = [];
+              this._bufferedMode = !_useSessionCipher || !!options;
+              if (!this._bufferedMode) {
+                this._ensureSession();
+              } else if (!options) {
+                _cryptoDecipheriv.applySync(undefined, [
+                  this._algorithm,
+                  this._key.toString('base64'),
+                  this._iv === null ? null : this._iv.toString('base64'),
+                  '',
+                  serializeCipherBridgeOptions({ validateOnly: true }),
+                ]);
               }
             }
+            _inherits(SandboxDecipher, _Transform);
             SandboxDecipher.prototype._ensureSession = function _ensureSession() {
-              if (_useSessionCipher && !this._sessionCreated) {
+              if (!this._bufferedMode && !this._sessionCreated) {
                 this._sessionCreated = true;
-                var options = {};
-                if (this._authTag) {
-                  options.authTag = this._authTag.toString('base64');
-                }
                 this._sessionId = _cryptoCipherivCreate.applySync(undefined, [
                   'decipher', this._algorithm,
                   this._key.toString('base64'),
-                  this._iv.toString('base64'),
-                  JSON.stringify(options),
+                  this._iv === null ? null : this._iv.toString('base64'),
+                  serializeCipherBridgeOptions(this._getBridgeOptions()),
                 ]);
               }
             };
+            SandboxDecipher.prototype._getBridgeOptions = function _getBridgeOptions() {
+              var options = {};
+              if (this._options && this._options.authTagLength !== undefined) {
+                options.authTagLength = this._options.authTagLength;
+              }
+              if (this._authTag) {
+                options.authTag = this._authTag;
+              }
+              if (this._aad) {
+                options.aad = this._aad;
+              }
+              if (this._aadOptions !== undefined) {
+                options.aadOptions = this._aadOptions;
+              }
+              if (this._autoPadding !== undefined) {
+                options.autoPadding = this._autoPadding;
+              }
+              return Object.keys(options).length === 0 ? null : options;
+            };
             SandboxDecipher.prototype.update = function update(data, inputEncoding, outputEncoding) {
+              if (this._finalized) {
+                throw new Error('Attempting to call update() after final()');
+              }
               var buf;
               if (typeof data === 'string') {
                 buf = Buffer.from(data, inputEncoding || 'utf8');
               } else {
-                buf = Buffer.from(data);
+                buf = normalizeByteSource(data, 'data');
               }
-              if (_useSessionCipher) {
+              if (!this._bufferedMode) {
                 this._ensureSession();
                 var resultBase64 = _cryptoCipherivUpdate.applySync(undefined, [this._sessionId, buf.toString('base64')]);
                 var resultBuffer = Buffer.from(resultBase64, 'base64');
-                if (outputEncoding && outputEncoding !== 'buffer') return resultBuffer.toString(outputEncoding);
-                return resultBuffer;
+                return encodeCryptoResult(resultBuffer, outputEncoding);
               }
               this._chunks.push(buf);
-              if (outputEncoding && outputEncoding !== 'buffer') return '';
-              return Buffer.alloc(0);
+              return encodeCryptoResult(Buffer.alloc(0), outputEncoding);
             };
             SandboxDecipher.prototype.final = function final(outputEncoding) {
               if (this._finalized) throw new Error('Attempting to call final() after already finalized');
               this._finalized = true;
               var resultBuffer;
-              if (_useSessionCipher) {
+              if (!this._bufferedMode) {
                 this._ensureSession();
                 var resultJson = _cryptoCipherivFinal.applySync(undefined, [this._sessionId]);
                 var parsed = JSON.parse(resultJson);
@@ -728,29 +1060,57 @@
               } else {
                 var combined = Buffer.concat(this._chunks);
                 var options = {};
-                if (this._authTag) {
-                  options.authTag = this._authTag.toString('base64');
-                }
                 var resultBase64 = _cryptoDecipheriv.applySync(undefined, [
                   this._algorithm,
                   this._key.toString('base64'),
-                  this._iv.toString('base64'),
+                  this._iv === null ? null : this._iv.toString('base64'),
                   combined.toString('base64'),
-                  JSON.stringify(options),
+                  serializeCipherBridgeOptions(this._getBridgeOptions()),
                 ]);
                 resultBuffer = Buffer.from(resultBase64, 'base64');
               }
-              if (outputEncoding && outputEncoding !== 'buffer') return resultBuffer.toString(outputEncoding);
-              return resultBuffer;
+              return encodeCryptoResult(resultBuffer, outputEncoding);
             };
             SandboxDecipher.prototype.setAuthTag = function setAuthTag(tag) {
-              this._authTag = typeof tag === 'string' ? Buffer.from(tag, 'base64') : Buffer.from(tag);
+              this._bufferedMode = true;
+              this._authTag = typeof tag === 'string' ? Buffer.from(tag, 'base64') : normalizeByteSource(tag, 'buffer');
               return this;
             };
-            SandboxDecipher.prototype.setAAD = function setAAD() { return this; };
-            SandboxDecipher.prototype.setAutoPadding = function setAutoPadding() { return this; };
-            result.createDecipheriv = function createDecipheriv(algorithm, key, iv) {
-              return new SandboxDecipher(algorithm, key, iv);
+            SandboxDecipher.prototype.setAAD = function setAAD(aad, options) {
+              this._bufferedMode = true;
+              this._aad = normalizeByteSource(aad, 'buffer');
+              this._aadOptions = options;
+              return this;
+            };
+            SandboxDecipher.prototype.setAutoPadding = function setAutoPadding(autoPadding) {
+              this._bufferedMode = true;
+              this._autoPadding = autoPadding !== false;
+              return this;
+            };
+            SandboxDecipher.prototype._transform = function _transform(chunk, encoding, callback) {
+              try {
+                var output = this.update(chunk, encoding === 'buffer' ? undefined : encoding);
+                if (output.length) {
+                  this.push(output);
+                }
+                callback();
+              } catch (error) {
+                callback(normalizeCryptoBridgeError(error));
+              }
+            };
+            SandboxDecipher.prototype._flush = function _flush(callback) {
+              try {
+                var output = this.final();
+                if (output.length) {
+                  this.push(output);
+                }
+                callback();
+              } catch (error) {
+                callback(normalizeCryptoBridgeError(error));
+              }
+            };
+            result.createDecipheriv = function createDecipheriv(algorithm, key, iv, options) {
+              return new SandboxDecipher(algorithm, key, iv, options);
             };
             result.Decipheriv = SandboxDecipher;
           }
@@ -759,21 +1119,16 @@
           if (typeof _cryptoSign !== 'undefined') {
             result.sign = function sign(algorithm, data, key) {
               var dataBuf = typeof data === 'string' ? Buffer.from(data, 'utf8') : Buffer.from(data);
-              var keyPem;
-              if (typeof key === 'string') {
-                keyPem = key;
-              } else if (key && typeof key === 'object' && key._pem) {
-                keyPem = key._pem;
-              } else if (Buffer.isBuffer(key)) {
-                keyPem = key.toString('utf8');
-              } else {
-                keyPem = String(key);
+              var sigBase64;
+              try {
+                sigBase64 = _cryptoSign.applySync(undefined, [
+                  algorithm === undefined ? null : algorithm,
+                  dataBuf.toString('base64'),
+                  JSON.stringify(serializeBridgeValue(key)),
+                ]);
+              } catch (error) {
+                throw normalizeCryptoBridgeError(error);
               }
-              var sigBase64 = _cryptoSign.applySync(undefined, [
-                algorithm,
-                dataBuf.toString('base64'),
-                keyPem,
-              ]);
               return Buffer.from(sigBase64, 'base64');
             };
           }
@@ -781,139 +1136,912 @@
           if (typeof _cryptoVerify !== 'undefined') {
             result.verify = function verify(algorithm, data, key, signature) {
               var dataBuf = typeof data === 'string' ? Buffer.from(data, 'utf8') : Buffer.from(data);
-              var keyPem;
-              if (typeof key === 'string') {
-                keyPem = key;
-              } else if (key && typeof key === 'object' && key._pem) {
-                keyPem = key._pem;
-              } else if (Buffer.isBuffer(key)) {
-                keyPem = key.toString('utf8');
-              } else {
-                keyPem = String(key);
-              }
               var sigBuf = typeof signature === 'string' ? Buffer.from(signature, 'base64') : Buffer.from(signature);
-              return _cryptoVerify.applySync(undefined, [
-                algorithm,
-                dataBuf.toString('base64'),
-                keyPem,
-                sigBuf.toString('base64'),
-              ]);
+              try {
+                return _cryptoVerify.applySync(undefined, [
+                  algorithm === undefined ? null : algorithm,
+                  dataBuf.toString('base64'),
+                  JSON.stringify(serializeBridgeValue(key)),
+                  sigBuf.toString('base64'),
+                ]);
+              } catch (error) {
+                throw normalizeCryptoBridgeError(error);
+              }
             };
+          }
+
+          if (typeof _cryptoAsymmetricOp !== 'undefined') {
+            function asymmetricBridgeCall(operation, key, data) {
+              var dataBuf = toRawBuffer(data);
+              var resultBase64;
+              try {
+                resultBase64 = _cryptoAsymmetricOp.applySync(undefined, [
+                  operation,
+                  JSON.stringify(serializeBridgeValue(key)),
+                  dataBuf.toString('base64'),
+                ]);
+              } catch (error) {
+                throw normalizeCryptoBridgeError(error);
+              }
+              return Buffer.from(resultBase64, 'base64');
+            }
+
+            result.publicEncrypt = function publicEncrypt(key, data) {
+              return asymmetricBridgeCall('publicEncrypt', key, data);
+            };
+
+            result.privateDecrypt = function privateDecrypt(key, data) {
+              return asymmetricBridgeCall('privateDecrypt', key, data);
+            };
+
+            result.privateEncrypt = function privateEncrypt(key, data) {
+              return asymmetricBridgeCall('privateEncrypt', key, data);
+            };
+
+            result.publicDecrypt = function publicDecrypt(key, data) {
+              return asymmetricBridgeCall('publicDecrypt', key, data);
+            };
+          }
+
+          if (
+            typeof _cryptoDiffieHellmanSessionCreate !== 'undefined' &&
+            typeof _cryptoDiffieHellmanSessionCall !== 'undefined'
+          ) {
+            function serializeDhKeyObject(value) {
+              if (value.type === 'secret') {
+                return {
+                  type: 'secret',
+                  raw: Buffer.from(value.export()).toString('base64'),
+                };
+              }
+              return {
+                type: value.type,
+                pem: value._pem || value.export({
+                  type: value.type === 'private' ? 'pkcs8' : 'spki',
+                  format: 'pem',
+                }),
+              };
+            }
+
+            function serializeDhValue(value) {
+              if (
+                value === null ||
+                typeof value === 'string' ||
+                typeof value === 'number' ||
+                typeof value === 'boolean'
+              ) {
+                return value;
+              }
+              if (Buffer.isBuffer(value)) {
+                return {
+                  __type: 'buffer',
+                  value: Buffer.from(value).toString('base64'),
+                };
+              }
+              if (value instanceof ArrayBuffer) {
+                return {
+                  __type: 'buffer',
+                  value: Buffer.from(new Uint8Array(value)).toString('base64'),
+                };
+              }
+              if (ArrayBuffer.isView(value)) {
+                return {
+                  __type: 'buffer',
+                  value: Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('base64'),
+                };
+              }
+              if (typeof value === 'bigint') {
+                return {
+                  __type: 'bigint',
+                  value: value.toString(),
+                };
+              }
+              if (
+                value &&
+                typeof value === 'object' &&
+                (value.type === 'public' || value.type === 'private' || value.type === 'secret') &&
+                typeof value.export === 'function'
+              ) {
+                return {
+                  __type: 'keyObject',
+                  value: serializeDhKeyObject(value),
+                };
+              }
+              if (Array.isArray(value)) {
+                return value.map(serializeDhValue);
+              }
+              if (value && typeof value === 'object') {
+                var output = {};
+                var keys = Object.keys(value);
+                for (var i = 0; i < keys.length; i++) {
+                  if (value[keys[i]] !== undefined) {
+                    output[keys[i]] = serializeDhValue(value[keys[i]]);
+                  }
+                }
+                return output;
+              }
+              return String(value);
+            }
+
+            function restoreDhValue(value) {
+              if (!value || typeof value !== 'object') {
+                return value;
+              }
+              if (value.__type === 'buffer') {
+                return Buffer.from(value.value, 'base64');
+              }
+              if (value.__type === 'bigint') {
+                return BigInt(value.value);
+              }
+              if (Array.isArray(value)) {
+                return value.map(restoreDhValue);
+              }
+              var output = {};
+              var keys = Object.keys(value);
+              for (var i = 0; i < keys.length; i++) {
+                output[keys[i]] = restoreDhValue(value[keys[i]]);
+              }
+              return output;
+            }
+
+            function createDhSession(type, name, argsLike) {
+              var args = [];
+              for (var i = 0; i < argsLike.length; i++) {
+                args.push(serializeDhValue(argsLike[i]));
+              }
+              return _cryptoDiffieHellmanSessionCreate.applySync(undefined, [
+                JSON.stringify({
+                  type: type,
+                  name: name,
+                  args: args,
+                }),
+              ]);
+            }
+
+            function callDhSession(sessionId, method, argsLike) {
+              var args = [];
+              for (var i = 0; i < argsLike.length; i++) {
+                args.push(serializeDhValue(argsLike[i]));
+              }
+              var response = JSON.parse(_cryptoDiffieHellmanSessionCall.applySync(undefined, [
+                sessionId,
+                JSON.stringify({
+                  method: method,
+                  args: args,
+                }),
+              ]));
+              if (response && response.hasResult === false) {
+                return undefined;
+              }
+              return restoreDhValue(response && response.result);
+            }
+
+            function SandboxDiffieHellman(sessionId) {
+              this._sessionId = sessionId;
+            }
+
+            Object.defineProperty(SandboxDiffieHellman.prototype, 'verifyError', {
+              get: function getVerifyError() {
+                return callDhSession(this._sessionId, 'verifyError', []);
+              },
+            });
+
+            SandboxDiffieHellman.prototype.generateKeys = function generateKeys(encoding) {
+              if (arguments.length === 0) return callDhSession(this._sessionId, 'generateKeys', []);
+              return callDhSession(this._sessionId, 'generateKeys', [encoding]);
+            };
+            SandboxDiffieHellman.prototype.computeSecret = function computeSecret(key, inputEncoding, outputEncoding) {
+              return callDhSession(this._sessionId, 'computeSecret', Array.prototype.slice.call(arguments));
+            };
+            SandboxDiffieHellman.prototype.getPrime = function getPrime(encoding) {
+              if (arguments.length === 0) return callDhSession(this._sessionId, 'getPrime', []);
+              return callDhSession(this._sessionId, 'getPrime', [encoding]);
+            };
+            SandboxDiffieHellman.prototype.getGenerator = function getGenerator(encoding) {
+              if (arguments.length === 0) return callDhSession(this._sessionId, 'getGenerator', []);
+              return callDhSession(this._sessionId, 'getGenerator', [encoding]);
+            };
+            SandboxDiffieHellman.prototype.getPublicKey = function getPublicKey(encoding) {
+              if (arguments.length === 0) return callDhSession(this._sessionId, 'getPublicKey', []);
+              return callDhSession(this._sessionId, 'getPublicKey', [encoding]);
+            };
+            SandboxDiffieHellman.prototype.getPrivateKey = function getPrivateKey(encoding) {
+              if (arguments.length === 0) return callDhSession(this._sessionId, 'getPrivateKey', []);
+              return callDhSession(this._sessionId, 'getPrivateKey', [encoding]);
+            };
+            SandboxDiffieHellman.prototype.setPublicKey = function setPublicKey(key, encoding) {
+              return callDhSession(this._sessionId, 'setPublicKey', Array.prototype.slice.call(arguments));
+            };
+            SandboxDiffieHellman.prototype.setPrivateKey = function setPrivateKey(key, encoding) {
+              return callDhSession(this._sessionId, 'setPrivateKey', Array.prototype.slice.call(arguments));
+            };
+
+            function SandboxECDH(sessionId) {
+              SandboxDiffieHellman.call(this, sessionId);
+            }
+            SandboxECDH.prototype = Object.create(SandboxDiffieHellman.prototype);
+            SandboxECDH.prototype.constructor = SandboxECDH;
+            SandboxECDH.prototype.getPublicKey = function getPublicKey(encoding, format) {
+              return callDhSession(this._sessionId, 'getPublicKey', Array.prototype.slice.call(arguments));
+            };
+
+            result.createDiffieHellman = function createDiffieHellman() {
+              return new SandboxDiffieHellman(createDhSession('dh', undefined, arguments));
+            };
+
+            result.getDiffieHellman = function getDiffieHellman(name) {
+              return new SandboxDiffieHellman(createDhSession('group', name, []));
+            };
+
+            result.createDiffieHellmanGroup = result.getDiffieHellman;
+
+            result.createECDH = function createECDH(curve) {
+              return new SandboxECDH(createDhSession('ecdh', curve, []));
+            };
+
+            if (typeof _cryptoDiffieHellman !== 'undefined') {
+              result.diffieHellman = function diffieHellman(options) {
+                var resultJson = _cryptoDiffieHellman.applySync(undefined, [
+                  JSON.stringify(serializeDhValue(options)),
+                ]);
+                return restoreDhValue(JSON.parse(resultJson));
+              };
+            }
+
+            result.DiffieHellman = SandboxDiffieHellman;
+            result.DiffieHellmanGroup = SandboxDiffieHellman;
+            result.ECDH = SandboxECDH;
           }
 
           // Overlay host-backed generateKeyPairSync/generateKeyPair and KeyObject helpers
           if (typeof _cryptoGenerateKeyPairSync !== 'undefined') {
-            function SandboxKeyObject(type, pem) {
-              this.type = type;
-              this._pem = pem;
+            function restoreBridgeValue(value) {
+              if (!value || typeof value !== 'object') {
+                return value;
+              }
+              if (value.__type === 'buffer') {
+                return Buffer.from(value.value, 'base64');
+              }
+              if (value.__type === 'bigint') {
+                return BigInt(value.value);
+              }
+              if (Array.isArray(value)) {
+                return value.map(restoreBridgeValue);
+              }
+              var output = {};
+              var keys = Object.keys(value);
+              for (var i = 0; i < keys.length; i++) {
+                output[keys[i]] = restoreBridgeValue(value[keys[i]]);
+              }
+              return output;
             }
+
+            function cloneObject(value) {
+              if (!value || typeof value !== 'object') {
+                return value;
+              }
+              if (Array.isArray(value)) {
+                return value.map(cloneObject);
+              }
+              var output = {};
+              var keys = Object.keys(value);
+              for (var i = 0; i < keys.length; i++) {
+                output[keys[i]] = cloneObject(value[keys[i]]);
+              }
+              return output;
+            }
+
+            function createDomException(message, name) {
+              if (typeof DOMException === 'function') {
+                return new DOMException(message, name);
+              }
+              var error = new Error(message);
+              error.name = name;
+              return error;
+            }
+
+            function toRawBuffer(data, encoding) {
+              if (Buffer.isBuffer(data)) {
+                return Buffer.from(data);
+              }
+              if (data instanceof ArrayBuffer) {
+                return Buffer.from(new Uint8Array(data));
+              }
+              if (ArrayBuffer.isView(data)) {
+                return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+              }
+              if (typeof data === 'string') {
+                return Buffer.from(data, encoding || 'utf8');
+              }
+              return Buffer.from(data);
+            }
+
+            function serializeBridgeValue(value) {
+              if (value === null) {
+                return null;
+              }
+              if (
+                typeof value === 'string' ||
+                typeof value === 'number' ||
+                typeof value === 'boolean'
+              ) {
+                return value;
+              }
+              if (typeof value === 'bigint') {
+                return {
+                  __type: 'bigint',
+                  value: value.toString(),
+                };
+              }
+              if (Buffer.isBuffer(value)) {
+                return {
+                  __type: 'buffer',
+                  value: Buffer.from(value).toString('base64'),
+                };
+              }
+              if (value instanceof ArrayBuffer) {
+                return {
+                  __type: 'buffer',
+                  value: Buffer.from(new Uint8Array(value)).toString('base64'),
+                };
+              }
+              if (ArrayBuffer.isView(value)) {
+                return {
+                  __type: 'buffer',
+                  value: Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('base64'),
+                };
+              }
+              if (Array.isArray(value)) {
+                return value.map(serializeBridgeValue);
+              }
+              if (
+                value &&
+                typeof value === 'object' &&
+                (value.type === 'public' || value.type === 'private' || value.type === 'secret') &&
+                typeof value.export === 'function'
+              ) {
+                if (value.type === 'secret') {
+                  return {
+                    __type: 'keyObject',
+                    value: {
+                      type: 'secret',
+                      raw: Buffer.from(value.export()).toString('base64'),
+                    },
+                  };
+                }
+                return {
+                  __type: 'keyObject',
+                  value: {
+                    type: value.type,
+                    pem: value._pem,
+                  },
+                };
+              }
+              if (value && typeof value === 'object') {
+                var output = {};
+                var keys = Object.keys(value);
+                for (var i = 0; i < keys.length; i++) {
+                  var entry = value[keys[i]];
+                  if (entry !== undefined) {
+                    output[keys[i]] = serializeBridgeValue(entry);
+                  }
+                }
+                return output;
+              }
+              return String(value);
+            }
+
+            function normalizeCryptoBridgeError(error) {
+              if (!error || typeof error !== 'object') {
+                return error;
+              }
+              if (
+                error.code === undefined &&
+                error.message === 'error:07880109:common libcrypto routines::interrupted or cancelled'
+              ) {
+                error.code = 'ERR_OSSL_CRYPTO_INTERRUPTED_OR_CANCELLED';
+              }
+              return error;
+            }
+
+            function deserializeGeneratedKeyValue(value) {
+              if (!value || typeof value !== 'object') {
+                return value;
+              }
+              if (value.kind === 'string') {
+                return value.value;
+              }
+              if (value.kind === 'buffer') {
+                return Buffer.from(value.value, 'base64');
+              }
+              if (value.kind === 'keyObject') {
+                return createGeneratedKeyObject(value.value);
+              }
+              if (value.kind === 'object') {
+                return value.value;
+              }
+              return value;
+            }
+
+            function serializeBridgeOptions(options) {
+              return JSON.stringify({
+                hasOptions: options !== undefined,
+                options: options === undefined ? null : serializeBridgeValue(options),
+              });
+            }
+
+            function createInvalidArgTypeError(name, expected, value) {
+              var received;
+              if (value == null) {
+                received = ' Received ' + value;
+              } else if (typeof value === 'function') {
+                received = ' Received function ' + (value.name || 'anonymous');
+              } else if (typeof value === 'object') {
+                if (value.constructor && value.constructor.name) {
+                  received = ' Received an instance of ' + value.constructor.name;
+                } else {
+                  received = ' Received [object Object]';
+                }
+              } else {
+                var inspected = typeof value === 'string' ? "'" + value + "'" : String(value);
+                if (inspected.length > 28) {
+                  inspected = inspected.slice(0, 25) + '...';
+                }
+                received = ' Received type ' + typeof value + ' (' + inspected + ')';
+              }
+              var error = new TypeError('The "' + name + '" argument must be ' + expected + '.' + received);
+              error.code = 'ERR_INVALID_ARG_TYPE';
+              return error;
+            }
+
+            function scheduleCryptoCallback(callback, args) {
+              var invoke = function() {
+                callback.apply(undefined, args);
+              };
+              if (typeof process !== 'undefined' && process && typeof process.nextTick === 'function') {
+                process.nextTick(invoke);
+                return;
+              }
+              if (typeof queueMicrotask === 'function') {
+                queueMicrotask(invoke);
+                return;
+              }
+              Promise.resolve().then(invoke);
+            }
+
+            function shouldThrowCryptoValidationError(error) {
+              if (!error || typeof error !== 'object') {
+                return false;
+              }
+              if (error.name === 'TypeError' || error.name === 'RangeError') {
+                return true;
+              }
+              var code = error.code;
+              return code === 'ERR_MISSING_OPTION' ||
+                code === 'ERR_CRYPTO_UNKNOWN_DH_GROUP' ||
+                code === 'ERR_OUT_OF_RANGE' ||
+                (typeof code === 'string' && code.indexOf('ERR_INVALID_ARG_') === 0);
+            }
+
+            function ensureCryptoCallback(callback, syncValidator) {
+              if (typeof callback === 'function') {
+                return callback;
+              }
+              if (typeof syncValidator === 'function') {
+                syncValidator();
+              }
+              throw createInvalidArgTypeError('callback', 'of type function', callback);
+            }
+
+            function SandboxKeyObject(type, handle) {
+              this.type = type;
+              this._pem = handle && handle.pem !== undefined ? handle.pem : undefined;
+              this._raw = handle && handle.raw !== undefined ? handle.raw : undefined;
+              this._jwk = handle && handle.jwk !== undefined ? cloneObject(handle.jwk) : undefined;
+              this.asymmetricKeyType = handle && handle.asymmetricKeyType !== undefined ? handle.asymmetricKeyType : undefined;
+              this.asymmetricKeyDetails = handle && handle.asymmetricKeyDetails !== undefined ?
+                restoreBridgeValue(handle.asymmetricKeyDetails) :
+                undefined;
+              this.symmetricKeySize = type === 'secret' && handle && handle.raw !== undefined ?
+                Buffer.from(handle.raw, 'base64').byteLength :
+                undefined;
+            }
+
+            Object.defineProperty(SandboxKeyObject.prototype, Symbol.toStringTag, {
+              value: 'KeyObject',
+              configurable: true,
+            });
+
             SandboxKeyObject.prototype.export = function exportKey(options) {
-              if (!options || options.format === 'pem') {
-                return this._pem;
+              if (this.type === 'secret') {
+                return Buffer.from(this._raw || '', 'base64');
+              }
+              if (!options || typeof options !== 'object') {
+                throw new TypeError('The "options" argument must be of type object.');
+              }
+              if (options.format === 'jwk') {
+                return cloneObject(this._jwk);
               }
               if (options.format === 'der') {
-                // Strip PEM header/footer and decode base64
-                var lines = this._pem.split('\n').filter(function(l) { return l && l.indexOf('-----') !== 0; });
+                var lines = String(this._pem || '').split('\n').filter(function(l) {
+                  return l && l.indexOf('-----') !== 0;
+                });
                 return Buffer.from(lines.join(''), 'base64');
               }
               return this._pem;
             };
-            SandboxKeyObject.prototype.toString = function() { return this._pem; };
+
+            SandboxKeyObject.prototype.toString = function() {
+              return '[object KeyObject]';
+            };
+
+            SandboxKeyObject.prototype.equals = function equals(other) {
+              if (!(other instanceof SandboxKeyObject)) {
+                return false;
+              }
+              if (this.type !== other.type) {
+                return false;
+              }
+              if (this.type === 'secret') {
+                return (this._raw || '') === (other._raw || '');
+              }
+              return (
+                (this._pem || '') === (other._pem || '') &&
+                this.asymmetricKeyType === other.asymmetricKeyType
+              );
+            };
+
+            function normalizeNamedCurve(namedCurve) {
+              if (!namedCurve) {
+                return namedCurve;
+              }
+              var upper = String(namedCurve).toUpperCase();
+              if (upper === 'PRIME256V1' || upper === 'SECP256R1') return 'P-256';
+              if (upper === 'SECP384R1') return 'P-384';
+              if (upper === 'SECP521R1') return 'P-521';
+              return namedCurve;
+            }
+
+            function normalizeAlgorithmInput(algorithm) {
+              if (typeof algorithm === 'string') {
+                return { name: algorithm };
+              }
+              return Object.assign({}, algorithm);
+            }
+
+            function createCompatibleCryptoKey(keyData) {
+              var key;
+              if (
+                globalThis.CryptoKey &&
+                globalThis.CryptoKey.prototype &&
+                globalThis.CryptoKey.prototype !== SandboxCryptoKey.prototype
+              ) {
+                key = Object.create(globalThis.CryptoKey.prototype);
+                key.type = keyData.type;
+                key.extractable = keyData.extractable;
+                key.algorithm = keyData.algorithm;
+                key.usages = keyData.usages;
+                key._keyData = keyData;
+                key._pem = keyData._pem;
+                key._jwk = keyData._jwk;
+                key._raw = keyData._raw;
+                key._sourceKeyObjectData = keyData._sourceKeyObjectData;
+                return key;
+              }
+              return new SandboxCryptoKey(keyData);
+            }
+
+            function buildCryptoKeyFromKeyObject(keyObject, algorithm, extractable, usages) {
+              var algo = normalizeAlgorithmInput(algorithm);
+              var name = algo.name;
+
+              if (keyObject.type === 'secret') {
+                var secretBytes = Buffer.from(keyObject._raw || '', 'base64');
+                if (name === 'PBKDF2') {
+                  if (extractable) {
+                    throw new SyntaxError('PBKDF2 keys are not extractable');
+                  }
+                  if (usages.some(function(usage) { return usage !== 'deriveBits' && usage !== 'deriveKey'; })) {
+                    throw new SyntaxError('Unsupported key usage for a PBKDF2 key');
+                  }
+                  return createCompatibleCryptoKey({
+                    type: 'secret',
+                    extractable: extractable,
+                    algorithm: { name: name },
+                    usages: Array.from(usages),
+                    _raw: keyObject._raw,
+                    _sourceKeyObjectData: {
+                      type: 'secret',
+                      raw: keyObject._raw,
+                    },
+                  });
+                }
+                if (name === 'HMAC') {
+                  if (!secretBytes.byteLength || algo.length === 0) {
+                    throw createDomException('Zero-length key is not supported', 'DataError');
+                  }
+                  if (!usages.length) {
+                    throw new SyntaxError('Usages cannot be empty when importing a secret key.');
+                  }
+                  return createCompatibleCryptoKey({
+                    type: 'secret',
+                    extractable: extractable,
+                    algorithm: {
+                      name: name,
+                      hash: typeof algo.hash === 'string' ? { name: algo.hash } : cloneObject(algo.hash),
+                      length: secretBytes.byteLength * 8,
+                    },
+                    usages: Array.from(usages),
+                    _raw: keyObject._raw,
+                    _sourceKeyObjectData: {
+                      type: 'secret',
+                      raw: keyObject._raw,
+                    },
+                  });
+                }
+                return createCompatibleCryptoKey({
+                  type: 'secret',
+                  extractable: extractable,
+                  algorithm: {
+                    name: name,
+                    length: secretBytes.byteLength * 8,
+                  },
+                  usages: Array.from(usages),
+                  _raw: keyObject._raw,
+                  _sourceKeyObjectData: {
+                    type: 'secret',
+                    raw: keyObject._raw,
+                  },
+                });
+              }
+
+              var keyType = String(keyObject.asymmetricKeyType || '').toLowerCase();
+              var algorithmName = String(name || '');
+
+              if (
+                (keyType === 'ed25519' || keyType === 'ed448' || keyType === 'x25519' || keyType === 'x448') &&
+                keyType !== algorithmName.toLowerCase()
+              ) {
+                throw createDomException('Invalid key type', 'DataError');
+              }
+
+              if (algorithmName === 'ECDH') {
+                if (keyObject.type === 'private' && !usages.length) {
+                  throw new SyntaxError('Usages cannot be empty when importing a private key.');
+                }
+                var actualCurve = normalizeNamedCurve(
+                  keyObject.asymmetricKeyDetails && keyObject.asymmetricKeyDetails.namedCurve
+                );
+                if (
+                  algo.namedCurve &&
+                  actualCurve &&
+                  normalizeNamedCurve(algo.namedCurve) !== actualCurve
+                ) {
+                  throw createDomException('Named curve mismatch', 'DataError');
+                }
+              }
+
+              var normalizedAlgo = cloneObject(algo);
+              if (typeof normalizedAlgo.hash === 'string') {
+                normalizedAlgo.hash = { name: normalizedAlgo.hash };
+              }
+
+              return createCompatibleCryptoKey({
+                type: keyObject.type,
+                extractable: extractable,
+                algorithm: normalizedAlgo,
+                usages: Array.from(usages),
+                _pem: keyObject._pem,
+                _jwk: cloneObject(keyObject._jwk),
+                _sourceKeyObjectData: {
+                  type: keyObject.type,
+                  pem: keyObject._pem,
+                  jwk: cloneObject(keyObject._jwk),
+                  asymmetricKeyType: keyObject.asymmetricKeyType,
+                  asymmetricKeyDetails: cloneObject(keyObject.asymmetricKeyDetails),
+                },
+              });
+            }
+
+            SandboxKeyObject.prototype.toCryptoKey = function toCryptoKey(algorithm, extractable, usages) {
+              return buildCryptoKeyFromKeyObject(this, algorithm, extractable, Array.from(usages || []));
+            };
+
+            function createAsymmetricKeyObject(type, key) {
+              if (typeof key === 'string') {
+                if (key.indexOf('-----BEGIN') === -1) {
+                  throw new TypeError('error:0900006e:PEM routines:OPENSSL_internal:NO_START_LINE');
+                }
+                return new SandboxKeyObject(type, { pem: key });
+              }
+              if (key && typeof key === 'object' && key._pem) {
+                return new SandboxKeyObject(type, {
+                  pem: key._pem,
+                  jwk: key._jwk,
+                  asymmetricKeyType: key.asymmetricKeyType,
+                  asymmetricKeyDetails: key.asymmetricKeyDetails,
+                });
+              }
+              if (key && typeof key === 'object' && key.key) {
+                var keyData = typeof key.key === 'string' ? key.key : key.key.toString('utf8');
+                return new SandboxKeyObject(type, { pem: keyData });
+              }
+              if (Buffer.isBuffer(key)) {
+                var keyStr = key.toString('utf8');
+                if (keyStr.indexOf('-----BEGIN') === -1) {
+                  throw new TypeError('error:0900006e:PEM routines:OPENSSL_internal:NO_START_LINE');
+                }
+                return new SandboxKeyObject(type, { pem: keyStr });
+              }
+              return new SandboxKeyObject(type, { pem: String(key) });
+            }
+
+            function createGeneratedKeyObject(value) {
+              return new SandboxKeyObject(value.type, {
+                pem: value.pem,
+                raw: value.raw,
+                jwk: value.jwk,
+                asymmetricKeyType: value.asymmetricKeyType,
+                asymmetricKeyDetails: value.asymmetricKeyDetails,
+              });
+            }
 
             result.generateKeyPairSync = function generateKeyPairSync(type, options) {
-              var opts = {};
-              if (options) {
-                if (options.modulusLength !== undefined) opts.modulusLength = options.modulusLength;
-                if (options.publicExponent !== undefined) opts.publicExponent = options.publicExponent;
-                if (options.namedCurve !== undefined) opts.namedCurve = options.namedCurve;
-                if (options.divisorLength !== undefined) opts.divisorLength = options.divisorLength;
-                if (options.primeLength !== undefined) opts.primeLength = options.primeLength;
-              }
               var resultJson = _cryptoGenerateKeyPairSync.applySync(undefined, [
                 type,
-                JSON.stringify(opts),
+                serializeBridgeOptions(options),
               ]);
               var parsed = JSON.parse(resultJson);
 
-              // Return KeyObjects if no encoding specified, PEM strings otherwise
-              if (options && options.publicKeyEncoding && options.privateKeyEncoding) {
-                return { publicKey: parsed.publicKey, privateKey: parsed.privateKey };
+              if (parsed.publicKey && parsed.publicKey.kind) {
+                return {
+                  publicKey: deserializeGeneratedKeyValue(parsed.publicKey),
+                  privateKey: deserializeGeneratedKeyValue(parsed.privateKey),
+                };
               }
+
               return {
-                publicKey: new SandboxKeyObject('public', parsed.publicKey),
-                privateKey: new SandboxKeyObject('private', parsed.privateKey),
+                publicKey: createGeneratedKeyObject(parsed.publicKey),
+                privateKey: createGeneratedKeyObject(parsed.privateKey),
               };
             };
 
             result.generateKeyPair = function generateKeyPair(type, options, callback) {
+              if (typeof options === 'function') {
+                callback = options;
+                options = undefined;
+              }
+              callback = ensureCryptoCallback(callback, function() {
+                result.generateKeyPairSync(type, options);
+              });
               try {
                 var pair = result.generateKeyPairSync(type, options);
-                callback(null, pair.publicKey, pair.privateKey);
+                scheduleCryptoCallback(callback, [null, pair.publicKey, pair.privateKey]);
               } catch (e) {
-                callback(e);
+                if (shouldThrowCryptoValidationError(e)) {
+                  throw e;
+                }
+                scheduleCryptoCallback(callback, [e]);
               }
             };
 
+            if (typeof _cryptoGenerateKeySync !== 'undefined') {
+              result.generateKeySync = function generateKeySync(type, options) {
+                var resultJson;
+                try {
+                  resultJson = _cryptoGenerateKeySync.applySync(undefined, [
+                    type,
+                    serializeBridgeOptions(options),
+                  ]);
+                } catch (error) {
+                  throw normalizeCryptoBridgeError(error);
+                }
+                return createGeneratedKeyObject(JSON.parse(resultJson));
+              };
+
+              result.generateKey = function generateKey(type, options, callback) {
+                callback = ensureCryptoCallback(callback, function() {
+                  result.generateKeySync(type, options);
+                });
+                try {
+                  var key = result.generateKeySync(type, options);
+                  scheduleCryptoCallback(callback, [null, key]);
+                } catch (e) {
+                  if (shouldThrowCryptoValidationError(e)) {
+                    throw e;
+                  }
+                  scheduleCryptoCallback(callback, [e]);
+                }
+              };
+            }
+
+            if (typeof _cryptoGeneratePrimeSync !== 'undefined') {
+              result.generatePrimeSync = function generatePrimeSync(size, options) {
+                var resultJson;
+                try {
+                  resultJson = _cryptoGeneratePrimeSync.applySync(undefined, [
+                    size,
+                    serializeBridgeOptions(options),
+                  ]);
+                } catch (error) {
+                  throw normalizeCryptoBridgeError(error);
+                }
+                return restoreBridgeValue(JSON.parse(resultJson));
+              };
+
+              result.generatePrime = function generatePrime(size, options, callback) {
+                if (typeof options === 'function') {
+                  callback = options;
+                  options = undefined;
+                }
+                callback = ensureCryptoCallback(callback, function() {
+                  result.generatePrimeSync(size, options);
+                });
+                try {
+                  var prime = result.generatePrimeSync(size, options);
+                  scheduleCryptoCallback(callback, [null, prime]);
+                } catch (e) {
+                  if (shouldThrowCryptoValidationError(e)) {
+                    throw e;
+                  }
+                  scheduleCryptoCallback(callback, [e]);
+                }
+              };
+            }
+
             result.createPublicKey = function createPublicKey(key) {
-              if (typeof key === 'string') {
-                if (key.indexOf('-----BEGIN') === -1) {
-                  throw new TypeError('error:0900006e:PEM routines:OPENSSL_internal:NO_START_LINE');
+              if (typeof _cryptoCreateKeyObject !== 'undefined') {
+                var resultJson;
+                try {
+                  resultJson = _cryptoCreateKeyObject.applySync(undefined, [
+                    'createPublicKey',
+                    JSON.stringify(serializeBridgeValue(key)),
+                  ]);
+                } catch (error) {
+                  throw normalizeCryptoBridgeError(error);
                 }
-                return new SandboxKeyObject('public', key);
+                return createGeneratedKeyObject(JSON.parse(resultJson));
               }
-              if (key && typeof key === 'object' && key._pem) {
-                return new SandboxKeyObject('public', key._pem);
-              }
-              if (key && typeof key === 'object' && key.type === 'private') {
-                // Node.js createPublicKey accepts private KeyObjects and extracts public key
-                return new SandboxKeyObject('public', key._pem);
-              }
-              if (key && typeof key === 'object' && key.key) {
-                var keyData = typeof key.key === 'string' ? key.key : key.key.toString('utf8');
-                return new SandboxKeyObject('public', keyData);
-              }
-              if (Buffer.isBuffer(key)) {
-                var keyStr = key.toString('utf8');
-                if (keyStr.indexOf('-----BEGIN') === -1) {
-                  throw new TypeError('error:0900006e:PEM routines:OPENSSL_internal:NO_START_LINE');
-                }
-                return new SandboxKeyObject('public', keyStr);
-              }
-              return new SandboxKeyObject('public', String(key));
+              return createAsymmetricKeyObject('public', key);
             };
 
             result.createPrivateKey = function createPrivateKey(key) {
-              if (typeof key === 'string') {
-                if (key.indexOf('-----BEGIN') === -1) {
-                  throw new TypeError('error:0900006e:PEM routines:OPENSSL_internal:NO_START_LINE');
+              if (typeof _cryptoCreateKeyObject !== 'undefined') {
+                var resultJson;
+                try {
+                  resultJson = _cryptoCreateKeyObject.applySync(undefined, [
+                    'createPrivateKey',
+                    JSON.stringify(serializeBridgeValue(key)),
+                  ]);
+                } catch (error) {
+                  throw normalizeCryptoBridgeError(error);
                 }
-                return new SandboxKeyObject('private', key);
+                return createGeneratedKeyObject(JSON.parse(resultJson));
               }
-              if (key && typeof key === 'object' && key._pem) {
-                return new SandboxKeyObject('private', key._pem);
-              }
-              if (key && typeof key === 'object' && key.key) {
-                var keyData = typeof key.key === 'string' ? key.key : key.key.toString('utf8');
-                return new SandboxKeyObject('private', keyData);
-              }
-              if (Buffer.isBuffer(key)) {
-                var keyStr = key.toString('utf8');
-                if (keyStr.indexOf('-----BEGIN') === -1) {
-                  throw new TypeError('error:0900006e:PEM routines:OPENSSL_internal:NO_START_LINE');
-                }
-                return new SandboxKeyObject('private', keyStr);
-              }
-              return new SandboxKeyObject('private', String(key));
+              return createAsymmetricKeyObject('private', key);
             };
 
-            result.createSecretKey = function createSecretKey(key) {
-              if (typeof key === 'string') {
-                return new SandboxKeyObject('secret', key);
+            result.createSecretKey = function createSecretKey(key, encoding) {
+              return new SandboxKeyObject('secret', {
+                raw: toRawBuffer(key, encoding).toString('base64'),
+              });
+            };
+
+            SandboxKeyObject.from = function from(key) {
+              if (!key || typeof key !== 'object' || key[Symbol.toStringTag] !== 'CryptoKey') {
+                throw new TypeError('The "key" argument must be an instance of CryptoKey.');
               }
-              if (Buffer.isBuffer(key) || (key instanceof Uint8Array)) {
-                return new SandboxKeyObject('secret', Buffer.from(key).toString('utf8'));
+              if (key._sourceKeyObjectData && key._sourceKeyObjectData.type === 'secret') {
+                return new SandboxKeyObject('secret', {
+                  raw: key._sourceKeyObjectData.raw,
+                });
               }
-              return new SandboxKeyObject('secret', String(key));
+              return new SandboxKeyObject(key.type, {
+                pem: key._pem,
+                jwk: key._jwk,
+                asymmetricKeyType: key._sourceKeyObjectData && key._sourceKeyObjectData.asymmetricKeyType,
+                asymmetricKeyDetails: key._sourceKeyObjectData && key._sourceKeyObjectData.asymmetricKeyDetails,
+              });
             };
 
             result.KeyObject = SandboxKeyObject;
@@ -927,6 +2055,43 @@
               this.algorithm = keyData.algorithm;
               this.usages = keyData.usages;
               this._keyData = keyData;
+              this._pem = keyData._pem;
+              this._jwk = keyData._jwk;
+              this._raw = keyData._raw;
+              this._sourceKeyObjectData = keyData._sourceKeyObjectData;
+            }
+
+            Object.defineProperty(SandboxCryptoKey.prototype, Symbol.toStringTag, {
+              value: 'CryptoKey',
+              configurable: true,
+            });
+
+            Object.defineProperty(SandboxCryptoKey, Symbol.hasInstance, {
+              value: function(candidate) {
+                return !!(
+                  candidate &&
+                  typeof candidate === 'object' &&
+                  (
+                    candidate._keyData ||
+                    candidate[Symbol.toStringTag] === 'CryptoKey'
+                  )
+                );
+              },
+              configurable: true,
+            });
+
+            if (
+              globalThis.CryptoKey &&
+              globalThis.CryptoKey.prototype &&
+              globalThis.CryptoKey.prototype !== SandboxCryptoKey.prototype
+            ) {
+              Object.setPrototypeOf(SandboxCryptoKey.prototype, globalThis.CryptoKey.prototype);
+            }
+
+            if (typeof globalThis.CryptoKey === 'undefined') {
+              __requireExposeCustomGlobal('CryptoKey', SandboxCryptoKey);
+            } else if (globalThis.CryptoKey !== SandboxCryptoKey) {
+              globalThis.CryptoKey = SandboxCryptoKey;
             }
 
             function toBase64(data) {
@@ -1116,8 +2281,17 @@
               });
             };
 
-            result.subtle = SandboxSubtle;
-            result.webcrypto = { subtle: SandboxSubtle, getRandomValues: result.randomFillSync };
+            if (
+              globalThis.crypto &&
+              globalThis.crypto.subtle &&
+              typeof globalThis.crypto.subtle.importKey === 'function'
+            ) {
+              result.subtle = globalThis.crypto.subtle;
+              result.webcrypto = globalThis.crypto;
+            } else {
+              result.subtle = SandboxSubtle;
+              result.webcrypto = { subtle: SandboxSubtle, getRandomValues: result.randomFillSync };
+            }
           }
 
           // Enumeration functions: getCurves, getCiphers, getHashes.
@@ -1154,6 +2328,16 @@
                 out |= a[i] ^ b[i];
               }
               return out === 0;
+            };
+          }
+          if (typeof result.getFips !== 'function') {
+            result.getFips = function getFips() {
+              return 0;
+            };
+          }
+          if (typeof result.setFips !== 'function') {
+            result.setFips = function setFips() {
+              throw new Error('FIPS mode is not supported in sandbox');
             };
           }
 
@@ -1476,6 +2660,17 @@
           __internalModuleCache['http'] = _httpModule;
           _debugRequire('loaded', name, 'http-special');
           return _httpModule;
+        }
+
+        if (name === '_http_agent') {
+          if (__internalModuleCache['_http_agent']) return __internalModuleCache['_http_agent'];
+          const httpAgentModule = {
+            Agent: _httpModule.Agent,
+            globalAgent: _httpModule.globalAgent,
+          };
+          __internalModuleCache['_http_agent'] = httpAgentModule;
+          _debugRequire('loaded', name, 'http-agent-special');
+          return httpAgentModule;
         }
 
         // Special handling for https module

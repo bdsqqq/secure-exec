@@ -50,6 +50,7 @@
 
 - use pnpm, vitest, and tsc for type checks
 - use turbo for builds
+- after changing `packages/core/isolate-runtime/src/inject/require-setup.ts` or Node bridge code that regenerates the isolate bundle, rebuild in this order: `pnpm --filter @secure-exec/nodejs build` then `pnpm --filter @secure-exec/core build`; the conformance runner executes built `dist` output, not just source files
 - keep timeouts under 1 minute and avoid running full test suites unless necessary
 - use one-line Conventional Commit messages; never add any co-authors (including agents)
 - never mark work complete until typechecks pass and all tests pass in the current turn; if they fail, report the failing command and first concrete error
@@ -198,6 +199,11 @@ Follow the style in `packages/secure-exec/src/index.ts`.
 
 ## Documentation
 
+- all public-facing docs (quickstart, guides, API reference, landing page, README) must focus on the **Node.js runtime** as the primary and default experience — do not lead with WasmVM, kernel internals, or multi-runtime concepts
+- code examples in docs should use the `NodeRuntime` API (`runtime.run()`, `runtime.exec()`) as the default path; the kernel API (`createKernel`, `kernel.spawn()`) is for advanced multi-process use cases and should be presented as secondary
+- keep documentation pages and their runnable example sources in sync: `docs/quickstart.mdx` must match `examples/kitchen-sink/src/`, and `docs/features/*.mdx` must match `examples/features/src/`
+- when updating a doc snippet, update the corresponding example file and the docs/example verification scripts in the same change
+- when converting runnable example code into documentation snippets, use public package imports like `from "secure-exec"` and `from "@secure-exec/typescript"` instead of repo-local source paths
 - WasmVM and Python docs are experimental docs and must stay grouped under the `Experimental` section in `docs/docs.json`
 - docs pages that must stay current with API changes:
   - `docs/quickstart.mdx` — update when core setup flow changes

@@ -39,7 +39,15 @@ export const HOST_BRIDGE_GLOBAL_KEYS = {
 	cryptoCipherivFinal: "_cryptoCipherivFinal",
 	cryptoSign: "_cryptoSign",
 	cryptoVerify: "_cryptoVerify",
+	cryptoAsymmetricOp: "_cryptoAsymmetricOp",
+	cryptoCreateKeyObject: "_cryptoCreateKeyObject",
 	cryptoGenerateKeyPairSync: "_cryptoGenerateKeyPairSync",
+	cryptoGenerateKeySync: "_cryptoGenerateKeySync",
+	cryptoGeneratePrimeSync: "_cryptoGeneratePrimeSync",
+	cryptoDiffieHellman: "_cryptoDiffieHellman",
+	cryptoDiffieHellmanGroup: "_cryptoDiffieHellmanGroup",
+	cryptoDiffieHellmanSessionCreate: "_cryptoDiffieHellmanSessionCreate",
+	cryptoDiffieHellmanSessionCall: "_cryptoDiffieHellmanSessionCall",
 	cryptoSubtle: "_cryptoSubtle",
 	fsReadFile: "_fsReadFile",
 	fsWriteFile: "_fsWriteFile",
@@ -180,15 +188,15 @@ export type CryptoScryptBridgeRef = BridgeApplySyncRef<
 	string
 >;
 export type CryptoCipherivBridgeRef = BridgeApplySyncRef<
-	[string, string, string, string],
+	[string, string, string | null, string, string?],
 	string
 >;
 export type CryptoDecipherivBridgeRef = BridgeApplySyncRef<
-	[string, string, string, string, string],
+	[string, string, string | null, string, string],
 	string
 >;
 export type CryptoCipherivCreateBridgeRef = BridgeApplySyncRef<
-	[string, string, string, string, string],
+	[string, string, string, string | null, string],
 	number
 >;
 export type CryptoCipherivUpdateBridgeRef = BridgeApplySyncRef<
@@ -200,15 +208,38 @@ export type CryptoCipherivFinalBridgeRef = BridgeApplySyncRef<
 	string
 >;
 export type CryptoSignBridgeRef = BridgeApplySyncRef<
-	[string, string, string],
+	[string | null, string, string],
 	string
 >;
 export type CryptoVerifyBridgeRef = BridgeApplySyncRef<
-	[string, string, string, string],
+	[string | null, string, string, string],
 	boolean
+>;
+export type CryptoAsymmetricOpBridgeRef = BridgeApplySyncRef<
+	[string, string, string],
+	string
+>;
+export type CryptoCreateKeyObjectBridgeRef = BridgeApplySyncRef<
+	[string, string],
+	string
 >;
 export type CryptoGenerateKeyPairSyncBridgeRef = BridgeApplySyncRef<
 	[string, string],
+	string
+>;
+export type CryptoGenerateKeySyncBridgeRef = BridgeApplySyncRef<
+	[string, string],
+	string
+>;
+export type CryptoGeneratePrimeSyncBridgeRef = BridgeApplySyncRef<
+	[number, string],
+	string
+>;
+export type CryptoDiffieHellmanBridgeRef = BridgeApplySyncRef<[string], string>;
+export type CryptoDiffieHellmanGroupBridgeRef = BridgeApplySyncRef<[string], string>;
+export type CryptoDiffieHellmanSessionCreateBridgeRef = BridgeApplySyncRef<[string], number>;
+export type CryptoDiffieHellmanSessionCallBridgeRef = BridgeApplySyncRef<
+	[number, string],
 	string
 >;
 export type CryptoSubtleBridgeRef = BridgeApplySyncRef<[string], string>;

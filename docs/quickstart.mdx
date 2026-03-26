@@ -11,12 +11,12 @@ icon: "rocket"
       npm install secure-exec
       ```
 
-      ```bash bun
-      bun add secure-exec
-      ```
-
       ```bash pnpm
       pnpm add secure-exec
+      ```
+
+      ```bash bun
+      bun add secure-exec
       ```
 
       ```bash yarn
@@ -25,177 +25,171 @@ icon: "rocket"
     </CodeGroup>
   </Step>
 
-  <Step title="Create a kernel">
-    A kernel manages a virtual filesystem, process table, and permissions. Mount a Node runtime to execute JavaScript.
+  <Step title="Create a runtime">
+    A `NodeRuntime` executes JavaScript in an isolated V8 sandbox with its own virtual filesystem, module system, and permissions.
 
-    ```ts
+    Source: `examples/kitchen-sink/src/create-runtime.ts`
+
+    ```ts Create Runtime
     import {
-      createKernel,
-      createInMemoryFileSystem,
-      createNodeRuntime,
+      NodeRuntime,
+      createNodeDriver,
+      createNodeRuntimeDriverFactory,
     } from "secure-exec";
 
-    const filesystem = createInMemoryFileSystem();
-    const kernel = createKernel({ filesystem });
-    await kernel.mount(createNodeRuntime());
+    const runtime = new NodeRuntime({
+      systemDriver: createNodeDriver(),
+      runtimeDriverFactory: createNodeRuntimeDriverFactory(),
+    });
+
+    runtime.dispose();
     ```
   </Step>
 
   <Step title="Run code">
-    Use `kernel.exec()` to run commands. Use the filesystem to read and write files.
+    Use `runtime.run()` to execute JavaScript and get back exported values. Use `runtime.exec()` for scripts that produce console output.
+
     <CodeGroup>
-      ```ts Simple
+      Source: `examples/kitchen-sink/src/run-get-exports.ts`
+
+      ```ts Run & Get Exports
       import {
-        createKernel,
-        createInMemoryFileSystem,
-        createNodeRuntime,
+        NodeRuntime,
+        createNodeDriver,
+        createNodeRuntimeDriverFactory,
       } from "secure-exec";
 
-      const kernel = createKernel({
-        filesystem: createInMemoryFileSystem(),
+      const runtime = new NodeRuntime({
+        systemDriver: createNodeDriver(),
+        runtimeDriverFactory: createNodeRuntimeDriverFactory(),
       });
-      await kernel.mount(createNodeRuntime());
 
-      const result = await kernel.exec(
-        "node -e \"console.log('hello from secure-exec')\""
+      const result = await runtime.run<{ message: string }>(
+        `module.exports = { message: "hello from secure-exec" };`
       );
 
-      console.log(result.stdout); // "hello from secure-exec\n"
+      console.log(result.exports?.message); // "hello from secure-exec"
 
-      await kernel.dispose();
+      runtime.dispose();
       ```
+
+      Source: `examples/kitchen-sink/src/execute-capture-output.ts`
+
+      ```ts Execute & Capture Output
+      import {
+        NodeRuntime,
+        createNodeDriver,
+        createNodeRuntimeDriverFactory,
+      } from "secure-exec";
+
+      const runtime = new NodeRuntime({
+        systemDriver: createNodeDriver(),
+        runtimeDriverFactory: createNodeRuntimeDriverFactory(),
+        onStdio: (event) => {
+          process.stdout.write(event.message);
+        },
+      });
+
+      const result = await runtime.exec(`
+        console.log("hello from secure-exec");
+      `);
+
+      console.log("exit code:", result.code); // 0
+
+      runtime.dispose();
+      ```
+
+      Source: `examples/kitchen-sink/src/filesystem.ts`
 
       ```ts Filesystem
       import {
-        createKernel,
+        NodeRuntime,
+        createNodeDriver,
+        createNodeRuntimeDriverFactory,
         createInMemoryFileSystem,
-        createNodeRuntime,
+        allowAllFs,
       } from "secure-exec";
 
       const filesystem = createInMemoryFileSystem();
-      const kernel = createKernel({
-        filesystem,
-        permissions: {
-          fs: () => ({ allow: true }),
-        },
-      });
-      await kernel.mount(createNodeRuntime());
 
-      await kernel.exec(`node -e "
-        const fs = require('node:fs');
-        fs.mkdirSync('/workspace', { recursive: true });
-        fs.writeFileSync('/workspace/hello.txt', 'hello from the sandbox');
-      "`);
+      const runtime = new NodeRuntime({
+        systemDriver: createNodeDriver({
+          filesystem,
+          permissions: { ...allowAllFs },
+        }),
+        runtimeDriverFactory: createNodeRuntimeDriverFactory(),
+      });
+
+      await runtime.exec(`
+        const fs = require("node:fs");
+        fs.mkdirSync("/workspace", { recursive: true });
+        fs.writeFileSync("/workspace/hello.txt", "hello from the sandbox");
+      `);
 
       const bytes = await filesystem.readFile("/workspace/hello.txt");
       console.log(new TextDecoder().decode(bytes)); // "hello from the sandbox"
 
-      await kernel.dispose();
+      runtime.dispose();
       ```
 
-      ```ts Logging
+      Source: `examples/kitchen-sink/src/network-access.ts`
+
+      ```ts Network Access
       import {
-        createKernel,
-        createInMemoryFileSystem,
-        createNodeRuntime,
+        NodeRuntime,
+        createNodeDriver,
+        createNodeRuntimeDriverFactory,
+        allowAllNetwork,
       } from "secure-exec";
 
-      const kernel = createKernel({
-        filesystem: createInMemoryFileSystem(),
+      const runtime = new NodeRuntime({
+        systemDriver: createNodeDriver({
+          useDefaultNetwork: true,
+          permissions: { ...allowAllNetwork },
+        }),
+        runtimeDriverFactory: createNodeRuntimeDriverFactory(),
+        onStdio: (event) => {
+          process.stdout.write(event.message);
+        },
       });
-      await kernel.mount(createNodeRuntime());
 
-      const result = await kernel.exec(
-        "node -e \"console.log('hello'); console.error('oops')\""
+      await runtime.exec(`
+        const response = await fetch("http://example.com");
+        console.log(response.status); // 200
+      `, {
+        filePath: "/entry.mjs", // enables top-level await
+      });
+
+      runtime.dispose();
+      ```
+
+      Source: `examples/kitchen-sink/src/esm-modules.ts`
+
+      ```ts ESM Modules
+      import {
+        NodeRuntime,
+        createNodeDriver,
+        createNodeRuntimeDriverFactory,
+      } from "secure-exec";
+
+      const runtime = new NodeRuntime({
+        systemDriver: createNodeDriver(),
+        runtimeDriverFactory: createNodeRuntimeDriverFactory(),
+      });
+
+      const result = await runtime.run<{ answer: number }>(
+        `export const answer = 42;`,
+        "/entry.mjs" // .mjs extension triggers ESM mode
       );
 
-      console.log(result.stdout); // "hello\n"
-      console.log(result.stderr); // "oops\n"
+      console.log(result.exports?.answer); // 42
 
-      await kernel.dispose();
-      ```
-
-      ```ts Fetch
-      import {
-        createKernel,
-        createInMemoryFileSystem,
-        createNodeRuntime,
-      } from "secure-exec";
-
-      const kernel = createKernel({
-        filesystem: createInMemoryFileSystem(),
-        permissions: {
-          network: () => ({ allow: true }),
-        },
-      });
-      await kernel.mount(createNodeRuntime());
-
-      const result = await kernel.exec(`node -e "
-        (async () => {
-          const response = await fetch('https://example.com');
-          console.log(response.status);
-        })();
-      "`);
-
-      console.log(result.stdout); // "200\n"
-
-      await kernel.dispose();
-      ```
-
-      ```ts Run Script File
-      import {
-        createKernel,
-        createInMemoryFileSystem,
-        createNodeRuntime,
-      } from "secure-exec";
-
-      const filesystem = createInMemoryFileSystem();
-      const kernel = createKernel({
-        filesystem,
-        permissions: {
-          fs: () => ({ allow: true }),
-        },
-      });
-      await kernel.mount(createNodeRuntime());
-
-      // Write a script to the virtual filesystem
-      await kernel.writeFile("/app/hello.js", `
-        const { execSync } = require("node:child_process");
-        console.log(execSync("node --version", { encoding: "utf8" }).trim());
-      `);
-
-      const result = await kernel.exec("node /app/hello.js");
-      console.log(result.stdout); // e.g. "v22.x.x\n"
-
-      await kernel.dispose();
+      runtime.dispose();
       ```
     </CodeGroup>
   </Step>
 
 </Steps>
-
-## Alternative: NodeRuntime
-
-For direct code execution with typed return values, use the `NodeRuntime` convenience class.
-
-```ts
-import {
-  NodeRuntime,
-  createNodeDriver,
-  createNodeRuntimeDriverFactory,
-} from "secure-exec";
-
-const runtime = new NodeRuntime({
-  systemDriver: createNodeDriver(),
-  runtimeDriverFactory: createNodeRuntimeDriverFactory(),
-});
-
-const result = await runtime.run<{ message: string }>(
-  "module.exports = { message: 'hello from secure-exec' };"
-);
-
-console.log(result.exports?.message); // "hello from secure-exec"
-```
 
 ## Next steps
 

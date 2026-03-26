@@ -26,7 +26,20 @@ import {
 	generateKeyPairSync,
 	createPrivateKey,
 	createPublicKey,
+	createSecretKey,
+	createDiffieHellman,
+	getDiffieHellman,
+	createECDH,
+	diffieHellman,
+	generateKeySync,
+	generatePrimeSync,
+	publicEncrypt,
+	privateDecrypt,
+	privateEncrypt,
+	publicDecrypt,
 	timingSafeEqual,
+	constants as cryptoConstants,
+	KeyObject,
 	type Cipher,
 	type Decipher,
 } from "node:crypto";
@@ -34,6 +47,8 @@ import {
 	HOST_BRIDGE_GLOBAL_KEYS,
 } from "./bridge-contract.js";
 import {
+	AF_INET,
+	SOCK_STREAM,
 	mkdir,
 	FDTableManager,
 	O_RDONLY,
@@ -89,10 +104,507 @@ export interface CryptoBridgeResult {
 	dispose: () => void;
 }
 
+type SerializedKeyValue =
+	| {
+		kind: "string";
+		value: string;
+	}
+	| {
+		kind: "buffer";
+		value: string;
+	}
+	| {
+		kind: "keyObject";
+		value: SerializedSandboxKeyObject;
+	}
+	| {
+		kind: "object";
+		value: Record<string, unknown>;
+	};
+
+interface SerializedSandboxKeyObject {
+	type: "public" | "private" | "secret";
+	pem?: string;
+	raw?: string;
+	asymmetricKeyType?: string;
+	asymmetricKeyDetails?: Record<string, unknown>;
+	jwk?: Record<string, unknown>;
+}
+
+type SerializedBridgeValue =
+	| null
+	| boolean
+	| number
+	| string
+	| {
+			__type: "buffer";
+			value: string;
+	  }
+	| {
+			__type: "bigint";
+			value: string;
+	  }
+	| {
+			__type: "keyObject";
+			value: SerializedSandboxKeyObject;
+	  }
+	| SerializedBridgeValue[]
+	| {
+			[key: string]: SerializedBridgeValue;
+	  };
+
 /** Stateful cipher/decipher session stored between bridge calls. */
 interface CipherSession {
 	cipher: Cipher | Decipher;
 	algorithm: string;
+}
+
+interface SerializedDispatchError {
+	message: string;
+	name?: string;
+	code?: string;
+	stack?: string;
+}
+
+type DiffieHellmanSession =
+	| ReturnType<typeof createDiffieHellman>
+	| ReturnType<typeof getDiffieHellman>
+	| ReturnType<typeof createECDH>;
+
+function serializeKeyDetails(details: unknown): Record<string, unknown> | undefined {
+	if (!details || typeof details !== "object") {
+		return undefined;
+	}
+
+	return Object.fromEntries(
+		Object.entries(details).map(([key, value]) => [
+			key,
+			typeof value === "bigint"
+				? { __type: "bigint", value: value.toString() }
+				: value,
+		]),
+	);
+}
+
+function serializeKeyValue(value: unknown): SerializedKeyValue {
+	if (Buffer.isBuffer(value)) {
+		return {
+			kind: "buffer",
+			value: value.toString("base64"),
+		};
+	}
+
+	if (typeof value === "string") {
+		return {
+			kind: "string",
+			value,
+		};
+	}
+
+	if (
+		value &&
+		typeof value === "object" &&
+		"type" in value &&
+		((value as { type?: unknown }).type === "public" ||
+			(value as { type?: unknown }).type === "private") &&
+		typeof (value as { export?: unknown }).export === "function"
+	) {
+		return {
+			kind: "keyObject",
+			value: serializeSandboxKeyObject(value as any),
+		};
+	}
+
+	return {
+		kind: "object",
+		value: value as Record<string, unknown>,
+	};
+}
+
+function exportAsPem(keyObject: ReturnType<typeof createPrivateKey> | ReturnType<typeof createPublicKey>): string {
+	return keyObject.type === "private"
+		? (keyObject.export({ type: "pkcs8", format: "pem" }) as string)
+		: (keyObject.export({ type: "spki", format: "pem" }) as string);
+}
+
+function serializeSandboxKeyObject(
+	keyObject: ReturnType<typeof createPrivateKey> | ReturnType<typeof createPublicKey>,
+): SerializedSandboxKeyObject {
+	let jwk: Record<string, unknown> | undefined;
+	try {
+		jwk = keyObject.export({ format: "jwk" }) as Record<string, unknown>;
+	} catch {
+		jwk = undefined;
+	}
+
+	return {
+		type: keyObject.type,
+		pem: exportAsPem(keyObject),
+		asymmetricKeyType: keyObject.asymmetricKeyType ?? undefined,
+		asymmetricKeyDetails: serializeKeyDetails(keyObject.asymmetricKeyDetails),
+		jwk,
+	};
+}
+
+function serializeAnyKeyObject(keyObject: any): SerializedSandboxKeyObject {
+	if (keyObject.type === "secret") {
+		return {
+			type: "secret",
+			raw: Buffer.from(keyObject.export()).toString("base64"),
+		};
+	}
+
+	return serializeSandboxKeyObject(keyObject);
+}
+
+function serializeBridgeValue(value: unknown): SerializedBridgeValue {
+	if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+		return value;
+	}
+
+	if (typeof value === "bigint") {
+		return {
+			__type: "bigint",
+			value: value.toString(),
+		};
+	}
+
+	if (Buffer.isBuffer(value)) {
+		return {
+			__type: "buffer",
+			value: value.toString("base64"),
+		};
+	}
+
+	if (value instanceof ArrayBuffer) {
+		return {
+			__type: "buffer",
+			value: Buffer.from(value).toString("base64"),
+		};
+	}
+
+	if (ArrayBuffer.isView(value)) {
+		return {
+			__type: "buffer",
+			value: Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString("base64"),
+		};
+	}
+
+	if (Array.isArray(value)) {
+		return value.map((entry) => serializeBridgeValue(entry));
+	}
+
+	if (
+		value &&
+		typeof value === "object" &&
+		"type" in value &&
+		(((value as { type?: unknown }).type === "public" ||
+			(value as { type?: unknown }).type === "private" ||
+			(value as { type?: unknown }).type === "secret")) &&
+		typeof (value as { export?: unknown }).export === "function"
+	) {
+		return {
+			__type: "keyObject",
+			value: serializeAnyKeyObject(value as any),
+		};
+	}
+
+	if (value && typeof value === "object") {
+		return Object.fromEntries(
+			Object.entries(value).flatMap(([key, entry]) =>
+				entry === undefined ? [] : [[key, serializeBridgeValue(entry)]],
+			),
+		);
+	}
+
+	return String(value);
+}
+
+function deserializeSandboxKeyObject(serialized: SerializedSandboxKeyObject): any {
+	if (serialized.type === "secret") {
+		return createSecretKey(Buffer.from(serialized.raw || "", "base64"));
+	}
+
+	if (serialized.type === "private") {
+		return createPrivateKey(String(serialized.pem || ""));
+	}
+
+	return createPublicKey(String(serialized.pem || ""));
+}
+
+function deserializeBridgeValue(value: SerializedBridgeValue): unknown {
+	if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+		return value;
+	}
+
+	if (Array.isArray(value)) {
+		return value.map((entry) => deserializeBridgeValue(entry));
+	}
+
+	if ("__type" in value) {
+		if (value.__type === "buffer") {
+			return Buffer.from((value as { value: string }).value, "base64");
+		}
+		if (value.__type === "bigint") {
+			return BigInt((value as { value: string }).value);
+		}
+		if (value.__type === "keyObject") {
+			return deserializeSandboxKeyObject((value as { value: SerializedSandboxKeyObject }).value);
+		}
+	}
+
+	return Object.fromEntries(
+		Object.entries(value).map(([key, entry]) => [key, deserializeBridgeValue(entry)]),
+	);
+}
+
+function parseSerializedOptions(
+	optionsJson: unknown,
+): unknown {
+	const parsed = JSON.parse(String(optionsJson)) as {
+		hasOptions?: boolean;
+		options?: SerializedBridgeValue;
+	};
+	if (!parsed || parsed.hasOptions !== true) {
+		return undefined;
+	}
+	return deserializeBridgeValue(parsed.options ?? null);
+}
+
+function serializeDispatchError(error: unknown): SerializedDispatchError {
+	if (error instanceof Error) {
+		const withCode = error as Error & {
+			code?: unknown;
+		};
+		return {
+			message: error.message,
+			name: error.name,
+			code: typeof withCode.code === "string" ? withCode.code : undefined,
+			stack: error.stack,
+		};
+	}
+
+	return {
+		message: String(error),
+		name: "Error",
+	};
+}
+
+function restoreDispatchArgument(value: unknown): unknown {
+	if (!value || typeof value !== "object") {
+		return value;
+	}
+
+	if (
+		(value as { __secureExecDispatchType?: unknown }).__secureExecDispatchType ===
+		"undefined"
+	) {
+		return undefined;
+	}
+
+	if (Array.isArray(value)) {
+		return value.map((entry) => restoreDispatchArgument(entry));
+	}
+
+	return Object.fromEntries(
+		Object.entries(value).map(([key, entry]) => [key, restoreDispatchArgument(entry)]),
+	);
+}
+
+function normalizeBridgeAlgorithm(algorithm: unknown): string | null {
+	if (algorithm === null || algorithm === undefined || algorithm === "") {
+		return null;
+	}
+
+	return String(algorithm);
+}
+
+interface BridgeCryptoKeyData {
+	type: "public" | "private" | "secret";
+	extractable: boolean;
+	algorithm: Record<string, unknown>;
+	usages: string[];
+	_pem?: string;
+	_jwk?: Record<string, unknown>;
+	_raw?: string;
+	_sourceKeyObjectData?: Record<string, unknown>;
+}
+
+function decodeBridgeBuffer(data: unknown): Buffer {
+	return Buffer.from(String(data), "base64");
+}
+
+function sanitizeJsonValue(value: unknown): unknown {
+	if (typeof value === "bigint") {
+		return Number(value);
+	}
+	if (Array.isArray(value)) {
+		return value.map((entry) => sanitizeJsonValue(entry));
+	}
+	if (!value || typeof value !== "object") {
+		return value;
+	}
+	return Object.fromEntries(
+		Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+			key,
+			sanitizeJsonValue(entry),
+		]),
+	);
+}
+
+function serializeCryptoKeyDataFromKeyObject(
+	keyObject: KeyObject,
+	type: "public" | "private" | "secret",
+	algorithm: Record<string, unknown>,
+	extractable: boolean,
+	usages: string[],
+): BridgeCryptoKeyData {
+	if (type === "secret") {
+		return {
+			type,
+			algorithm,
+			extractable,
+			usages,
+			_raw: keyObject.export().toString("base64"),
+			_sourceKeyObjectData: {
+				type: "secret",
+				raw: keyObject.export().toString("base64"),
+			},
+		};
+	}
+
+	return {
+		type,
+		algorithm,
+		extractable,
+		usages,
+		_pem:
+			type === "private"
+				? (keyObject.export({ type: "pkcs8", format: "pem" }) as string)
+				: (keyObject.export({ type: "spki", format: "pem" }) as string),
+		_sourceKeyObjectData: {
+			type,
+			pem:
+				type === "private"
+					? (keyObject.export({ type: "pkcs8", format: "pem" }) as string)
+					: (keyObject.export({ type: "spki", format: "pem" }) as string),
+			asymmetricKeyType: keyObject.asymmetricKeyType,
+			asymmetricKeyDetails: sanitizeJsonValue(keyObject.asymmetricKeyDetails),
+		},
+	};
+}
+
+function deserializeCryptoKeyObject(key: BridgeCryptoKeyData): KeyObject {
+	if (key.type === "secret") {
+		return createSecretKey(decodeBridgeBuffer(key._raw));
+	}
+
+	return key.type === "private"
+		? createPrivateKey(key._pem ?? "")
+		: createPublicKey(key._pem ?? "");
+}
+
+function normalizeHmacLength(hashName: string, explicitLength?: unknown): number {
+	if (typeof explicitLength === "number") {
+		return explicitLength;
+	}
+
+	switch (hashName) {
+		case "SHA-1":
+		case "SHA-256":
+			return 512;
+		case "SHA-384":
+		case "SHA-512":
+			return 1024;
+		default:
+			return 512;
+	}
+}
+
+function sliceDerivedBits(secret: Buffer, length: unknown): Buffer {
+	if (length === undefined || length === null) {
+		return Buffer.from(secret);
+	}
+
+	const requestedBits = Number(length);
+	const maxBits = secret.byteLength * 8;
+	if (requestedBits > maxBits) {
+		throw new Error("derived bit length is too small");
+	}
+
+	const requestedBytes = Math.ceil(requestedBits / 8);
+	const derived = Buffer.from(secret.subarray(0, requestedBytes));
+	const remainder = requestedBits % 8;
+	if (remainder !== 0 && derived.length > 0) {
+		derived[derived.length - 1] &= 0xff << (8 - remainder);
+	}
+	return derived;
+}
+
+function deriveSecretKeyData(
+	derivedKeyAlgorithm: Record<string, unknown> | string,
+	extractable: boolean,
+	usages: string[],
+	secret: Buffer,
+): BridgeCryptoKeyData {
+	const normalizedAlgorithm =
+		typeof derivedKeyAlgorithm === "string"
+			? { name: derivedKeyAlgorithm }
+			: derivedKeyAlgorithm;
+	const algorithmName = String(normalizedAlgorithm.name ?? "");
+	if (algorithmName === "HMAC") {
+		const hashName =
+			typeof normalizedAlgorithm.hash === "string"
+				? normalizedAlgorithm.hash
+				: String((normalizedAlgorithm.hash as { name?: string } | undefined)?.name ?? "");
+		const lengthBits = normalizeHmacLength(hashName, normalizedAlgorithm.length);
+		const keyBytes = Buffer.from(secret.subarray(0, Math.ceil(lengthBits / 8)));
+		return serializeCryptoKeyDataFromKeyObject(
+			createSecretKey(keyBytes),
+			"secret",
+			{
+				name: "HMAC",
+				hash: { name: hashName },
+				length: lengthBits,
+			},
+			extractable,
+			usages,
+		);
+	}
+
+	const lengthBits = Number(normalizedAlgorithm.length ?? secret.byteLength * 8);
+	const keyBytes = Buffer.from(secret.subarray(0, Math.ceil(lengthBits / 8)));
+	return serializeCryptoKeyDataFromKeyObject(
+		createSecretKey(keyBytes),
+		"secret",
+		{
+			...normalizedAlgorithm,
+			length: lengthBits,
+		},
+		extractable,
+		usages,
+	);
+}
+
+function resolveDerivedKeyLengthBits(
+	derivedKeyAlgorithm: Record<string, unknown> | string,
+	fallbackBits: number,
+): number {
+	const normalizedAlgorithm =
+		typeof derivedKeyAlgorithm === "string"
+			? { name: derivedKeyAlgorithm }
+			: derivedKeyAlgorithm;
+	if (typeof normalizedAlgorithm.length === "number") {
+		return normalizedAlgorithm.length;
+	}
+	if (normalizedAlgorithm.name === "HMAC") {
+		const hashName =
+			typeof normalizedAlgorithm.hash === "string"
+				? normalizedAlgorithm.hash
+				: String((normalizedAlgorithm.hash as { name?: string } | undefined)?.name ?? "");
+		return normalizeHmacLength(hashName);
+	}
+	return fallbackBits;
 }
 
 /**
@@ -110,6 +622,8 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 	// create/update/final bridge calls (needed for ssh2 streaming AES-GCM).
 	const cipherSessions = new Map<number, CipherSession>();
 	let nextCipherSessionId = 1;
+	const diffieHellmanSessions = new Map<number, DiffieHellmanSession>();
+	let nextDiffieHellmanSessionId = 1;
 
 	// Secure randomness — cap matches Web Crypto API spec (65536 bytes).
 	handlers[K.cryptoRandomFill] = (byteLength: unknown) => {
@@ -183,14 +697,29 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 		keyBase64: unknown,
 		ivBase64: unknown,
 		dataBase64: unknown,
+		optionsJson?: unknown,
 	) => {
 		const key = Buffer.from(String(keyBase64), "base64");
-		const iv = Buffer.from(String(ivBase64), "base64");
+		const iv = ivBase64 === null ? null : Buffer.from(String(ivBase64), "base64");
 		const data = Buffer.from(String(dataBase64), "base64");
-		const cipher = createCipheriv(String(algorithm), key, iv) as any;
+		const options = optionsJson ? JSON.parse(String(optionsJson)) : {};
+		const cipher = createCipheriv(String(algorithm), key, iv, (
+			options.authTagLength !== undefined
+				? { authTagLength: options.authTagLength }
+				: undefined
+		) as any) as any;
+		if (options.validateOnly) {
+			return JSON.stringify({ data: "" });
+		}
+		if (options.aad) {
+			cipher.setAAD(Buffer.from(String(options.aad), "base64"), options.aadOptions);
+		}
+		if (options.autoPadding !== undefined) {
+			cipher.setAutoPadding(Boolean(options.autoPadding));
+		}
 		const encrypted = Buffer.concat([cipher.update(data), cipher.final()]);
-		const isGcm = String(algorithm).includes("-gcm");
-		if (isGcm) {
+		const isAead = /-(gcm|ccm)$/i.test(String(algorithm));
+		if (isAead) {
 			return JSON.stringify({
 				data: encrypted.toString("base64"),
 				authTag: cipher.getAuthTag().toString("base64"),
@@ -209,13 +738,26 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 		optionsJson: unknown,
 	) => {
 		const key = Buffer.from(String(keyBase64), "base64");
-		const iv = Buffer.from(String(ivBase64), "base64");
+		const iv = ivBase64 === null ? null : Buffer.from(String(ivBase64), "base64");
 		const data = Buffer.from(String(dataBase64), "base64");
 		const options = JSON.parse(String(optionsJson));
-		const decipher = createDecipheriv(String(algorithm), key, iv) as any;
-		const isGcm = String(algorithm).includes("-gcm");
-		if (isGcm && options.authTag) {
+		const decipher = createDecipheriv(String(algorithm), key, iv, (
+			options.authTagLength !== undefined
+				? { authTagLength: options.authTagLength }
+				: undefined
+		) as any) as any;
+		if (options.validateOnly) {
+			return "";
+		}
+		const isAead = /-(gcm|ccm)$/i.test(String(algorithm));
+		if (isAead && options.authTag) {
 			decipher.setAuthTag(Buffer.from(options.authTag, "base64"));
+		}
+		if (options.aad) {
+			decipher.setAAD(Buffer.from(String(options.aad), "base64"), options.aadOptions);
+		}
+		if (options.autoPadding !== undefined) {
+			decipher.setAutoPadding(Boolean(options.autoPadding));
 		}
 		return Buffer.concat([decipher.update(data), decipher.final()]).toString(
 			"base64",
@@ -233,19 +775,27 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 	) => {
 		const algo = String(algorithm);
 		const key = Buffer.from(String(keyBase64), "base64");
-		const iv = Buffer.from(String(ivBase64), "base64");
+		const iv = ivBase64 === null ? null : Buffer.from(String(ivBase64), "base64");
 		const options = optionsJson ? JSON.parse(String(optionsJson)) : {};
-		const isGcm = algo.includes("-gcm");
+		const isAead = /-(gcm|ccm)$/i.test(algo);
 
 		let instance: Cipher | Decipher;
 		if (String(mode) === "decipher") {
-			const d = createDecipheriv(algo, key, iv) as any;
-			if (isGcm && options.authTag) {
+			const d = createDecipheriv(algo, key, iv, (
+				options.authTagLength !== undefined
+					? { authTagLength: options.authTagLength }
+					: undefined
+			) as any) as any;
+			if (isAead && options.authTag) {
 				d.setAuthTag(Buffer.from(options.authTag, "base64"));
 			}
 			instance = d;
 		} else {
-			instance = createCipheriv(algo, key, iv) as any;
+			instance = createCipheriv(algo, key, iv, (
+				options.authTagLength !== undefined
+					? { authTagLength: options.authTagLength }
+					: undefined
+			) as any) as any;
 		}
 
 		const sessionId = nextCipherSessionId++;
@@ -274,8 +824,8 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 		if (!session) throw new Error(`Cipher session ${id} not found`);
 		cipherSessions.delete(id);
 		const final = session.cipher.final();
-		const isGcm = session.algorithm.includes("-gcm");
-		if (isGcm) {
+		const isAead = /-(gcm|ccm)$/i.test(session.algorithm);
+		if (isAead) {
 			const authTag = (session.cipher as any).getAuthTag?.();
 			return JSON.stringify({
 				data: final.toString("base64"),
@@ -289,11 +839,11 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 	handlers[K.cryptoSign] = (
 		algorithm: unknown,
 		dataBase64: unknown,
-		keyPem: unknown,
+		keyJson: unknown,
 	) => {
 		const data = Buffer.from(String(dataBase64), "base64");
-		const key = createPrivateKey(String(keyPem));
-		const signature = sign(String(algorithm) || null, data, key);
+		const key = deserializeBridgeValue(JSON.parse(String(keyJson)) as SerializedBridgeValue) as any;
+		const signature = sign(normalizeBridgeAlgorithm(algorithm), data, key);
 		return signature.toString("base64");
 	};
 
@@ -301,31 +851,198 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 	handlers[K.cryptoVerify] = (
 		algorithm: unknown,
 		dataBase64: unknown,
-		keyPem: unknown,
+		keyJson: unknown,
 		signatureBase64: unknown,
 	) => {
 		const data = Buffer.from(String(dataBase64), "base64");
-		const key = createPublicKey(String(keyPem));
+		const key = deserializeBridgeValue(JSON.parse(String(keyJson)) as SerializedBridgeValue) as any;
 		const signature = Buffer.from(String(signatureBase64), "base64");
-		return verify(String(algorithm) || null, data, key, signature);
+		return verify(normalizeBridgeAlgorithm(algorithm), data, key, signature);
 	};
 
-	// generateKeyPairSync — host generates key pair, returns PEM strings as JSON.
+	// Asymmetric encrypt/decrypt — use real Node crypto so DER inputs, encrypted
+	// PEM options bags, and sandbox KeyObject handles all follow host semantics.
+	handlers[K.cryptoAsymmetricOp] = (
+		operation: unknown,
+		keyJson: unknown,
+		dataBase64: unknown,
+	) => {
+		const key = deserializeBridgeValue(JSON.parse(String(keyJson)) as SerializedBridgeValue) as any;
+		const data = Buffer.from(String(dataBase64), "base64");
+		switch (String(operation)) {
+			case "publicEncrypt":
+				return publicEncrypt(key, data).toString("base64");
+			case "privateDecrypt":
+				return privateDecrypt(key, data).toString("base64");
+			case "privateEncrypt":
+				return privateEncrypt(key, data).toString("base64");
+			case "publicDecrypt":
+				return publicDecrypt(key, data).toString("base64");
+			default:
+				throw new Error(`Unsupported asymmetric crypto operation: ${String(operation)}`);
+		}
+	};
+
+	// createPublicKey/createPrivateKey — import through host crypto so metadata
+	// like asymmetricKeyType/asymmetricKeyDetails survives reconstruction.
+	handlers[K.cryptoCreateKeyObject] = (
+		operation: unknown,
+		keyJson: unknown,
+	) => {
+		const key = deserializeBridgeValue(JSON.parse(String(keyJson)) as SerializedBridgeValue) as any;
+		switch (String(operation)) {
+			case "createPrivateKey":
+				return JSON.stringify(serializeAnyKeyObject(createPrivateKey(key)));
+			case "createPublicKey":
+				return JSON.stringify(serializeAnyKeyObject(createPublicKey(key)));
+			default:
+				throw new Error(`Unsupported key creation operation: ${String(operation)}`);
+		}
+	};
+
+	// generateKeyPairSync — host generates key pair, preserving requested encodings.
+	// For KeyObject output, serialize PEM + metadata so the isolate can recreate a
+	// Node-compatible KeyObject surface.
 	handlers[K.cryptoGenerateKeyPairSync] = (
 		type: unknown,
 		optionsJson: unknown,
 	) => {
-		const options = JSON.parse(String(optionsJson));
-		const genOptions = {
-			...options,
-			publicKeyEncoding: { type: "spki" as const, format: "pem" as const },
-			privateKeyEncoding: { type: "pkcs8" as const, format: "pem" as const },
-		};
-		const { publicKey, privateKey } = generateKeyPairSync(
-			type as any,
-			genOptions as any,
+		const options = parseSerializedOptions(optionsJson);
+		const encodingOptions = options as
+			| {
+					publicKeyEncoding?: unknown;
+					privateKeyEncoding?: unknown;
+			  }
+			| undefined;
+		const hasExplicitEncoding =
+			encodingOptions &&
+			(encodingOptions.publicKeyEncoding || encodingOptions.privateKeyEncoding);
+		const { publicKey, privateKey } = generateKeyPairSync(type as any, options as any);
+
+		if (hasExplicitEncoding) {
+			return JSON.stringify({
+				publicKey: serializeKeyValue(publicKey as unknown),
+				privateKey: serializeKeyValue(privateKey as unknown),
+			});
+		}
+
+		return JSON.stringify({
+			publicKey: serializeSandboxKeyObject(publicKey as any),
+			privateKey: serializeSandboxKeyObject(privateKey as any),
+		});
+	};
+
+	// generateKeySync — host generates symmetric KeyObject values with native
+	// validation so length/error semantics match Node.
+	handlers[K.cryptoGenerateKeySync] = (
+		type: unknown,
+		optionsJson: unknown,
+	) => {
+		const options = parseSerializedOptions(optionsJson);
+		return JSON.stringify(
+			serializeAnyKeyObject(generateKeySync(type as any, options as any)),
 		);
-		return JSON.stringify({ publicKey, privateKey });
+	};
+
+	// generatePrimeSync — host generates prime material so bigint/add/rem options
+	// follow Node semantics instead of polyfill approximations.
+	handlers[K.cryptoGeneratePrimeSync] = (
+		size: unknown,
+		optionsJson: unknown,
+	) => {
+		const options = parseSerializedOptions(optionsJson);
+		const prime =
+			options === undefined
+				? generatePrimeSync(size as any)
+				: generatePrimeSync(size as any, options as any);
+		return JSON.stringify(serializeBridgeValue(prime));
+	};
+
+	// Diffie-Hellman/ECDH — keep native host objects alive by session id so
+	// sandbox calls preserve Node's return values, validation, and stateful key material.
+	handlers[K.cryptoDiffieHellman] = (optionsJson: unknown) => {
+		const options = deserializeBridgeValue(
+			JSON.parse(String(optionsJson)) as SerializedBridgeValue,
+		) as Parameters<typeof diffieHellman>[0];
+		return JSON.stringify(
+			serializeBridgeValue(diffieHellman(options)),
+		);
+	};
+
+	handlers[K.cryptoDiffieHellmanGroup] = (name: unknown) => {
+		const group = getDiffieHellman(String(name));
+		return JSON.stringify({
+			prime: serializeBridgeValue(group.getPrime()),
+			generator: serializeBridgeValue(group.getGenerator()),
+		});
+	};
+
+	handlers[K.cryptoDiffieHellmanSessionCreate] = (requestJson: unknown) => {
+		const request = JSON.parse(String(requestJson)) as {
+			type: "dh" | "group" | "ecdh";
+			name?: string;
+			args?: SerializedBridgeValue[];
+		};
+		const args = (request.args ?? []).map((value) =>
+			deserializeBridgeValue(value),
+		);
+
+		let session: DiffieHellmanSession;
+		switch (request.type) {
+			case "dh":
+				session = createDiffieHellman(...(args as Parameters<typeof createDiffieHellman>));
+				break;
+			case "group":
+				session = getDiffieHellman(String(request.name));
+				break;
+			case "ecdh":
+				session = createECDH(String(request.name));
+				break;
+			default:
+				throw new Error(`Unsupported Diffie-Hellman session type: ${String((request as any).type)}`);
+		}
+
+		const sessionId = nextDiffieHellmanSessionId++;
+		diffieHellmanSessions.set(sessionId, session);
+		return sessionId;
+	};
+
+	handlers[K.cryptoDiffieHellmanSessionCall] = (
+		sessionId: unknown,
+		requestJson: unknown,
+	) => {
+		const session = diffieHellmanSessions.get(Number(sessionId));
+		if (!session) {
+			throw new Error(`Diffie-Hellman session ${String(sessionId)} not found`);
+		}
+
+		const request = JSON.parse(String(requestJson)) as {
+			method: string;
+			args?: SerializedBridgeValue[];
+		};
+		const args = (request.args ?? []).map((value) =>
+			deserializeBridgeValue(value),
+		);
+
+		const sessionRecord = session as unknown as Record<string, unknown>;
+
+		if (request.method === "verifyError") {
+			return JSON.stringify({
+				result: typeof sessionRecord.verifyError === "number" ? sessionRecord.verifyError : undefined,
+				hasResult: typeof sessionRecord.verifyError === "number",
+			});
+		}
+
+		const method = sessionRecord[request.method];
+		if (typeof method !== "function") {
+			throw new Error(`Unsupported Diffie-Hellman method: ${request.method}`);
+		}
+
+		const result = (method as (...callArgs: unknown[]) => unknown).apply(session, args);
+		return JSON.stringify({
+			result: result === undefined ? null : serializeBridgeValue(result),
+			hasResult: result !== undefined,
+		});
 	};
 
 	// crypto.subtle — single dispatcher for all Web Crypto API operations.
@@ -349,18 +1066,19 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 				if (
 					algoName === "AES-GCM" ||
 					algoName === "AES-CBC" ||
-					algoName === "AES-CTR"
+					algoName === "AES-CTR" ||
+					algoName === "AES-KW"
 				) {
 					const keyBytes = Buffer.allocUnsafe(req.algorithm.length / 8);
 					randomFillSync(keyBytes);
 					return JSON.stringify({
-						key: {
-							type: "secret",
-							algorithm: req.algorithm,
-							extractable: req.extractable,
-							usages: req.usages,
-							_raw: keyBytes.toString("base64"),
-						},
+						key: serializeCryptoKeyDataFromKeyObject(
+							createSecretKey(keyBytes),
+							"secret",
+							req.algorithm,
+							req.extractable,
+							req.usages,
+						),
 					});
 				}
 				if (algoName === "HMAC") {
@@ -368,25 +1086,21 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 						typeof req.algorithm.hash === "string"
 							? req.algorithm.hash
 							: req.algorithm.hash.name;
-					const hashLens: Record<string, number> = {
-						"SHA-1": 20,
-						"SHA-256": 32,
-						"SHA-384": 48,
-						"SHA-512": 64,
-					};
-					const len = req.algorithm.length
-						? req.algorithm.length / 8
-						: hashLens[hashName] || 32;
+					const len = normalizeHmacLength(hashName, req.algorithm.length) / 8;
 					const keyBytes = Buffer.allocUnsafe(len);
 					randomFillSync(keyBytes);
 					return JSON.stringify({
-						key: {
-							type: "secret",
-							algorithm: req.algorithm,
-							extractable: req.extractable,
-							usages: req.usages,
-							_raw: keyBytes.toString("base64"),
-						},
+						key: serializeCryptoKeyDataFromKeyObject(
+							createSecretKey(keyBytes),
+							"secret",
+							{
+								...req.algorithm,
+								hash: { name: hashName },
+								length: len * 8,
+							},
+							req.extractable,
+							req.usages,
+						),
 					});
 				}
 				if (
@@ -417,25 +1131,93 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 							format: "pem" as const,
 						},
 					});
+					const publicKeyObject = createPublicKey(publicKey);
+					const privateKeyObject = createPrivateKey(privateKey);
 					return JSON.stringify({
-						publicKey: {
-							type: "public",
-							algorithm: req.algorithm,
-							extractable: req.extractable,
-							usages: req.usages.filter((u: string) =>
+						publicKey: serializeCryptoKeyDataFromKeyObject(
+							publicKeyObject,
+							"public",
+							req.algorithm,
+							req.extractable,
+							req.usages.filter((u: string) =>
 								["verify", "encrypt", "wrapKey"].includes(u),
 							),
-							_pem: publicKey,
-						},
-						privateKey: {
-							type: "private",
-							algorithm: req.algorithm,
-							extractable: req.extractable,
-							usages: req.usages.filter((u: string) =>
+						),
+						privateKey: serializeCryptoKeyDataFromKeyObject(
+							privateKeyObject,
+							"private",
+							req.algorithm,
+							req.extractable,
+							req.usages.filter((u: string) =>
 								["sign", "decrypt", "unwrapKey"].includes(u),
 							),
-							_pem: privateKey,
-						},
+						),
+					});
+				}
+				if (algoName === "ECDSA" || algoName === "ECDH") {
+					const { publicKey, privateKey } = generateKeyPairSync("ec", {
+						namedCurve: String(req.algorithm.namedCurve),
+						publicKeyEncoding: { type: "spki", format: "pem" },
+						privateKeyEncoding: { type: "pkcs8", format: "pem" },
+					});
+					return JSON.stringify({
+						publicKey: serializeCryptoKeyDataFromKeyObject(
+							createPublicKey(publicKey),
+							"public",
+							{ ...req.algorithm, name: algoName },
+							req.extractable,
+							req.usages.filter((u: string) =>
+								algoName === "ECDSA"
+									? ["verify"].includes(u)
+									: ["deriveBits", "deriveKey"].includes(u),
+							),
+						),
+						privateKey: serializeCryptoKeyDataFromKeyObject(
+							createPrivateKey(privateKey),
+							"private",
+							{ ...req.algorithm, name: algoName },
+							req.extractable,
+							req.usages.filter((u: string) =>
+								algoName === "ECDSA"
+									? ["sign"].includes(u)
+									: ["deriveBits", "deriveKey"].includes(u),
+							),
+						),
+					});
+				}
+				if (["Ed25519", "Ed448", "X25519", "X448"].includes(algoName)) {
+					const keyPair =
+						algoName === "Ed25519"
+							? generateKeyPairSync("ed25519")
+							: algoName === "Ed448"
+								? generateKeyPairSync("ed448")
+								: algoName === "X25519"
+									? generateKeyPairSync("x25519")
+									: generateKeyPairSync("x448");
+					const { publicKey, privateKey } = keyPair;
+					return JSON.stringify({
+						publicKey: serializeCryptoKeyDataFromKeyObject(
+							publicKey,
+							"public",
+							{ name: algoName },
+							req.extractable,
+							req.usages.filter((u: string) =>
+								algoName.startsWith("Ed")
+									? ["verify"].includes(u)
+									: ["deriveBits", "deriveKey"].includes(u),
+							),
+						),
+						privateKey: serializeCryptoKeyDataFromKeyObject(
+							privateKey,
+							"private",
+							{ name: algoName },
+							req.extractable,
+							req.usages.filter((u: string) =>
+								algoName.startsWith("Ed")
+									? ["sign"].includes(u)
+									: ["deriveBits", "deriveKey"].includes(u),
+							),
+						),
 					});
 				}
 				throw new Error(`Unsupported key algorithm: ${algoName}`);
@@ -444,13 +1226,22 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 				const { format, keyData, algorithm, extractable, usages } = req;
 				if (format === "raw") {
 					return JSON.stringify({
-						key: {
-							type: "secret",
-							algorithm,
+						key: serializeCryptoKeyDataFromKeyObject(
+							createSecretKey(Buffer.from(keyData, "base64")),
+							"secret",
+							algorithm.name === "HMAC" && !algorithm.length
+								? {
+										...algorithm,
+										hash:
+											typeof algorithm.hash === "string"
+												? { name: algorithm.hash }
+												: algorithm.hash,
+										length: Buffer.from(keyData, "base64").byteLength * 8,
+								  }
+								: algorithm,
 							extractable,
 							usages,
-							_raw: keyData,
-						},
+						),
 					});
 				}
 				if (format === "jwk") {
@@ -459,13 +1250,13 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 					if (jwk.kty === "oct") {
 						const raw = Buffer.from(jwk.k, "base64url");
 						return JSON.stringify({
-							key: {
-								type: "secret",
+							key: serializeCryptoKeyDataFromKeyObject(
+								createSecretKey(raw),
+								"secret",
 								algorithm,
 								extractable,
 								usages,
-								_raw: raw.toString("base64"),
-							},
+							),
 						});
 					}
 					if (jwk.d) {
@@ -475,13 +1266,25 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 							format: "pem",
 						}) as string;
 						return JSON.stringify({
-							key: { type: "private", algorithm, extractable, usages, _pem: pem },
+							key: serializeCryptoKeyDataFromKeyObject(
+								createPrivateKey(pem),
+								"private",
+								algorithm,
+								extractable,
+								usages,
+							),
 						});
 					}
 					const keyObj = createPublicKey({ key: jwk, format: "jwk" });
 					const pem = keyObj.export({ type: "spki", format: "pem" }) as string;
 					return JSON.stringify({
-						key: { type: "public", algorithm, extractable, usages, _pem: pem },
+						key: serializeCryptoKeyDataFromKeyObject(
+							createPublicKey(pem),
+							"public",
+							algorithm,
+							extractable,
+							usages,
+						),
 					});
 				}
 				if (format === "pkcs8") {
@@ -496,7 +1299,13 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 						format: "pem",
 					}) as string;
 					return JSON.stringify({
-						key: { type: "private", algorithm, extractable, usages, _pem: pem },
+						key: serializeCryptoKeyDataFromKeyObject(
+							createPrivateKey(pem),
+							"private",
+							algorithm,
+							extractable,
+							usages,
+						),
 					});
 				}
 				if (format === "spki") {
@@ -508,7 +1317,13 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 					});
 					const pem = keyObj.export({ type: "spki", format: "pem" }) as string;
 					return JSON.stringify({
-						key: { type: "public", algorithm, extractable, usages, _pem: pem },
+						key: serializeCryptoKeyDataFromKeyObject(
+							createPublicKey(pem),
+							"public",
+							algorithm,
+							extractable,
+							usages,
+						),
 					});
 				}
 				throw new Error(`Unsupported import format: ${format}`);
@@ -655,12 +1470,12 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 				throw new Error(`Unsupported decrypt algorithm: ${algoName}`);
 			}
 			case "sign": {
-				const { key, data } = req;
+				const { key, data, algorithm } = req;
 				const dataBytes = Buffer.from(data, "base64");
 				const algoName = key.algorithm.name;
 				if (algoName === "HMAC") {
 					const rawKey = Buffer.from(key._raw, "base64");
-					const hashAlgo = normalizeHash(key.algorithm.hash);
+					const hashAlgo = normalizeHash(algorithm.hash ?? key.algorithm.hash);
 					return JSON.stringify({
 						data: createHmac(hashAlgo, rawKey)
 							.update(dataBytes)
@@ -674,16 +1489,44 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 						data: sign(hashAlgo, dataBytes, pkey).toString("base64"),
 					});
 				}
+				if (algoName === "RSA-PSS") {
+					const hashAlgo = normalizeHash(key.algorithm.hash);
+					return JSON.stringify({
+						data: sign(hashAlgo, dataBytes, {
+							key: createPrivateKey(key._pem),
+							padding: cryptoConstants.RSA_PKCS1_PSS_PADDING,
+							saltLength: algorithm.saltLength,
+						}).toString("base64"),
+					});
+				}
+				if (algoName === "ECDSA") {
+					const hashAlgo = normalizeHash(algorithm.hash ?? key.algorithm.hash);
+					return JSON.stringify({
+						data: sign(hashAlgo, dataBytes, createPrivateKey(key._pem)).toString("base64"),
+					});
+				}
+				if (algoName === "Ed25519" || algoName === "Ed448") {
+					if (
+						algoName === "Ed448" &&
+						algorithm.context &&
+						Buffer.from(algorithm.context, "base64").byteLength > 0
+					) {
+						throw new Error("Non zero-length context is not yet supported");
+					}
+					return JSON.stringify({
+						data: sign(null, dataBytes, createPrivateKey(key._pem)).toString("base64"),
+					});
+				}
 				throw new Error(`Unsupported sign algorithm: ${algoName}`);
 			}
 			case "verify": {
-				const { key, signature, data } = req;
+				const { key, signature, data, algorithm } = req;
 				const dataBytes = Buffer.from(data, "base64");
 				const sigBytes = Buffer.from(signature, "base64");
 				const algoName = key.algorithm.name;
 				if (algoName === "HMAC") {
 					const rawKey = Buffer.from(key._raw, "base64");
-					const hashAlgo = normalizeHash(key.algorithm.hash);
+					const hashAlgo = normalizeHash(algorithm.hash ?? key.algorithm.hash);
 					const expected = createHmac(hashAlgo, rawKey)
 						.update(dataBytes)
 						.digest();
@@ -700,14 +1543,42 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 						result: verify(hashAlgo, dataBytes, pkey, sigBytes),
 					});
 				}
+				if (algoName === "RSA-PSS") {
+					const hashAlgo = normalizeHash(key.algorithm.hash);
+					return JSON.stringify({
+						result: verify(hashAlgo, dataBytes, {
+							key: createPublicKey(key._pem),
+							padding: cryptoConstants.RSA_PKCS1_PSS_PADDING,
+							saltLength: algorithm.saltLength,
+						}, sigBytes),
+					});
+				}
+				if (algoName === "ECDSA") {
+					const hashAlgo = normalizeHash(algorithm.hash ?? key.algorithm.hash);
+					return JSON.stringify({
+						result: verify(hashAlgo, dataBytes, createPublicKey(key._pem), sigBytes),
+					});
+				}
+				if (algoName === "Ed25519" || algoName === "Ed448") {
+					if (
+						algoName === "Ed448" &&
+						algorithm.context &&
+						Buffer.from(algorithm.context, "base64").byteLength > 0
+					) {
+						throw new Error("Non zero-length context is not yet supported");
+					}
+					return JSON.stringify({
+						result: verify(null, dataBytes, createPublicKey(key._pem), sigBytes),
+					});
+				}
 				throw new Error(`Unsupported verify algorithm: ${algoName}`);
 			}
 			case "deriveBits": {
 				const { algorithm, baseKey, length } = req;
 				const algoName = algorithm.name;
-				const bitLength = length;
-				const byteLength = bitLength / 8;
 				if (algoName === "PBKDF2") {
+					const bitLength = Number(length);
+					const byteLength = bitLength / 8;
 					const password = Buffer.from(baseKey._raw, "base64");
 					const salt = Buffer.from(algorithm.salt, "base64");
 					const hash = normalizeHash(algorithm.hash);
@@ -721,6 +1592,8 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 					return JSON.stringify({ data: derived.toString("base64") });
 				}
 				if (algoName === "HKDF") {
+					const bitLength = Number(length);
+					const byteLength = bitLength / 8;
 					const ikm = Buffer.from(baseKey._raw, "base64");
 					const salt = Buffer.from(algorithm.salt, "base64");
 					const info = Buffer.from(algorithm.info, "base64");
@@ -729,15 +1602,27 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 						hkdfSync(hash, ikm, salt, info, byteLength),
 					);
 					return JSON.stringify({ data: derived.toString("base64") });
+				}
+				if (algoName === "ECDH" || algoName === "X25519" || algoName === "X448") {
+					const secret = diffieHellman({
+						privateKey: deserializeCryptoKeyObject(baseKey),
+						publicKey: deserializeCryptoKeyObject(algorithm.public),
+					});
+					return JSON.stringify({
+						data: sliceDerivedBits(secret, length).toString("base64"),
+					});
 				}
 				throw new Error(`Unsupported deriveBits algorithm: ${algoName}`);
 			}
 			case "deriveKey": {
 				const { algorithm, baseKey, derivedKeyAlgorithm, extractable, usages } = req;
 				const algoName = algorithm.name;
-				const keyLengthBits = derivedKeyAlgorithm.length;
-				const byteLength = keyLengthBits / 8;
 				if (algoName === "PBKDF2") {
+					const keyLengthBits = resolveDerivedKeyLengthBits(
+						derivedKeyAlgorithm,
+						Buffer.from(baseKey._raw, "base64").byteLength * 8,
+					);
+					const byteLength = keyLengthBits / 8;
 					const password = Buffer.from(baseKey._raw, "base64");
 					const salt = Buffer.from(algorithm.salt, "base64");
 					const hash = normalizeHash(algorithm.hash);
@@ -748,17 +1633,14 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 						byteLength,
 						hash,
 					);
-					return JSON.stringify({
-						key: {
-							type: "secret",
-							algorithm: derivedKeyAlgorithm,
-							extractable,
-							usages,
-							_raw: derived.toString("base64"),
-						},
-					});
+					return JSON.stringify({ key: deriveSecretKeyData(derivedKeyAlgorithm, extractable, usages, derived) });
 				}
 				if (algoName === "HKDF") {
+					const keyLengthBits = resolveDerivedKeyLengthBits(
+						derivedKeyAlgorithm,
+						Buffer.from(baseKey._raw, "base64").byteLength * 8,
+					);
+					const byteLength = keyLengthBits / 8;
 					const ikm = Buffer.from(baseKey._raw, "base64");
 					const salt = Buffer.from(algorithm.salt, "base64");
 					const info = Buffer.from(algorithm.info, "base64");
@@ -766,17 +1648,184 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 					const derived = Buffer.from(
 						hkdfSync(hash, ikm, salt, info, byteLength),
 					);
+					return JSON.stringify({ key: deriveSecretKeyData(derivedKeyAlgorithm, extractable, usages, derived) });
+				}
+				if (algoName === "ECDH" || algoName === "X25519" || algoName === "X448") {
+					const secret = diffieHellman({
+						privateKey: deserializeCryptoKeyObject(baseKey),
+						publicKey: deserializeCryptoKeyObject(algorithm.public),
+					});
 					return JSON.stringify({
-						key: {
-							type: "secret",
-							algorithm: derivedKeyAlgorithm,
-							extractable,
-							usages,
-							_raw: derived.toString("base64"),
-						},
+						key: deriveSecretKeyData(derivedKeyAlgorithm, extractable, usages, secret),
 					});
 				}
 				throw new Error(`Unsupported deriveKey algorithm: ${algoName}`);
+			}
+			case "wrapKey": {
+				const { format, key, wrappingKey, wrapAlgorithm } = req;
+				const exported = JSON.parse(
+					handlers[K.cryptoSubtle](
+						JSON.stringify({
+							op: "exportKey",
+							format,
+							key,
+						}),
+					) as string,
+				) as { data?: string; jwk?: JsonWebKey };
+				const keyData =
+					format === "jwk"
+						? Buffer.from(JSON.stringify(exported.jwk), "utf8")
+						: decodeBridgeBuffer(exported.data);
+				if (wrapAlgorithm.name === "AES-KW") {
+					const wrappingBytes = decodeBridgeBuffer(wrappingKey._raw);
+					const cipherName = `id-aes${wrappingBytes.byteLength * 8}-wrap`;
+					const cipher = createCipheriv(
+						cipherName as never,
+						wrappingBytes,
+						Buffer.alloc(8, 0xa6),
+					);
+					return JSON.stringify({
+						data: Buffer.concat([cipher.update(keyData), cipher.final()]).toString("base64"),
+					});
+				}
+				if (wrapAlgorithm.name === "RSA-OAEP") {
+					return JSON.stringify({
+						data: publicEncrypt(
+							{
+								key: createPublicKey(wrappingKey._pem),
+								oaepHash: normalizeHash(wrappingKey.algorithm.hash),
+								oaepLabel: wrapAlgorithm.label
+									? decodeBridgeBuffer(wrapAlgorithm.label)
+									: undefined,
+							},
+							keyData,
+						).toString("base64"),
+					});
+				}
+				if (
+					wrapAlgorithm.name === "AES-CTR" ||
+					wrapAlgorithm.name === "AES-CBC" ||
+					wrapAlgorithm.name === "AES-GCM"
+				) {
+					const wrappingBytes = decodeBridgeBuffer(wrappingKey._raw);
+					const algorithmName =
+						wrapAlgorithm.name === "AES-CTR"
+							? `aes-${wrappingBytes.byteLength * 8}-ctr`
+							: wrapAlgorithm.name === "AES-CBC"
+								? `aes-${wrappingBytes.byteLength * 8}-cbc`
+								: `aes-${wrappingBytes.byteLength * 8}-gcm`;
+					const iv =
+						wrapAlgorithm.name === "AES-CTR"
+							? decodeBridgeBuffer(wrapAlgorithm.counter)
+							: decodeBridgeBuffer(wrapAlgorithm.iv);
+					const cipher = createCipheriv(
+						algorithmName as never,
+						wrappingBytes,
+						iv,
+						wrapAlgorithm.name === "AES-GCM"
+							? ({ authTagLength: (wrapAlgorithm.tagLength || 128) / 8 } as never)
+							: undefined,
+					) as Cipher & { setAAD?: (aad: Buffer) => void; getAuthTag?: () => Buffer };
+					if (wrapAlgorithm.name === "AES-GCM" && wrapAlgorithm.additionalData) {
+						cipher.setAAD?.(decodeBridgeBuffer(wrapAlgorithm.additionalData));
+					}
+					const encrypted = Buffer.concat([cipher.update(keyData), cipher.final()]);
+					const payload =
+						wrapAlgorithm.name === "AES-GCM"
+							? Buffer.concat([encrypted, cipher.getAuthTag?.() ?? Buffer.alloc(0)])
+							: encrypted;
+					return JSON.stringify({ data: payload.toString("base64") });
+				}
+				throw new Error(`Unsupported wrap algorithm: ${wrapAlgorithm.name}`);
+			}
+			case "unwrapKey": {
+				const {
+					format,
+					wrappedKey,
+					unwrappingKey,
+					unwrapAlgorithm,
+					unwrappedKeyAlgorithm,
+					extractable,
+					usages,
+				} = req;
+				let unwrapped: Buffer;
+				if (unwrapAlgorithm.name === "AES-KW") {
+					const unwrappingBytes = decodeBridgeBuffer(unwrappingKey._raw);
+					const cipherName = `id-aes${unwrappingBytes.byteLength * 8}-wrap`;
+					const decipher = createDecipheriv(
+						cipherName as never,
+						unwrappingBytes,
+						Buffer.alloc(8, 0xa6),
+					);
+					unwrapped = Buffer.concat([
+						decipher.update(decodeBridgeBuffer(wrappedKey)),
+						decipher.final(),
+					]);
+				} else if (unwrapAlgorithm.name === "RSA-OAEP") {
+					unwrapped = privateDecrypt(
+						{
+							key: createPrivateKey(unwrappingKey._pem),
+							oaepHash: normalizeHash(unwrappingKey.algorithm.hash),
+							oaepLabel: unwrapAlgorithm.label
+								? decodeBridgeBuffer(unwrapAlgorithm.label)
+								: undefined,
+						},
+						decodeBridgeBuffer(wrappedKey),
+					);
+				} else if (
+					unwrapAlgorithm.name === "AES-CTR" ||
+					unwrapAlgorithm.name === "AES-CBC" ||
+					unwrapAlgorithm.name === "AES-GCM"
+				) {
+					const unwrappingBytes = decodeBridgeBuffer(unwrappingKey._raw);
+					const algorithmName =
+						unwrapAlgorithm.name === "AES-CTR"
+							? `aes-${unwrappingBytes.byteLength * 8}-ctr`
+							: unwrapAlgorithm.name === "AES-CBC"
+								? `aes-${unwrappingBytes.byteLength * 8}-cbc`
+								: `aes-${unwrappingBytes.byteLength * 8}-gcm`;
+					const iv =
+						unwrapAlgorithm.name === "AES-CTR"
+							? decodeBridgeBuffer(unwrapAlgorithm.counter)
+							: decodeBridgeBuffer(unwrapAlgorithm.iv);
+					const wrappedBytes = decodeBridgeBuffer(wrappedKey);
+					const decipher = createDecipheriv(
+						algorithmName as never,
+						unwrappingBytes,
+						iv,
+						unwrapAlgorithm.name === "AES-GCM"
+							? ({ authTagLength: (unwrapAlgorithm.tagLength || 128) / 8 } as never)
+							: undefined,
+					) as Decipher & {
+						setAAD?: (aad: Buffer) => void;
+						setAuthTag?: (tag: Buffer) => void;
+					};
+					let ciphertext = wrappedBytes;
+					if (unwrapAlgorithm.name === "AES-GCM") {
+						const tagLength = (unwrapAlgorithm.tagLength || 128) / 8;
+						ciphertext = wrappedBytes.subarray(0, wrappedBytes.byteLength - tagLength);
+						decipher.setAuthTag?.(wrappedBytes.subarray(wrappedBytes.byteLength - tagLength));
+						if (unwrapAlgorithm.additionalData) {
+							decipher.setAAD?.(decodeBridgeBuffer(unwrapAlgorithm.additionalData));
+						}
+					}
+					unwrapped = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+				} else {
+					throw new Error(`Unsupported unwrap algorithm: ${unwrapAlgorithm.name}`);
+				}
+				return handlers[K.cryptoSubtle](
+					JSON.stringify({
+						op: "importKey",
+						format,
+						keyData:
+							format === "jwk"
+								? JSON.parse(unwrapped.toString("utf8"))
+								: unwrapped.toString("base64"),
+						algorithm: unwrappedKeyAlgorithm,
+						extractable,
+						usages,
+					}),
+				);
 			}
 			default:
 				throw new Error(`Unsupported subtle operation: ${req.op}`);
@@ -785,6 +1834,7 @@ export function buildCryptoBridgeHandlers(): CryptoBridgeResult {
 
 	const dispose = () => {
 		cipherSessions.clear();
+		diffieHellmanSessions.clear();
 	};
 
 	return { handlers, dispose };
@@ -833,9 +1883,6 @@ function buildKernelSocketBridgeHandlers(
 	socketTable: import("@secure-exec/core").SocketTable,
 	pid: number,
 ): NetSocketBridgeResult {
-	const {
-		AF_INET, SOCK_STREAM,
-	} = require("@secure-exec/core") as typeof import("@secure-exec/core");
 	const handlers: BridgeHandlers = {};
 	const K = HOST_BRIDGE_GLOBAL_KEYS;
 
@@ -1411,11 +2458,11 @@ export function buildModuleLoadingBridgeHandlers(
 			const handler = dispatchHandlers[method];
 			if (!handler) return JSON.stringify({ __bd_error: `No handler: ${method}` });
 			try {
-				const args = JSON.parse(argsJson);
+				const args = restoreDispatchArgument(JSON.parse(argsJson));
 				const result = await handler(...(Array.isArray(args) ? args : [args]));
 				return JSON.stringify({ __bd_result: result });
 			} catch (err) {
-				return JSON.stringify({ __bd_error: err instanceof Error ? err.message : String(err) });
+				return JSON.stringify({ __bd_error: serializeDispatchError(err) });
 			}
 		}
 
@@ -2317,10 +3364,6 @@ export function buildNetworkBridgeHandlers(deps: NetworkBridgeDeps): NetworkBrid
 
 		return (async () => {
 			try {
-				const {
-					AF_INET, SOCK_STREAM,
-				} = require("@secure-exec/core") as typeof import("@secure-exec/core");
-
 				const host = normalizeLoopbackHostname(options.hostname);
 				debugHttpBridge("listen start", options.serverId, host, options.port ?? 0);
 				const listenSocketId = socketTable.create(AF_INET, SOCK_STREAM, 0, pid);

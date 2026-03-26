@@ -1,5 +1,133 @@
 # Architecture Overview
 
+## Architectural Model: Inverted VM
+
+Traditional virtual machines (Firecracker, QEMU) place the OS **inside** the VM — a hypervisor
+virtualizes hardware, and a guest kernel (Linux) runs on top:
+
+```
+Traditional:  VM contains OS
+
+  ┌────────────────────┐
+  │  Hypervisor / VM   │  (Firecracker, QEMU, KVM)
+  │                    │
+  │  ┌──────────────┐  │
+  │  │   Guest OS   │  │  (Linux kernel)
+  │  │              │  │
+  │  │  ┌────────┐  │  │
+  │  │  │  Apps  │  │  │  (ELF binaries)
+  │  │  └────────┘  │  │
+  │  └──────────────┘  │
+  └────────────────────┘
+```
+
+Secure Exec inverts this: the OS is the **outer** layer, and execution engines (V8, WASM) are
+plugged **into** it. The kernel runs in the host process and mediates all I/O. There is no
+hypervisor — the isolation boundary is the V8 isolate and WASM sandbox, not hardware virtualization:
+
+```
+Secure Exec:  OS contains VMs
+
+  ┌──────────────────────────────────────────────┐
+  │  Virtual OS  (packages/core/kernel/)          │
+  │  VFS, process table, FD table,                │
+  │  sockets, pipes, signals, permissions         │
+  │                                               │
+  │  ┌─────────────────┐  ┌───────────────────┐   │
+  │  │   V8 Isolate    │  │   WASM Runtime    │   │
+  │  │   (Node.js)     │  │   (V8 WebAssembly)│   │
+  │  │                 │  │                   │   │
+  │  │   JS scripts    │  │   POSIX binaries  │   │
+  │  └─────────────────┘  └───────────────────┘   │
+  └──────────────────────────────────────────────┘
+```
+
+### Comparison: Containers vs MicroVMs vs Secure Exec
+
+```
+Container (Docker)
+
+  ┌───────────────────────────────────────────┐
+  │  Host Linux Kernel (shared)               │
+  │                                           │
+  │  ┌─────────────────┐  ┌────────────────┐  │
+  │  │ Namespace +     │  │ Namespace +    │  │
+  │  │ cgroup jail     │  │ cgroup jail    │  │
+  │  │                 │  │                │  │
+  │  │  ┌───────────┐  │  │  ┌──────────┐  │  │
+  │  │  │   App 1   │  │  │  │  App 2   │  │  │
+  │  │  │  ELF bins  │  │  │  │ ELF bins │  │  │
+  │  │  └───────────┘  │  │  └──────────┘  │  │
+  │  └─────────────────┘  └────────────────┘  │
+  └───────────────────────────────────────────┘
+  Kernel is shared. Kernel vuln = all containers escape.
+
+
+MicroVM (Firecracker)
+
+  ┌───────────────────────────────────────────┐
+  │  Host Linux Kernel                        │
+  │                                           │
+  │  ┌─────────────────┐  ┌────────────────┐  │
+  │  │ KVM / VT-x      │  │ KVM / VT-x     │  │
+  │  │ (hypervisor)     │  │ (hypervisor)   │  │
+  │  │                  │  │                │  │
+  │  │  ┌────────────┐  │  │  ┌──────────┐  │  │
+  │  │  │ Guest      │  │  │  │ Guest    │  │  │
+  │  │  │ Linux      │  │  │  │ Linux    │  │  │
+  │  │  │ Kernel     │  │  │  │ Kernel   │  │  │
+  │  │  │            │  │  │  │          │  │  │
+  │  │  │  ┌──────┐  │  │  │  │ ┌──────┐ │  │  │
+  │  │  │  │ App  │  │  │  │  │ │ App  │ │  │  │
+  │  │  │  └──────┘  │  │  │  │ └──────┘ │  │  │
+  │  │  └────────────┘  │  │  └──────────┘  │  │
+  │  └─────────────────┘  └────────────────┘  │
+  └───────────────────────────────────────────┘
+  Each VM has its own kernel. Hypervisor vuln = escape.
+
+
+Secure Exec
+
+  ┌───────────────────────────────────────────┐
+  │  Host Process (Node.js / Browser)         │
+  │                                           │
+  │  ┌─────────────────┐  ┌────────────────┐  │
+  │  │ Virtual OS       │  │ Virtual OS     │  │
+  │  │ (SEOS kernel)    │  │ (SEOS kernel)  │  │
+  │  │                  │  │                │  │
+  │  │  ┌────────────┐  │  │  ┌──────────┐  │  │
+  │  │  │ V8 / WASM  │  │  │  │ V8 / WASM│  │  │
+  │  │  │            │  │  │  │          │  │  │
+  │  │  │  JS / WASM │  │  │  │ JS / WASM│  │  │
+  │  │  │  programs  │  │  │  │ programs │  │  │
+  │  │  └────────────┘  │  │  └──────────┘  │  │
+  │  └─────────────────┘  └────────────────┘  │
+  └───────────────────────────────────────────┘
+  Each instance has its own kernel. V8/WASM vuln = escape.
+```
+
+|                    | Container            | MicroVM               | Secure Exec           |
+|--------------------|----------------------|-----------------------|-----------------------|
+| **Isolation**      | Namespaces + cgroups  | Hardware (VT-x/KVM)   | V8 isolate + WASM     |
+| **Kernel**         | Shared host kernel    | Dedicated guest kernel| Virtual POSIX kernel  |
+| **Attack surface** | Host kernel syscalls  | Hypervisor interface   | JS/WASM sandbox       |
+| **Boot time**      | ~100ms               | ~125ms                | <5ms                  |
+| **Overhead**       | Near-native           | ~3-5% CPU/memory      | V8/WASM overhead      |
+| **Runs in browser**| No                   | No                    | Yes                   |
+| **Guest format**   | ELF binaries          | ELF binaries          | JS scripts + WASM     |
+| **Escape risk**    | Kernel vuln = escape  | Hypervisor vuln = escape | V8 vuln = escape   |
+
+Key architectural differences:
+- **Containers** share the host kernel — a kernel vulnerability lets every container escape. The kernel is the trust boundary and the attack surface simultaneously.
+- **MicroVMs** run a dedicated guest kernel inside hardware virtualization. Stronger isolation (hypervisor boundary), but 100ms+ boot time and no browser support.
+- **Secure Exec** provides its own virtual kernel in userspace. No shared kernel attack surface (the virtual kernel is per-instance), no hardware requirements, millisecond boot. The tradeoff is that isolation depends on V8/WASM sandbox correctness rather than hardware enforcement.
+
+The WASI extensions (`native/wasmvm/crates/wasi-ext/`) bridge WASM syscalls into the OS kernel.
+The Node.js bridge (`packages/nodejs/src/bridge/`) does the same for V8 isolate code. Both are
+thin translation layers — the real implementation lives in the kernel.
+
+## Package Map
+
 ```
   Kernel-first API (createKernel + mount + exec)
   packages/core/

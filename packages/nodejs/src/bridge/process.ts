@@ -14,6 +14,7 @@ import { Buffer as BufferPolyfill } from "buffer";
 import type {
 	CryptoRandomFillBridgeRef,
 	CryptoRandomUuidBridgeRef,
+	CryptoSubtleBridgeRef,
 	FsFacadeBridge,
 	ProcessErrorBridgeRef,
 	ProcessLogBridgeRef,
@@ -56,6 +57,7 @@ declare const _log: ProcessLogBridgeRef;
 declare const _error: ProcessErrorBridgeRef;
 declare const _cryptoRandomFill: CryptoRandomFillBridgeRef | undefined;
 declare const _cryptoRandomUUID: CryptoRandomUuidBridgeRef | undefined;
+declare const _cryptoSubtle: CryptoSubtleBridgeRef | undefined;
 // Filesystem bridge for chdir validation
 declare const _fs: FsFacadeBridge;
 // PTY setRawMode bridge ref (optional — only present when PTY is attached)
@@ -1160,67 +1162,585 @@ function throwUnsupportedCryptoApi(api: "getRandomValues" | "randomUUID"): never
   throw new Error(`crypto.${api} is not supported in sandbox`);
 }
 
+interface SandboxCryptoKeyData {
+	type: "public" | "private" | "secret";
+	extractable: boolean;
+	algorithm: Record<string, unknown>;
+	usages: string[];
+	_pem?: string;
+	_jwk?: Record<string, unknown>;
+	_raw?: string;
+	_sourceKeyObjectData?: Record<string, unknown>;
+}
+
+const kCryptoKeyToken = Symbol("secureExecCryptoKey");
+const kCryptoToken = Symbol("secureExecCrypto");
+const kSubtleToken = Symbol("secureExecSubtle");
+const ERR_INVALID_THIS = "ERR_INVALID_THIS";
+const ERR_ILLEGAL_CONSTRUCTOR = "ERR_ILLEGAL_CONSTRUCTOR";
+
+function createNodeTypeError(message: string, code: string): TypeError & { code: string } {
+	const error = new TypeError(message) as TypeError & { code: string };
+	error.code = code;
+	return error;
+}
+
+function createDomLikeError(name: string, code: number, message: string): Error & { code: number } {
+	const error = new Error(message) as Error & { code: number };
+	error.name = name;
+	error.code = code;
+	return error;
+}
+
+function assertCryptoReceiver(receiver: unknown): asserts receiver is SandboxCrypto {
+	if (!(receiver instanceof SandboxCrypto) || (receiver as SandboxCrypto)._token !== kCryptoToken) {
+		throw createNodeTypeError("Value of \"this\" must be of type Crypto", ERR_INVALID_THIS);
+	}
+}
+
+function assertSubtleReceiver(receiver: unknown): asserts receiver is SandboxSubtleCrypto {
+	if (
+		!(receiver instanceof SandboxSubtleCrypto) ||
+		(receiver as SandboxSubtleCrypto)._token !== kSubtleToken
+	) {
+		throw createNodeTypeError("Value of \"this\" must be of type SubtleCrypto", ERR_INVALID_THIS);
+	}
+}
+
+function isIntegerTypedArray(value: unknown): value is ArrayBufferView {
+	if (!ArrayBuffer.isView(value) || value instanceof DataView) {
+		return false;
+	}
+
+	return (
+		value instanceof Int8Array ||
+		value instanceof Int16Array ||
+		value instanceof Int32Array ||
+		value instanceof Uint8Array ||
+		value instanceof Uint16Array ||
+		value instanceof Uint32Array ||
+		value instanceof Uint8ClampedArray ||
+		value instanceof BigInt64Array ||
+		value instanceof BigUint64Array ||
+		BufferPolyfill.isBuffer(value)
+	);
+}
+
+function toBase64(data: BufferSource | string): string {
+	if (typeof data === "string") {
+		return BufferPolyfill.from(data).toString("base64");
+	}
+
+	if (data instanceof ArrayBuffer) {
+		return BufferPolyfill.from(new Uint8Array(data)).toString("base64");
+	}
+
+	if (ArrayBuffer.isView(data)) {
+		return BufferPolyfill.from(
+			new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+		).toString("base64");
+	}
+
+	return BufferPolyfill.from(data).toString("base64");
+}
+
+function toArrayBuffer(data: string): ArrayBuffer {
+	const buf = BufferPolyfill.from(data, "base64");
+	return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+}
+
+function normalizeAlgorithm(algorithm: unknown): Record<string, unknown> {
+	if (typeof algorithm === "string") {
+		return { name: algorithm };
+	}
+
+	return (algorithm ?? {}) as Record<string, unknown>;
+}
+
+function normalizeBridgeAlgorithm(algorithm: unknown): Record<string, unknown> {
+	const normalized = { ...normalizeAlgorithm(algorithm) };
+	const hash = normalized.hash;
+	const publicExponent = normalized.publicExponent;
+	const iv = normalized.iv;
+	const additionalData = normalized.additionalData;
+	const salt = normalized.salt;
+	const info = normalized.info;
+	const context = normalized.context;
+	const label = normalized.label;
+	const publicKey = normalized.public;
+
+	if (hash) {
+		normalized.hash = normalizeAlgorithm(hash);
+	}
+	if (publicExponent && ArrayBuffer.isView(publicExponent)) {
+		normalized.publicExponent = BufferPolyfill.from(
+			new Uint8Array(
+				publicExponent.buffer,
+				publicExponent.byteOffset,
+				publicExponent.byteLength,
+			),
+		).toString("base64");
+	}
+	if (iv) {
+		normalized.iv = toBase64(iv as BufferSource);
+	}
+	if (additionalData) {
+		normalized.additionalData = toBase64(additionalData as BufferSource);
+	}
+	if (salt) {
+		normalized.salt = toBase64(salt as BufferSource);
+	}
+	if (info) {
+		normalized.info = toBase64(info as BufferSource);
+	}
+	if (context) {
+		normalized.context = toBase64(context as BufferSource);
+	}
+	if (label) {
+		normalized.label = toBase64(label as BufferSource);
+	}
+	if (
+		publicKey &&
+		typeof publicKey === "object" &&
+		"_keyData" in (publicKey as Record<string, unknown>)
+	) {
+		normalized.public = (publicKey as SandboxCryptoKey)._keyData;
+	}
+
+	return normalized;
+}
+
+class SandboxCryptoKey {
+	readonly type: "public" | "private" | "secret";
+	readonly extractable: boolean;
+	readonly algorithm: Record<string, unknown>;
+	readonly usages: string[];
+	readonly _keyData: SandboxCryptoKeyData;
+	readonly _pem?: string;
+	readonly _jwk?: Record<string, unknown>;
+	readonly _raw?: string;
+	readonly _sourceKeyObjectData?: Record<string, unknown>;
+	readonly [kCryptoKeyToken]: true;
+
+	constructor(keyData?: SandboxCryptoKeyData, token?: symbol) {
+		if (token !== kCryptoKeyToken || !keyData) {
+			throw createNodeTypeError("Illegal constructor", ERR_ILLEGAL_CONSTRUCTOR);
+		}
+
+		this.type = keyData.type;
+		this.extractable = keyData.extractable;
+		this.algorithm = keyData.algorithm;
+		this.usages = keyData.usages;
+		this._keyData = keyData;
+		this._pem = keyData._pem;
+		this._jwk = keyData._jwk;
+		this._raw = keyData._raw;
+		this._sourceKeyObjectData = keyData._sourceKeyObjectData;
+		this[kCryptoKeyToken] = true;
+	}
+}
+
+Object.defineProperty(SandboxCryptoKey.prototype, Symbol.toStringTag, {
+	value: "CryptoKey",
+	configurable: true,
+});
+
+Object.defineProperty(SandboxCryptoKey, Symbol.hasInstance, {
+	value(candidate: unknown) {
+		return Boolean(
+			candidate &&
+				typeof candidate === "object" &&
+				(
+					(candidate as { [kCryptoKeyToken]?: boolean })[kCryptoKeyToken] === true ||
+					(
+						"_keyData" in (candidate as Record<string, unknown>) &&
+						(candidate as { [Symbol.toStringTag]?: string })[Symbol.toStringTag] === "CryptoKey"
+					)
+				),
+		);
+	},
+	configurable: true,
+});
+
+function createCryptoKey(keyData: SandboxCryptoKeyData): SandboxCryptoKey {
+	const globalCryptoKey = globalThis.CryptoKey as
+		| ({ prototype?: object } & (new (...args: any[]) => CryptoKey))
+		| undefined;
+	if (
+		typeof globalCryptoKey === "function" &&
+		globalCryptoKey.prototype &&
+		globalCryptoKey.prototype !== SandboxCryptoKey.prototype
+	) {
+		const key = Object.create(globalCryptoKey.prototype) as SandboxCryptoKey & {
+			type: SandboxCryptoKey["type"];
+			extractable: SandboxCryptoKey["extractable"];
+			algorithm: SandboxCryptoKey["algorithm"];
+			usages: SandboxCryptoKey["usages"];
+			_keyData: SandboxCryptoKey["_keyData"];
+			_pem: SandboxCryptoKey["_pem"];
+			_jwk: SandboxCryptoKey["_jwk"];
+			_raw: SandboxCryptoKey["_raw"];
+			_sourceKeyObjectData: SandboxCryptoKey["_sourceKeyObjectData"];
+		};
+		key.type = keyData.type;
+		key.extractable = keyData.extractable;
+		key.algorithm = keyData.algorithm;
+		key.usages = keyData.usages;
+		key._keyData = keyData;
+		key._pem = keyData._pem;
+		key._jwk = keyData._jwk;
+		key._raw = keyData._raw;
+		key._sourceKeyObjectData = keyData._sourceKeyObjectData;
+		return key;
+	}
+	return new SandboxCryptoKey(keyData, kCryptoKeyToken);
+}
+
+function subtleCall(request: Record<string, unknown>): string {
+	if (typeof _cryptoSubtle === "undefined") {
+		throw new Error("crypto.subtle is not supported in sandbox");
+	}
+
+	return _cryptoSubtle.applySync(undefined, [JSON.stringify(request)]);
+}
+
+class SandboxSubtleCrypto {
+	readonly _token: symbol;
+
+	constructor(token?: symbol) {
+		if (token !== kSubtleToken) {
+			throw createNodeTypeError("Illegal constructor", ERR_ILLEGAL_CONSTRUCTOR);
+		}
+
+		this._token = token;
+	}
+
+	digest(algorithm: unknown, data: BufferSource): Promise<ArrayBuffer> {
+		assertSubtleReceiver(this);
+
+		return Promise.resolve().then(() => {
+			const result = JSON.parse(
+				subtleCall({
+					op: "digest",
+					algorithm: normalizeAlgorithm(algorithm).name,
+					data: toBase64(data),
+				}),
+			) as { data: string };
+			return toArrayBuffer(result.data);
+		});
+	}
+
+	generateKey(
+		algorithm: unknown,
+		extractable: boolean,
+		keyUsages: Iterable<string>,
+	): Promise<SandboxCryptoKey | { publicKey: SandboxCryptoKey; privateKey: SandboxCryptoKey }> {
+		assertSubtleReceiver(this);
+
+		return Promise.resolve().then(() => {
+			const result = JSON.parse(
+				subtleCall({
+					op: "generateKey",
+					algorithm: normalizeBridgeAlgorithm(algorithm),
+					extractable,
+					usages: Array.from(keyUsages),
+				}),
+			) as
+				| { key: SandboxCryptoKeyData }
+				| { publicKey: SandboxCryptoKeyData; privateKey: SandboxCryptoKeyData };
+			if ("publicKey" in result && "privateKey" in result) {
+				return {
+					publicKey: createCryptoKey(result.publicKey),
+					privateKey: createCryptoKey(result.privateKey),
+				};
+			}
+			return createCryptoKey(result.key);
+		});
+	}
+
+	importKey(
+		format: string,
+		keyData: BufferSource | JsonWebKey,
+		algorithm: unknown,
+		extractable: boolean,
+		keyUsages: Iterable<string>,
+	): Promise<SandboxCryptoKey> {
+		assertSubtleReceiver(this);
+
+		return Promise.resolve().then(() => {
+			const result = JSON.parse(
+				subtleCall({
+					op: "importKey",
+					format,
+					keyData: format === "jwk" ? keyData : toBase64(keyData as BufferSource),
+					algorithm: normalizeBridgeAlgorithm(algorithm),
+					extractable,
+					usages: Array.from(keyUsages),
+				}),
+			) as { key: SandboxCryptoKeyData };
+			return createCryptoKey(result.key);
+		});
+	}
+
+	exportKey(format: string, key: SandboxCryptoKey): Promise<ArrayBuffer | JsonWebKey> {
+		assertSubtleReceiver(this);
+
+		return Promise.resolve().then(() => {
+			const result = JSON.parse(
+				subtleCall({
+					op: "exportKey",
+					format,
+					key: key._keyData,
+				}),
+			) as { data?: string; jwk?: JsonWebKey };
+			if (format === "jwk") {
+				return result.jwk as JsonWebKey;
+			}
+			return toArrayBuffer(result.data ?? "");
+		});
+	}
+
+	encrypt(algorithm: unknown, key: SandboxCryptoKey, data: BufferSource): Promise<ArrayBuffer> {
+		assertSubtleReceiver(this);
+
+		return Promise.resolve().then(() => {
+			const result = JSON.parse(
+				subtleCall({
+					op: "encrypt",
+					algorithm: normalizeBridgeAlgorithm(algorithm),
+					key: key._keyData,
+					data: toBase64(data),
+				}),
+			) as { data: string };
+			return toArrayBuffer(result.data);
+		});
+	}
+
+	decrypt(algorithm: unknown, key: SandboxCryptoKey, data: BufferSource): Promise<ArrayBuffer> {
+		assertSubtleReceiver(this);
+
+		return Promise.resolve().then(() => {
+			const result = JSON.parse(
+				subtleCall({
+					op: "decrypt",
+					algorithm: normalizeBridgeAlgorithm(algorithm),
+					key: key._keyData,
+					data: toBase64(data),
+				}),
+			) as { data: string };
+			return toArrayBuffer(result.data);
+		});
+	}
+
+	sign(algorithm: unknown, key: SandboxCryptoKey, data: BufferSource): Promise<ArrayBuffer> {
+		assertSubtleReceiver(this);
+
+		return Promise.resolve().then(() => {
+			const result = JSON.parse(
+				subtleCall({
+					op: "sign",
+					algorithm: normalizeBridgeAlgorithm(algorithm),
+					key: key._keyData,
+					data: toBase64(data),
+				}),
+			) as { data: string };
+			return toArrayBuffer(result.data);
+		});
+	}
+
+	verify(
+		algorithm: unknown,
+		key: SandboxCryptoKey,
+		signature: BufferSource,
+		data: BufferSource,
+	): Promise<boolean> {
+		assertSubtleReceiver(this);
+
+		return Promise.resolve().then(() => {
+			const result = JSON.parse(
+				subtleCall({
+					op: "verify",
+					algorithm: normalizeBridgeAlgorithm(algorithm),
+					key: key._keyData,
+					signature: toBase64(signature),
+					data: toBase64(data),
+				}),
+			) as { result: boolean };
+			return result.result;
+		});
+	}
+
+	deriveBits(algorithm: unknown, baseKey: SandboxCryptoKey, length: number): Promise<ArrayBuffer> {
+		assertSubtleReceiver(this);
+
+		return Promise.resolve().then(() => {
+			const result = JSON.parse(
+				subtleCall({
+					op: "deriveBits",
+					algorithm: normalizeBridgeAlgorithm(algorithm),
+					baseKey: baseKey._keyData,
+					length,
+				}),
+			) as { data: string };
+			return toArrayBuffer(result.data);
+		});
+	}
+
+	deriveKey(
+		algorithm: unknown,
+		baseKey: SandboxCryptoKey,
+		derivedKeyAlgorithm: unknown,
+		extractable: boolean,
+		keyUsages: Iterable<string>,
+	): Promise<SandboxCryptoKey> {
+		assertSubtleReceiver(this);
+
+		return Promise.resolve().then(() => {
+			const result = JSON.parse(
+				subtleCall({
+					op: "deriveKey",
+					algorithm: normalizeBridgeAlgorithm(algorithm),
+					baseKey: baseKey._keyData,
+					derivedKeyAlgorithm: normalizeBridgeAlgorithm(derivedKeyAlgorithm),
+					extractable,
+					usages: Array.from(keyUsages),
+				}),
+			) as { key: SandboxCryptoKeyData };
+			return createCryptoKey(result.key);
+		});
+	}
+
+	wrapKey(
+		format: string,
+		key: SandboxCryptoKey,
+		wrappingKey: SandboxCryptoKey,
+		wrapAlgorithm: unknown,
+	): Promise<ArrayBuffer> {
+		assertSubtleReceiver(this);
+
+		return Promise.resolve().then(() => {
+			const result = JSON.parse(
+				subtleCall({
+					op: "wrapKey",
+					format,
+					key: key._keyData,
+					wrappingKey: wrappingKey._keyData,
+					wrapAlgorithm: normalizeBridgeAlgorithm(wrapAlgorithm),
+				}),
+			) as { data: string };
+			return toArrayBuffer(result.data);
+		});
+	}
+
+	unwrapKey(
+		format: string,
+		wrappedKey: BufferSource,
+		unwrappingKey: SandboxCryptoKey,
+		unwrapAlgorithm: unknown,
+		unwrappedKeyAlgorithm: unknown,
+		extractable: boolean,
+		keyUsages: Iterable<string>,
+	): Promise<SandboxCryptoKey> {
+		assertSubtleReceiver(this);
+
+		return Promise.resolve().then(() => {
+			const result = JSON.parse(
+				subtleCall({
+					op: "unwrapKey",
+					format,
+					wrappedKey: toBase64(wrappedKey),
+					unwrappingKey: unwrappingKey._keyData,
+					unwrapAlgorithm: normalizeBridgeAlgorithm(unwrapAlgorithm),
+					unwrappedKeyAlgorithm: normalizeBridgeAlgorithm(unwrappedKeyAlgorithm),
+					extractable,
+					usages: Array.from(keyUsages),
+				}),
+			) as { key: SandboxCryptoKeyData };
+			return createCryptoKey(result.key);
+		});
+	}
+}
+
+const subtleCrypto = new SandboxSubtleCrypto(kSubtleToken);
+
+class SandboxCrypto {
+	readonly _token: symbol;
+
+	constructor(token?: symbol) {
+		if (token !== kCryptoToken) {
+			throw createNodeTypeError("Illegal constructor", ERR_ILLEGAL_CONSTRUCTOR);
+		}
+
+		this._token = token;
+	}
+
+	get subtle(): SandboxSubtleCrypto {
+		assertCryptoReceiver(this);
+		return subtleCrypto;
+	}
+
+	getRandomValues<T extends ArrayBufferView>(array: T): T {
+		assertCryptoReceiver(this);
+
+		if (!isIntegerTypedArray(array)) {
+			throw createDomLikeError(
+				"TypeMismatchError",
+				17,
+				"The data argument must be an integer-type TypedArray",
+			);
+		}
+
+		if (typeof _cryptoRandomFill === "undefined") {
+			throwUnsupportedCryptoApi("getRandomValues");
+		}
+		if (array.byteLength > 65536) {
+			throw createDomLikeError(
+				"QuotaExceededError",
+				22,
+				`The ArrayBufferView's byte length (${array.byteLength}) exceeds the number of bytes of entropy available via this API (65536)`,
+			);
+		}
+
+		const bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
+		try {
+			const base64 = _cryptoRandomFill.applySync(undefined, [bytes.byteLength]);
+			const hostBytes = BufferPolyfill.from(base64, "base64");
+			if (hostBytes.byteLength !== bytes.byteLength) {
+				throw new Error("invalid host entropy size");
+			}
+			bytes.set(hostBytes);
+			return array;
+		} catch {
+			throwUnsupportedCryptoApi("getRandomValues");
+		}
+	}
+
+	randomUUID(): string {
+		assertCryptoReceiver(this);
+
+		if (typeof _cryptoRandomUUID === "undefined") {
+			throwUnsupportedCryptoApi("randomUUID");
+		}
+		try {
+			const uuid = _cryptoRandomUUID.applySync(undefined, []);
+			if (typeof uuid !== "string") {
+				throw new Error("invalid host uuid");
+			}
+			return uuid;
+		} catch {
+			throwUnsupportedCryptoApi("randomUUID");
+		}
+	}
+}
+
+const cryptoPolyfillInstance = new SandboxCrypto(kCryptoToken);
+
 /**
  * Crypto polyfill that delegates to the host for entropy. `getRandomValues`
  * calls the host's `_cryptoRandomFill` bridge to get cryptographically secure
- * random bytes. Subtle crypto operations are unsupported.
+ * random bytes. Subtle crypto operations route through the host WebCrypto bridge.
  */
-export const cryptoPolyfill = {
-  getRandomValues<T extends ArrayBufferView>(array: T): T {
-    if (typeof _cryptoRandomFill === "undefined") {
-      throwUnsupportedCryptoApi("getRandomValues");
-    }
-    // Web Crypto API spec caps getRandomValues at 65536 bytes.
-    if (array.byteLength > 65536) {
-      throw new RangeError(
-        `The ArrayBufferView's byte length (${array.byteLength}) exceeds the number of bytes of entropy available via this API (65536)`
-      );
-    }
-    const bytes = new Uint8Array(
-      array.buffer,
-      array.byteOffset,
-      array.byteLength
-    );
-    try {
-      const base64 = _cryptoRandomFill.applySync(undefined, [bytes.byteLength]);
-      const hostBytes = BufferPolyfill.from(base64, "base64");
-      if (hostBytes.byteLength !== bytes.byteLength) {
-        throw new Error("invalid host entropy size");
-      }
-      bytes.set(hostBytes);
-      return array;
-    } catch {
-      throwUnsupportedCryptoApi("getRandomValues");
-    }
-  },
-
-  randomUUID(): string {
-    if (typeof _cryptoRandomUUID === "undefined") {
-      throwUnsupportedCryptoApi("randomUUID");
-    }
-    try {
-      const uuid = _cryptoRandomUUID.applySync(undefined, []);
-      if (typeof uuid !== "string") {
-        throw new Error("invalid host uuid");
-      }
-      return uuid;
-    } catch {
-      throwUnsupportedCryptoApi("randomUUID");
-    }
-  },
-
-  subtle: {
-    digest(): Promise<ArrayBuffer> {
-      throw new Error("crypto.subtle.digest is not supported in sandbox");
-    },
-    encrypt(): Promise<ArrayBuffer> {
-      throw new Error("crypto.subtle.encrypt is not supported in sandbox");
-    },
-    decrypt(): Promise<ArrayBuffer> {
-      throw new Error("crypto.subtle.decrypt is not supported in sandbox");
-    },
-  },
-};
+export const cryptoPolyfill = cryptoPolyfillInstance;
 
 /**
  * Install all process/timer/URL/Buffer/crypto polyfills onto `globalThis`.
@@ -1284,6 +1804,16 @@ export function setupGlobals(): void {
   }
 
   // Crypto
+  if (typeof g.Crypto === "undefined") {
+    g.Crypto = SandboxCrypto;
+  }
+  if (typeof g.SubtleCrypto === "undefined") {
+    g.SubtleCrypto = SandboxSubtleCrypto;
+  }
+  if (typeof g.CryptoKey === "undefined") {
+    g.CryptoKey = SandboxCryptoKey;
+  }
+
   if (typeof g.crypto === "undefined") {
     g.crypto = cryptoPolyfill;
   } else {
@@ -1293,6 +1823,9 @@ export function setupGlobals(): void {
     }
     if (typeof cryptoObj.randomUUID === "undefined") {
       cryptoObj.randomUUID = cryptoPolyfill.randomUUID;
+    }
+    if (typeof cryptoObj.subtle === "undefined") {
+      cryptoObj.subtle = cryptoPolyfill.subtle;
     }
   }
 }

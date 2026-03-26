@@ -1,3 +1,4 @@
+import { checkPrimeSync } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
 import type { NodeSuiteContext } from "./runtime.js";
 
@@ -183,6 +184,39 @@ export function runNodeCryptoSuite(context: NodeSuiteContext): void {
 		expect(exports.hex).toBe(exports.ref);
 		expect(exports.writeType).toBe("function");
 		expect(exports.endType).toBe("function");
+	});
+
+	it("Hash is a Transform stream and supports pipe() output", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			import crypto from 'node:crypto';
+			import stream from 'node:stream';
+
+			export default await new Promise((resolve, reject) => {
+				const src = new stream.PassThrough();
+				const hash = crypto.Hash('sha256');
+				const chunks = [];
+				hash.setEncoding('hex');
+				hash.on('data', (chunk) => chunks.push(chunk));
+				hash.on('error', reject);
+				hash.on('finish', () => {
+					resolve({
+						isTransform: hash instanceof stream.Transform,
+						digest: chunks.join(''),
+						cachedDigest: hash.digest('hex'),
+					});
+				});
+				src.pipe(hash);
+				src.end('hello');
+			});
+		`, "/entry.mjs");
+		expect(result.code).toBe(0);
+		expect(result.errorMessage).toBeUndefined();
+		expect((result.exports as any).default).toEqual({
+			isTransform: true,
+			digest: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+			cachedDigest: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+		});
 	});
 
 	it("createHash handles binary Buffer input", async () => {
@@ -386,19 +420,20 @@ export function runNodeCryptoSuite(context: NodeSuiteContext): void {
 	it("pbkdf2 async variant calls callback with derived key", async () => {
 		const runtime = await context.createRuntime();
 		const result = await runtime.run(`
-			const crypto = require('crypto');
-			let cbResult;
-			crypto.pbkdf2('password', 'salt', 1, 32, 'sha256', (err, derived) => {
-				cbResult = {
-					err: err,
-					hex: derived.toString('hex'),
-					isBuffer: Buffer.isBuffer(derived),
-				};
+			import crypto from 'node:crypto';
+
+			export default await new Promise((resolve) => {
+				crypto.pbkdf2('password', 'salt', 1, 32, 'sha256', (err, derived) => {
+					resolve({
+						err: err,
+						hex: derived.toString('hex'),
+						isBuffer: Buffer.isBuffer(derived),
+					});
+				});
 			});
-			module.exports = cbResult;
-		`);
+		`, "/entry.mjs");
 		expect(result.code).toBe(0);
-		const exports = result.exports as any;
+		const exports = (result.exports as any).default;
 		expect(exports.err).toBeNull();
 		expect(exports.hex).toBe("120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b");
 		expect(exports.isBuffer).toBe(true);
@@ -679,6 +714,75 @@ export function runNodeCryptoSuite(context: NodeSuiteContext): void {
 		expect((result.exports as any).encryptedLength).toBeGreaterThan(0);
 	});
 
+	it("Cipheriv and Decipheriv are Transform streams", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			import crypto from 'node:crypto';
+			import stream from 'node:stream';
+
+			const key = Buffer.alloc(24, 1);
+			const iv = Buffer.alloc(8, 2);
+			export default await new Promise((resolve, reject) => {
+				const src = new stream.PassThrough();
+				const cipher = crypto.Cipheriv('des-ede3-cbc', key, iv);
+				const decipher = crypto.Decipheriv('des-ede3-cbc', key, iv);
+				const encrypted = [];
+				const decrypted = [];
+				cipher.on('data', (chunk) => encrypted.push(chunk));
+				cipher.on('error', reject);
+				decipher.on('data', (chunk) => decrypted.push(chunk));
+				decipher.on('error', reject);
+				decipher.on('finish', () => {
+					resolve({
+						cipherTransform: cipher instanceof stream.Transform,
+						decipherTransform: decipher instanceof stream.Transform,
+						encryptedLength: Buffer.concat(encrypted).length,
+						roundTrip: Buffer.concat(decrypted).toString('utf8'),
+					});
+				});
+				src.pipe(cipher).pipe(decipher);
+				src.end('stream me through crypto');
+			});
+		`, "/entry.mjs");
+		expect(result.code).toBe(0);
+		expect(result.errorMessage).toBeUndefined();
+		expect((result.exports as any).default).toEqual({
+			cipherTransform: true,
+			decipherTransform: true,
+			encryptedLength: 32,
+			roundTrip: "stream me through crypto",
+		});
+	});
+
+	it("createCipheriv supports CCM authTagLength options", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const key = crypto.randomBytes(24);
+			const nonce = crypto.randomBytes(12);
+			const aad = Buffer.from('secure-exec');
+			const plaintext = Buffer.from('ccm payload');
+			const cipher = crypto.createCipheriv('aes-192-ccm', key, nonce, { authTagLength: 16 });
+			cipher.setAAD(aad, { plaintextLength: plaintext.length });
+			const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+			const tag = cipher.getAuthTag();
+			const decipher = crypto.createDecipheriv('aes-192-ccm', key, nonce, { authTagLength: 16 });
+			decipher.setAuthTag(tag);
+			decipher.setAAD(aad, { plaintextLength: plaintext.length });
+			const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+			module.exports = {
+				tagLength: tag.length,
+				plaintext: decrypted.toString('utf8'),
+			};
+		`);
+		expect(result.code).toBe(0);
+		expect(result.errorMessage).toBeUndefined();
+		expect(result.exports).toEqual({
+			tagLength: 16,
+			plaintext: "ccm payload",
+		});
+	});
+
 	it("randomBytes rejects negative size", async () => {
 		const runtime = await context.createRuntime();
 		const result = await runtime.run(`
@@ -778,23 +882,261 @@ export function runNodeCryptoSuite(context: NodeSuiteContext): void {
 	it("generateKeyPair async variant calls callback", async () => {
 		const runtime = await context.createRuntime();
 		const result = await runtime.run(`
-			const crypto = require('crypto');
-			let cbResult;
-			crypto.generateKeyPair('ec', { namedCurve: 'prime256v1' }, (err, pub, priv) => {
-				cbResult = {
-					err: err,
-					pubType: pub.type,
-					privType: priv.type,
-				};
+			import crypto from 'node:crypto';
+
+			export default await new Promise((resolve) => {
+				crypto.generateKeyPair('ec', { namedCurve: 'prime256v1' }, (err, pub, priv) => {
+					resolve({
+						err: err,
+						pubType: pub.type,
+						privType: priv.type,
+					});
+				});
 			});
-			module.exports = cbResult;
-		`);
+		`, "/entry.mjs");
 		expect(result.code).toBe(0);
 		expect(result.errorMessage).toBeUndefined();
-		const exports = result.exports as any;
+		const exports = (result.exports as any).default;
 		expect(exports.err).toBeNull();
 		expect(exports.pubType).toBe("public");
 		expect(exports.privType).toBe("private");
+	});
+
+	it("generateKeyPair async supports omitted options for ed25519", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			import crypto from 'node:crypto';
+
+			export default await new Promise((resolve) => {
+				crypto.generateKeyPair('ed25519', (err, pub, priv) => {
+					resolve({
+						err: err ? { name: err.name, code: err.code, message: err.message } : null,
+						pubType: pub && pub.type,
+						pubKeyType: pub && pub.asymmetricKeyType,
+						privType: priv && priv.type,
+						privKeyType: priv && priv.asymmetricKeyType,
+					});
+				});
+			});
+		`, "/entry.mjs");
+		expect(result.code).toBe(0);
+		expect(result.errorMessage).toBeUndefined();
+		expect((result.exports as any).default).toEqual({
+			err: null,
+			pubType: "public",
+			pubKeyType: "ed25519",
+			privType: "private",
+			privKeyType: "ed25519",
+		});
+	});
+
+	it("generateKeySync and generateKey return secret KeyObjects", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			import crypto from 'node:crypto';
+
+			export default await new Promise((resolve) => {
+				const syncKey = crypto.generateKeySync('aes', { length: 256 });
+				crypto.generateKey('hmac', { length: 123 }, (err, asyncKey) => {
+					resolve({
+						err: err ? { name: err.name, code: err.code, message: err.message } : null,
+						syncType: syncKey.type,
+						syncSize: syncKey.symmetricKeySize,
+						syncLength: syncKey.export().length,
+						asyncType: asyncKey && asyncKey.type,
+						asyncSize: asyncKey && asyncKey.symmetricKeySize,
+						asyncLength: asyncKey ? asyncKey.export().length : null,
+					});
+				});
+			});
+		`, "/entry.mjs");
+		expect(result.code).toBe(0);
+		expect(result.errorMessage).toBeUndefined();
+		expect((result.exports as any).default).toEqual({
+			err: null,
+			syncType: "secret",
+			syncSize: 32,
+			syncLength: 32,
+			asyncType: "secret",
+			asyncSize: 15,
+			asyncLength: 15,
+		});
+	});
+
+	it("async crypto key APIs throw validation errors synchronously", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			module.exports = (() => {
+				try {
+					crypto.generateKey(undefined, { length: 256 }, () => {});
+					return { ok: true };
+				} catch (err) {
+					return {
+						ok: false,
+						name: err.name,
+						code: err.code,
+						message: err.message,
+					};
+				}
+			})();
+		`);
+		expect(result.code).toBe(0);
+		expect(result.errorMessage).toBeUndefined();
+		expect(result.exports).toEqual({
+			ok: false,
+			name: "TypeError",
+			code: "ERR_INVALID_ARG_TYPE",
+			message: 'The "type" argument must be of type string. Received undefined',
+		});
+	});
+
+	it("pbkdf2 validates callback and digest arguments with Node-style errors", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			module.exports = (() => {
+				const errors = {};
+				try {
+					crypto.pbkdf2('password', 'salt', 8, 8, 'sha256');
+				} catch (err) {
+					errors.missingCallback = {
+						name: err.name,
+						code: err.code,
+						message: err.message,
+					};
+				}
+				try {
+					crypto.pbkdf2('password', 'salt', 8, 8, () => {});
+				} catch (err) {
+					errors.missingDigest = {
+						name: err.name,
+						code: err.code,
+						message: err.message,
+					};
+				}
+				try {
+					crypto.pbkdf2Sync(1, 'salt', 8, 8, 'sha256');
+				} catch (err) {
+					errors.invalidPassword = {
+						name: err.name,
+						code: err.code,
+					};
+				}
+				return errors;
+			})();
+		`);
+		expect(result.code).toBe(0);
+		expect(result.errorMessage).toBeUndefined();
+		expect(result.exports).toEqual({
+			missingCallback: {
+				name: "TypeError",
+				code: "ERR_INVALID_ARG_TYPE",
+				message: 'The "callback" argument must be of type function. Received undefined',
+			},
+			missingDigest: {
+				name: "TypeError",
+				code: "ERR_INVALID_ARG_TYPE",
+				message: 'The "digest" argument must be of type string. Received undefined',
+			},
+			invalidPassword: {
+				name: "TypeError",
+				code: "ERR_INVALID_ARG_TYPE",
+			},
+		});
+	});
+
+	it("generateKeyPair throws DH group validation errors synchronously", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			module.exports = (() => {
+				try {
+					crypto.generateKeyPair('dh', { group: 'modp0' }, () => {});
+					return { ok: true };
+				} catch (err) {
+					return {
+						ok: false,
+						name: err.name,
+						code: err.code,
+						message: err.message,
+					};
+				}
+			})();
+		`);
+		expect(result.code).toBe(0);
+		expect(result.errorMessage).toBeUndefined();
+		expect(result.exports).toEqual({
+			ok: false,
+			name: "Error",
+			code: "ERR_CRYPTO_UNKNOWN_DH_GROUP",
+			message: "Unknown DH group",
+		});
+	});
+
+	it("generatePrimeSync and generatePrime return valid primes", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			import crypto from 'node:crypto';
+
+			export default await new Promise((resolve) => {
+				const syncPrime = crypto.generatePrimeSync(32);
+				const bigintPrime = crypto.generatePrimeSync(3, { bigint: true });
+				crypto.generatePrime(32, (err, asyncPrime) => {
+					resolve({
+						err: err ? { name: err.name, code: err.code, message: err.message } : null,
+						syncPrime: Buffer.from(syncPrime).toString('base64'),
+						asyncPrime: asyncPrime ? Buffer.from(asyncPrime).toString('base64') : null,
+						bigintPrime: bigintPrime.toString(),
+					});
+				});
+			});
+		`, "/entry.mjs");
+		expect(result.code).toBe(0);
+		expect(result.errorMessage).toBeUndefined();
+		const exports = (result.exports as any).default;
+		expect(exports.err).toBeNull();
+		expect(checkPrimeSync(Buffer.from(exports.syncPrime, "base64"))).toBe(true);
+		expect(checkPrimeSync(Buffer.from(exports.asyncPrime, "base64"))).toBe(true);
+		expect(exports.bigintPrime).toBe("7");
+	});
+
+	it("generateKeyPairSync preserves host crypto error codes", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			module.exports = (() => {
+				try {
+					crypto.generateKeyPairSync('ec', {
+						namedCurve: 'P-256',
+						paramEncoding: 'otherEncoding',
+						publicKeyEncoding: { type: 'spki', format: 'pem' },
+						privateKeyEncoding: {
+							type: 'pkcs8',
+							format: 'pem',
+							cipher: 'aes-128-cbc',
+							passphrase: 'top secret',
+						},
+					});
+					return { ok: true };
+				} catch (err) {
+					return {
+						ok: false,
+						name: err.name,
+						code: err.code,
+						message: err.message,
+					};
+				}
+			})();
+		`);
+		expect(result.code).toBe(0);
+		expect(result.errorMessage).toBeUndefined();
+		expect(result.exports).toEqual({
+			ok: false,
+			name: "TypeError",
+			code: "ERR_INVALID_ARG_VALUE",
+			message: "The property 'options.paramEncoding' is invalid. Received 'otherEncoding'",
+		});
 	});
 
 	it("createPublicKey and createPrivateKey from PEM strings", async () => {
@@ -823,6 +1165,87 @@ export function runNodeCryptoSuite(context: NodeSuiteContext): void {
 		expect(exports.pubType).toBe("public");
 		expect(exports.privType).toBe("private");
 		expect(exports.valid).toBe(true);
+	});
+
+	it("createPrivateKey preserves metadata for encrypted PEM and accepts passphrase buffers", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+				modulusLength: 1024,
+				publicKeyEncoding: { type: 'spki', format: 'pem' },
+				privateKeyEncoding: {
+					type: 'pkcs8',
+					format: 'pem',
+					cipher: 'aes-256-cbc',
+					passphrase: '',
+				},
+			});
+			const imported = crypto.createPrivateKey({
+				key: privateKey,
+				passphrase: Buffer.alloc(0),
+			});
+			const data = Buffer.from('metadata-roundtrip');
+			const signature = crypto.sign('sha256', data, {
+				key: privateKey,
+				passphrase: '',
+			});
+			module.exports = {
+				keyType: imported.type,
+				asymmetricKeyType: imported.asymmetricKeyType,
+				valid: crypto.verify('sha256', data, publicKey, signature),
+			};
+		`);
+		expect(result.code).toBe(0);
+		expect(result.errorMessage).toBeUndefined();
+		expect(result.exports).toEqual({
+			keyType: "private",
+			asymmetricKeyType: "rsa",
+			valid: true,
+		});
+	});
+
+	it("publicEncrypt/privateDecrypt accept DER options bags and sandbox KeyObjects", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const pairWithKeyObject = crypto.generateKeyPairSync('rsa', {
+				modulusLength: 1024,
+				privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+			});
+			const derPair = crypto.generateKeyPairSync('rsa', {
+				modulusLength: 1024,
+				publicKeyEncoding: { type: 'pkcs1', format: 'der' },
+				privateKeyEncoding: {
+					type: 'pkcs1',
+					format: 'pem',
+					cipher: 'aes-256-cbc',
+					passphrase: 'secret',
+				},
+			});
+			const plaintext = Buffer.from('encrypt-roundtrip');
+			const encryptedWithKeyObject = crypto.publicEncrypt(pairWithKeyObject.publicKey, plaintext);
+			const decryptedWithKeyObject = crypto.privateDecrypt(pairWithKeyObject.privateKey, encryptedWithKeyObject);
+			const encryptedWithDer = crypto.publicEncrypt({
+				key: derPair.publicKey,
+				type: 'pkcs1',
+				format: 'der',
+			}, plaintext);
+			const decryptedWithDer = crypto.privateDecrypt({
+				key: derPair.privateKey,
+				passphrase: 'secret',
+			}, encryptedWithDer);
+			module.exports = {
+				keyObjectRoundTrip: decryptedWithKeyObject.toString(),
+				derRoundTrip: decryptedWithDer.toString(),
+			};
+		`);
+		expect(result.code).toBe(0);
+		expect(result.errorMessage).toBeUndefined();
+		expect(result.exports).toEqual({
+			keyObjectRoundTrip: "encrypt-roundtrip",
+			derRoundTrip: "encrypt-roundtrip",
+		});
 	});
 
 	it("KeyObject.export returns PEM by default", async () => {
@@ -927,10 +1350,54 @@ export function runNodeCryptoSuite(context: NodeSuiteContext): void {
 		expect(result.code).toBe(0);
 		expect(result.errorMessage).toBeUndefined();
 		const exports = result.exports as any;
+		expect(exports.hex).toBe("f43738c837258ba3e8b52ee2115a22014ef8a2d4b24c828437462218c17713d0");
 		expect(exports.length).toBe(64);
 	});
 
 	// crypto.subtle (Web Crypto API) tests
+
+	it("globalThis.crypto matches require('crypto').webcrypto", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			module.exports = {
+				sameObject: globalThis.crypto === crypto.webcrypto,
+				sameSubtle: globalThis.crypto.subtle === crypto.webcrypto.subtle,
+				cryptoCtor: globalThis.crypto.constructor.name,
+				subtleCtor: globalThis.crypto.subtle.constructor.name,
+			};
+		`);
+		expect(result.code).toBe(0);
+		expect(result.errorMessage).toBeUndefined();
+		expect(result.exports).toEqual({
+			sameObject: true,
+			sameSubtle: true,
+			cryptoCtor: "SandboxCrypto",
+			subtleCtor: "SandboxSubtleCrypto",
+		});
+	});
+
+	it("globalThis.crypto.getRandomValues validates detached receivers", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const { getRandomValues } = globalThis.crypto;
+			try {
+				getRandomValues(new Uint8Array(4));
+				module.exports = { code: null };
+			} catch (error) {
+				module.exports = {
+					name: error.name,
+					code: error.code,
+				};
+			}
+		`);
+		expect(result.code).toBe(0);
+		expect(result.errorMessage).toBeUndefined();
+		expect(result.exports).toEqual({
+			name: "TypeError",
+			code: "ERR_INVALID_THIS",
+		});
+	});
 
 	it("subtle.digest('SHA-256', data) matches createHash output", async () => {
 		const runtime = await context.createRuntime();
@@ -1132,6 +1599,107 @@ export function runNodeCryptoSuite(context: NodeSuiteContext): void {
 		expect(exports.sigLen).toBe(256); // 2048-bit RSA = 256 bytes
 		expect(exports.pubType).toBe("public");
 		expect(exports.privType).toBe("private");
+	});
+
+	it("subtle.sign/verify RSA-PSS roundtrip", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			(async () => {
+				const crypto = require('crypto');
+				const keyPair = await crypto.subtle.generateKey(
+					{
+						name: 'RSA-PSS',
+						modulusLength: 2048,
+						publicExponent: new Uint8Array([1, 0, 1]),
+						hash: 'SHA-256',
+					},
+					true,
+					['sign', 'verify']
+				);
+				const data = new TextEncoder().encode('RSA-PSS signing test');
+				const signature = await crypto.subtle.sign(
+					{ name: 'RSA-PSS', saltLength: 32 }, keyPair.privateKey, data
+				);
+				const valid = await crypto.subtle.verify(
+					{ name: 'RSA-PSS', saltLength: 32 }, keyPair.publicKey, signature, data
+				);
+				module.exports = { valid, sigLen: signature.byteLength };
+			})();
+		`);
+		expect(result.code).toBe(0);
+		expect((result.exports as any).valid).toBe(true);
+		expect((result.exports as any).sigLen).toBe(256);
+	});
+
+	it("subtle.sign/verify ECDSA roundtrip", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			(async () => {
+				const crypto = require('crypto');
+				const keyPair = await crypto.subtle.generateKey(
+					{ name: 'ECDSA', namedCurve: 'P-256' },
+					true,
+					['sign', 'verify']
+				);
+				const data = new TextEncoder().encode('ECDSA signing test');
+				const signature = await crypto.subtle.sign(
+					{ name: 'ECDSA', hash: 'SHA-256' }, keyPair.privateKey, data
+				);
+				const valid = await crypto.subtle.verify(
+					{ name: 'ECDSA', hash: 'SHA-256' }, keyPair.publicKey, signature, data
+				);
+				module.exports = { valid, sigLen: signature.byteLength > 0 };
+			})();
+		`);
+		expect(result.code).toBe(0);
+		expect((result.exports as any).valid).toBe(true);
+		expect((result.exports as any).sigLen).toBe(true);
+	});
+
+	it("subtle.sign/verify Ed25519 roundtrip", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			(async () => {
+				const crypto = require('crypto');
+				const keyPair = await crypto.subtle.generateKey(
+					{ name: 'Ed25519' },
+					true,
+					['sign', 'verify']
+				);
+				const data = new TextEncoder().encode('Ed25519 signing test');
+				const signature = await crypto.subtle.sign(
+					{ name: 'Ed25519' }, keyPair.privateKey, data
+				);
+				const valid = await crypto.subtle.verify(
+					{ name: 'Ed25519' }, keyPair.publicKey, signature, data
+				);
+				module.exports = { valid, sigLen: signature.byteLength };
+			})();
+		`);
+		expect(result.code).toBe(0);
+		expect((result.exports as any).valid).toBe(true);
+		expect((result.exports as any).sigLen).toBe(64);
+	});
+
+	it("KeyObject.toCryptoKey returns the global CryptoKey type", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			(() => {
+				const { createSecretKey, randomBytes, KeyObject } = require('crypto');
+				const keyObject = createSecretKey(randomBytes(16));
+				const cryptoKey = keyObject.toCryptoKey('AES-GCM', true, ['encrypt', 'decrypt']);
+				const roundTrip = KeyObject.from(cryptoKey);
+				module.exports = {
+					instanceofGlobal: cryptoKey instanceof CryptoKey,
+					type: cryptoKey.type,
+					match: keyObject.equals(roundTrip),
+				};
+			})();
+		`);
+		expect(result.code).toBe(0);
+		expect((result.exports as any).instanceofGlobal).toBe(true);
+		expect((result.exports as any).type).toBe("secret");
+		expect((result.exports as any).match).toBe(true);
 	});
 
 	it("subtle.importKey raw + exportKey raw roundtrip", async () => {
@@ -1344,5 +1912,166 @@ export function runNodeCryptoSuite(context: NodeSuiteContext): void {
 		const exports = result.exports as any;
 		expect(exports.match).toBe(true);
 		expect(exports.keyType).toBe("secret");
+	});
+
+	it("subtle.deriveBits ECDH matches on both sides", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			(async () => {
+				const crypto = require('crypto');
+				const [alice, bob] = await Promise.all([
+					crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits', 'deriveKey']),
+					crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits', 'deriveKey']),
+				]);
+				const [secret1, secret2] = await Promise.all([
+					crypto.subtle.deriveBits({ name: 'ECDH', public: bob.publicKey }, alice.privateKey, 128),
+					crypto.subtle.deriveBits({ name: 'ECDH', public: alice.publicKey }, bob.privateKey, 128),
+				]);
+				module.exports = {
+					match: Buffer.from(secret1).equals(Buffer.from(secret2)),
+					len: secret1.byteLength,
+				};
+			})();
+		`);
+		expect(result.code).toBe(0);
+		expect((result.exports as any).match).toBe(true);
+		expect((result.exports as any).len).toBe(16);
+	});
+
+	it("subtle.deriveKey ECDH produces matching HMAC keys", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			(async () => {
+				const crypto = require('crypto');
+				const [alice, bob] = await Promise.all([
+					crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']),
+					crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']),
+				]);
+				const [key1, key2] = await Promise.all([
+					crypto.subtle.deriveKey(
+						{ name: 'ECDH', public: bob.publicKey },
+						alice.privateKey,
+						{ name: 'HMAC', hash: 'SHA-256', length: 256 },
+						true,
+						['sign', 'verify']
+					),
+					crypto.subtle.deriveKey(
+						{ name: 'ECDH', public: alice.publicKey },
+						bob.privateKey,
+						{ name: 'HMAC', hash: 'SHA-256', length: 256 },
+						true,
+						['sign', 'verify']
+					),
+				]);
+				const [raw1, raw2] = await Promise.all([
+					crypto.subtle.exportKey('raw', key1),
+					crypto.subtle.exportKey('raw', key2),
+				]);
+				module.exports = {
+					match: Buffer.from(raw1).equals(Buffer.from(raw2)),
+					type: key1.type,
+				};
+			})();
+		`);
+		expect(result.code).toBe(0);
+		expect((result.exports as any).match).toBe(true);
+		expect((result.exports as any).type).toBe("secret");
+	});
+
+	it("subtle.wrapKey/unwrapKey AES-KW roundtrip", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			(async () => {
+				const crypto = require('crypto');
+				const wrappingKey = await crypto.subtle.generateKey(
+					{ name: 'AES-KW', length: 256 },
+					true,
+					['wrapKey', 'unwrapKey']
+				);
+				const keyToWrap = await crypto.subtle.generateKey(
+					{ name: 'AES-GCM', length: 256 },
+					true,
+					['encrypt', 'decrypt']
+				);
+				const wrapped = await crypto.subtle.wrapKey(
+					'raw',
+					keyToWrap,
+					wrappingKey,
+					{ name: 'AES-KW' }
+				);
+				const unwrapped = await crypto.subtle.unwrapKey(
+					'raw',
+					wrapped,
+					wrappingKey,
+					{ name: 'AES-KW' },
+					{ name: 'AES-GCM', length: 256 },
+					true,
+					['encrypt', 'decrypt']
+				);
+				const [raw1, raw2] = await Promise.all([
+					crypto.subtle.exportKey('raw', keyToWrap),
+					crypto.subtle.exportKey('raw', unwrapped),
+				]);
+				module.exports = {
+					match: Buffer.from(raw1).equals(Buffer.from(raw2)),
+					wrappedLen: wrapped.byteLength > 0,
+				};
+			})();
+		`);
+		expect(result.code).toBe(0);
+		expect((result.exports as any).match).toBe(true);
+		expect((result.exports as any).wrappedLen).toBe(true);
+	});
+
+	it("Diffie-Hellman group exchange preserves Buffer and encoded secret outputs", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const alice = crypto.createDiffieHellmanGroup('modp5');
+			const bob = crypto.createDiffieHellmanGroup('modp5');
+			const aliceKey = alice.generateKeys();
+			const bobKeyHex = bob.generateKeys('hex');
+			const aliceSecret = alice.computeSecret(bobKeyHex, 'hex', 'base64');
+			const bobSecret = bob.computeSecret(aliceKey, 'buffer', 'base64');
+
+			module.exports = {
+				match: aliceSecret === bobSecret,
+				verifyError: alice.verifyError,
+				publicKeyIsBuffer: Buffer.isBuffer(alice.getPublicKey()),
+				privateKeyIsBuffer: Buffer.isBuffer(alice.getPrivateKey()),
+			};
+		`);
+		expect(result.code).toBe(0);
+		const exports = result.exports as any;
+		expect(exports.match).toBe(true);
+		expect(exports.verifyError).toBe(0);
+		expect(exports.publicKeyIsBuffer).toBe(true);
+		expect(exports.privateKeyIsBuffer).toBe(true);
+	});
+
+	it("stateless crypto.diffieHellman matches x25519 shared secret", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const alice = crypto.generateKeyPairSync('x25519');
+			const bob = crypto.generateKeyPairSync('x25519');
+			const aliceSecret = crypto.diffieHellman({
+				privateKey: alice.privateKey,
+				publicKey: bob.publicKey,
+			}).toString('hex');
+			const bobSecret = crypto.diffieHellman({
+				privateKey: bob.privateKey,
+				publicKey: alice.publicKey,
+			}).toString('hex');
+
+			module.exports = {
+				match: aliceSecret === bobSecret,
+				length: aliceSecret.length,
+			};
+		`);
+		expect(result.code).toBe(0);
+		const exports = result.exports as any;
+		expect(exports.match).toBe(true);
+		expect(exports.length).toBeGreaterThan(0);
 	});
 }

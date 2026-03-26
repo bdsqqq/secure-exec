@@ -1,0 +1,1007 @@
+{
+  "project": "SecureExec",
+  "branchName": "ralph/kernel-consolidation",
+  "description": "Kernel Consolidation - Move networking, resource management, and runtime-specific subsystems into the shared kernel so Node.js and WasmVM share the same socket table, port registry, and network stack.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Implement WaitHandle and WaitQueue primitives (K-10)",
+      "description": "As a developer, I need unified blocking I/O primitives so that all kernel subsystems (pipes, sockets, flock, poll) share the same wait/wake mechanism.",
+      "acceptanceCriteria": [
+        "Add packages/core/src/kernel/wait.ts with WaitHandle and WaitQueue classes",
+        "WaitHandle.wait(timeoutMs?) returns a Promise that resolves when woken or times out",
+        "WaitHandle.wake() resolves exactly one waiter",
+        "WaitQueue.wakeAll() resolves all enqueued waiters",
+        "WaitQueue.wakeOne() resolves exactly one waiter (FIFO order)",
+        "Add packages/core/test/kernel/wait-queue.test.ts with tests: wake resolves wait, timeout fires, wakeOne wakes one, wakeAll wakes all",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Foundation for all blocking I/O. See spec section 2.4. Keep it simple — just Promise-based wait/wake, no Atomics yet."
+    },
+    {
+      "id": "US-002",
+      "title": "Implement InodeTable with refcounting and deferred unlink (K-11)",
+      "description": "As a developer, I need an inode layer so the VFS supports hard links, deferred deletion, and correct stat() metadata.",
+      "acceptanceCriteria": [
+        "Add packages/core/src/kernel/inode-table.ts with Inode and InodeTable classes",
+        "InodeTable.allocate(mode, uid, gid) returns Inode with unique ino number",
+        "incrementLinks/decrementLinks track hard link count (nlink)",
+        "incrementOpenRefs/decrementOpenRefs track open FD count",
+        "shouldDelete(ino) returns true when nlink=0 AND openRefCount=0",
+        "Deferred deletion: unlink with open FDs keeps data until last FD closes",
+        "Add packages/core/test/kernel/inode-table.test.ts with tests: allocate unique ino, hard link increments nlink, unlink-with-open-FD persists, close-last-FD deletes",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "See spec section 2.5. Not wired to VFS yet — standalone table only."
+    },
+    {
+      "id": "US-003",
+      "title": "Implement HostNetworkAdapter interface (Part 5)",
+      "description": "As a developer, I need a host adapter interface so the kernel can delegate external I/O to the host without knowing the host implementation.",
+      "acceptanceCriteria": [
+        "Add HostNetworkAdapter, HostSocket, HostListener, HostUdpSocket interfaces to packages/core/src/types.ts or packages/core/src/kernel/host-adapter.ts",
+        "HostNetworkAdapter has: tcpConnect, tcpListen, udpBind, udpSend, dnsLookup methods",
+        "HostSocket has: write, read (null=EOF), close, setOption, shutdown methods",
+        "HostListener has: accept, close, port (readonly) members",
+        "HostUdpSocket has: recv, close methods",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "See spec Part 5. Interfaces only — no implementations yet. Node.js driver will implement these later."
+    },
+    {
+      "id": "US-004",
+      "title": "Implement KernelSocket and SocketTable core (K-1)",
+      "description": "As a developer, I need a virtual socket table in the kernel so sockets can be created, tracked, and closed with proper state transitions.",
+      "acceptanceCriteria": [
+        "Add packages/core/src/kernel/socket-table.ts with KernelSocket struct and SocketTable class",
+        "KernelSocket has: id, domain (AF_INET/AF_INET6/AF_UNIX), type (SOCK_STREAM/SOCK_DGRAM), state, nonBlocking, localAddr, remoteAddr, options Map, pid, readBuffer, readWaiters (WaitQueue), backlog, acceptWaiters (WaitQueue)",
+        "SocketTable.create(domain, type, protocol, pid) returns socket ID, tracks in sockets Map",
+        "SocketTable.close(socketId) removes socket and frees resources",
+        "SocketTable.poll(socketId) returns { readable, writable, hangup }",
+        "Per-process isolation: process A cannot close process B's socket",
+        "EMFILE error when creating too many sockets (configurable limit)",
+        "Add packages/core/test/kernel/socket-table.test.ts with tests: create socket, state transitions, close frees resources, EMFILE limit, per-process isolation",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "See spec section 1.1. Does not include bind/listen/connect yet — just create/close/poll lifecycle."
+    },
+    {
+      "id": "US-005",
+      "title": "Add bind, listen, accept to SocketTable (K-1, K-3)",
+      "description": "As a developer, I need server socket operations so the kernel can manage port listeners and accept connections.",
+      "acceptanceCriteria": [
+        "SocketTable.bind(socketId, addr) sets localAddr, registers in listeners Map, transitions to 'bound'",
+        "SocketTable.listen(socketId, backlog) transitions to 'listening'",
+        "SocketTable.accept(socketId) returns pending connection or null (EAGAIN)",
+        "Bind to already-used port returns EADDRINUSE (unless SO_REUSEADDR is set)",
+        "Close listener frees the port for reuse",
+        "Wildcard address matching: listener on '0.0.0.0:8080' matches connect to '127.0.0.1:8080'",
+        "Add tests to socket-table.test.ts: bind/listen/accept lifecycle, EADDRINUSE, port reuse after close, wildcard matching",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "See spec sections 1.1 and 1.3. Builds on US-004."
+    },
+    {
+      "id": "US-006",
+      "title": "Implement loopback routing for TCP (K-2)",
+      "description": "As a developer, I need in-kernel loopback routing so that connect() to a kernel-owned port creates paired sockets without real TCP.",
+      "acceptanceCriteria": [
+        "SocketTable.connect(socketId, addr) checks if addr matches a kernel listener",
+        "If loopback: creates socketpair — client socket returned, server socket queued in listener backlog",
+        "Data written to client side is buffered in server's readBuffer (and vice versa) like pipes",
+        "accept() returns the server-side socket from the backlog",
+        "send(socketId, data, flags) writes to peer's readBuffer and wakes readWaiters",
+        "recv(socketId, maxBytes, flags) reads from own readBuffer, returns null if empty and non-blocking",
+        "Close client → server gets EOF (recv returns null). Close server → client gets EOF",
+        "Add packages/core/test/kernel/loopback.test.ts: connect to listener, exchange data bidirectionally, close propagates EOF, loopback never calls host adapter",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "See spec section 1.2. If addr does not match a kernel listener, connect() should throw/error for now (external routing added later)."
+    },
+    {
+      "id": "US-007",
+      "title": "Add shutdown() and half-close support (K-1)",
+      "description": "As a developer, I need TCP half-close so that shutdown(SHUT_WR) sends EOF to the peer without closing the socket.",
+      "acceptanceCriteria": [
+        "SocketTable.shutdown(socketId, 'read' | 'write' | 'both') updates socket state",
+        "shutdown('write') transitions to 'write-closed' — peer recv() gets EOF, but local recv() still works",
+        "shutdown('read') transitions to 'read-closed' — local recv() returns EOF immediately",
+        "shutdown('both') transitions to 'closed'",
+        "send() on write-closed socket returns EPIPE",
+        "Add packages/core/test/kernel/socket-shutdown.test.ts: half-close write, half-close read, full shutdown, EPIPE on write-closed",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": "See spec section 1.1 (read-closed/write-closed states) and shutdown semantics."
+    },
+    {
+      "id": "US-008",
+      "title": "Add socketpair() support (K-1, K-5)",
+      "description": "As a developer, I need socketpair() so that two connected sockets can be created atomically for IPC.",
+      "acceptanceCriteria": [
+        "SocketTable.socketpair(domain, type, protocol, pid) returns [socketId1, socketId2]",
+        "Both sockets are pre-connected — data written to one appears in the other's readBuffer",
+        "Close one side delivers EOF to the other",
+        "Works for AF_UNIX + SOCK_STREAM",
+        "Add tests: create pair, exchange data, close one side delivers EOF",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": "See spec section 1.1 (socketpair) and 1.5 (Unix domain sockets). Reuses loopback data path from US-006."
+    },
+    {
+      "id": "US-009",
+      "title": "Add socket options support (K-6)",
+      "description": "As a developer, I need setsockopt/getsockopt so kernel sockets can be configured with SO_REUSEADDR, TCP_NODELAY, etc.",
+      "acceptanceCriteria": [
+        "SocketTable.setsockopt(socketId, level, optname, optval) stores option in socket's options Map",
+        "SocketTable.getsockopt(socketId, level, optname) retrieves option value",
+        "SO_REUSEADDR is enforced by bind() (already in US-005 — verify integration)",
+        "SO_RCVBUF / SO_SNDBUF set kernel buffer size limits",
+        "Add to socket-table.test.ts: set SO_REUSEADDR allows port reuse, set SO_RCVBUF enforces buffer limit",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": "See spec section 1.6. For loopback sockets most options are kernel-enforced. For external sockets, options are forwarded to host adapter (later)."
+    },
+    {
+      "id": "US-010",
+      "title": "Add socket flags: MSG_PEEK, MSG_DONTWAIT, MSG_NOSIGNAL (K-1)",
+      "description": "As a developer, I need socket send/recv flags so code can peek at data or do non-blocking one-off operations.",
+      "acceptanceCriteria": [
+        "recv() with MSG_PEEK reads data without consuming it from readBuffer",
+        "recv() with MSG_DONTWAIT returns EAGAIN if no data (even on blocking socket)",
+        "send() with MSG_NOSIGNAL returns EPIPE instead of raising SIGPIPE on broken connection",
+        "Add packages/core/test/kernel/socket-flags.test.ts: MSG_PEEK leaves data in buffer, MSG_DONTWAIT returns EAGAIN, MSG_NOSIGNAL suppresses SIGPIPE",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": "See spec section 1.1 flags comments."
+    },
+    {
+      "id": "US-011",
+      "title": "Implement network permissions in kernel (K-7)",
+      "description": "As a developer, I need kernel-level network permission checks so all socket operations go through deny-by-default policy.",
+      "acceptanceCriteria": [
+        "Add Kernel.checkNetworkPermission(op, addr) method",
+        "connect() to external addresses checks permission — EACCES if denied",
+        "listen() checks permission — EACCES if denied",
+        "send() to external addresses checks permission — EACCES if denied",
+        "Loopback connections (to kernel-owned ports) are always allowed regardless of policy",
+        "Add packages/core/test/kernel/network-permissions.test.ts: deny-by-default blocks external, allow-list permits specific hosts, loopback always allowed",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": true,
+      "notes": "See spec section 1.7. Replaces scattered SSRF validation in driver.ts."
+    },
+    {
+      "id": "US-012",
+      "title": "Add external connection routing via host adapter",
+      "description": "As a developer, I need connect() to external addresses to route through the host adapter so the kernel can reach the real network.",
+      "acceptanceCriteria": [
+        "SocketTable.connect() for non-loopback addresses calls hostAdapter.tcpConnect(host, port)",
+        "Data relay: send() on kernel socket writes to HostSocket, HostSocket.read() feeds kernel readBuffer",
+        "close() on kernel socket calls HostSocket.close()",
+        "Permission check via kernel.checkNetworkPermission() before host adapter call",
+        "Add a mock HostNetworkAdapter for testing",
+        "Add tests: connect to external via mock adapter, data flows through, close propagates",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": true,
+      "notes": "Wires the host adapter interface (US-003) to the socket table. Uses mock adapter in tests."
+    },
+    {
+      "id": "US-013",
+      "title": "Add external server socket routing via host adapter",
+      "description": "As a developer, I need listen() to optionally create real TCP listeners via the host adapter for external-facing servers.",
+      "acceptanceCriteria": [
+        "When listen() is called with an external-facing flag, kernel calls hostAdapter.tcpListen(host, port)",
+        "HostListener.accept() feeds new kernel sockets into the listener's backlog",
+        "HostListener.port returns the actual bound port (for port 0 ephemeral ports)",
+        "close() on listener calls HostListener.close()",
+        "Add tests with mock adapter: external listen, accept incoming, exchange data, close",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": true,
+      "notes": "Needed for http.createServer() to accept real TCP connections from outside the sandbox."
+    },
+    {
+      "id": "US-014",
+      "title": "Implement UDP sockets in kernel (K-4)",
+      "description": "As a developer, I need SOCK_DGRAM support so the kernel handles UDP send/recv with message boundary preservation.",
+      "acceptanceCriteria": [
+        "SocketTable.create() with SOCK_DGRAM type creates a datagram socket",
+        "sendTo(socketId, data, flags, destAddr) sends to specific address",
+        "recvFrom(socketId, maxBytes, flags) returns { data, srcAddr }",
+        "Loopback UDP: sendTo a kernel-bound UDP port delivers to that socket's readBuffer",
+        "Message boundaries preserved: two 100-byte sends produce two 100-byte recvs",
+        "Send to unbound port is silently dropped (UDP semantics)",
+        "External UDP routes through hostAdapter.udpBind/udpSend",
+        "Add packages/core/test/kernel/udp-socket.test.ts: loopback dgram, message boundaries, silent drop, external routing via mock",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": true,
+      "notes": "See spec section 1.4. Max datagram 65535 bytes, max queue depth 128."
+    },
+    {
+      "id": "US-015",
+      "title": "Implement Unix domain sockets in kernel (K-5)",
+      "description": "As a developer, I need AF_UNIX sockets so processes can communicate via VFS paths.",
+      "acceptanceCriteria": [
+        "bind(socketId, { path: '/tmp/my.sock' }) creates a socket file in the VFS",
+        "connect(socketId, { path: '/tmp/my.sock' }) connects to the bound socket via kernel",
+        "Always in-kernel routing (no host adapter)",
+        "Support both SOCK_STREAM and SOCK_DGRAM modes",
+        "stat() on socket path returns socket file type",
+        "Bind to existing path returns EADDRINUSE",
+        "Remove socket file → new connections fail with ECONNREFUSED",
+        "Add packages/core/test/kernel/unix-socket.test.ts: bind/connect/exchange data, socket file in VFS, EADDRINUSE, ECONNREFUSED after unlink",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": true,
+      "notes": "See spec section 1.5. Requires VFS integration for socket file entries."
+    },
+    {
+      "id": "US-016",
+      "title": "Expose SocketTable on KernelImpl",
+      "description": "As a developer, I need the socket table accessible from KernelImpl so runtimes can call kernel.socketTable.*.",
+      "acceptanceCriteria": [
+        "KernelImpl constructor creates a SocketTable instance",
+        "kernel.socketTable is publicly accessible",
+        "kernel.dispose() cleans up all sockets",
+        "Socket creation respects kernel process table (pid must exist)",
+        "Process exit cleans up all sockets owned by that process",
+        "Add integration test in existing kernel tests: create kernel, create socket, dispose kernel, verify cleanup",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 16,
+      "passes": true,
+      "notes": "Wires socket table into the existing kernel. After this, runtimes can start using kernel sockets."
+    },
+    {
+      "id": "US-017",
+      "title": "Implement kernel TimerTable (N-5, N-8)",
+      "description": "As a developer, I need a kernel timer table so timer ownership is tracked per-process with budget enforcement.",
+      "acceptanceCriteria": [
+        "Add packages/core/src/kernel/timer-table.ts with TimerTable class",
+        "createTimer(pid, delayMs, repeat, callback) returns timer ID and tracks ownership",
+        "clearTimer(timerId) cancels and removes timer",
+        "enforceLimit(pid, maxTimers) throws when budget exceeded",
+        "clearAllForProcess(pid) removes all timers for a process on exit",
+        "Timer in process A cannot be cleared by process B",
+        "Add packages/core/test/kernel/timer-table.test.ts: create/clear, budget enforcement, process cleanup, cross-process isolation",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 17,
+      "passes": true,
+      "notes": "See spec section 2.1. Host adapter provides actual setTimeout/setInterval scheduling."
+    },
+    {
+      "id": "US-018",
+      "title": "Implement kernel handle table (N-7, N-9)",
+      "description": "As a developer, I need kernel-level active handle tracking so resource budgets are enforced per-process.",
+      "acceptanceCriteria": [
+        "Extend ProcessEntry in kernel process table with activeHandles Map and handleLimit",
+        "registerHandle(pid, id, description) tracks a handle",
+        "unregisterHandle(pid, id) removes it",
+        "Registering beyond handleLimit throws error",
+        "Process exit cleans up all handles",
+        "Add tests to existing process table tests: register/unregister, limit enforcement, cleanup on exit",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 18,
+      "passes": true,
+      "notes": "See spec section 2.2. Simple Map-based tracking on existing ProcessEntry."
+    },
+    {
+      "id": "US-019",
+      "title": "Implement kernel DNS cache (N-10)",
+      "description": "As a developer, I need a shared DNS cache so both runtimes avoid redundant lookups.",
+      "acceptanceCriteria": [
+        "Add packages/core/src/kernel/dns-cache.ts with DnsCache class",
+        "lookup(hostname, rrtype) returns cached result or null",
+        "store(hostname, rrtype, result, ttl) caches with expiry",
+        "Expired entries return null on lookup",
+        "flush() clears all entries",
+        "Add packages/core/test/kernel/dns-cache.test.ts: cache hit, cache miss, TTL expiry, flush",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 19,
+      "passes": true,
+      "notes": "See spec section 2.3. Runtimes call kernel DNS before host adapter."
+    },
+    {
+      "id": "US-020",
+      "title": "Implement signal handler registry with sigaction semantics (K-8)",
+      "description": "As a developer, I need full POSIX signal handling so processes can register handlers with sa_mask and SA_RESTART.",
+      "acceptanceCriteria": [
+        "Add SignalHandler and ProcessSignalState types in kernel",
+        "sigaction(pid, signal, handler, mask, flags) registers handler",
+        "Signal delivery: 'ignore' discards, 'default' applies kernel action, function invokes handler",
+        "SA_RESTART: interrupted blocking syscall restarts after handler returns",
+        "sigprocmask(pid, how, set): SIG_BLOCK/SIG_UNBLOCK/SIG_SETMASK modify blocked signals",
+        "Signals delivered while blocked are queued in pendingSignals",
+        "Standard signals (1-31) coalesce: max 1 pending per signal number",
+        "Add packages/core/test/kernel/signal-handlers.test.ts: register handler, SA_RESTART, sigprocmask block/unblock, coalescing",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 20,
+      "passes": true,
+      "notes": "See spec section 2.6. Builds on existing kernel signal delivery."
+    },
+    {
+      "id": "US-021",
+      "title": "Implement Node.js HostNetworkAdapter",
+      "description": "As a developer, I need a concrete HostNetworkAdapter implementation using node:net and node:dgram so the kernel can delegate external I/O.",
+      "acceptanceCriteria": [
+        "Add HostNetworkAdapter implementation in the Node.js driver package (packages/nodejs/ or packages/secure-exec/)",
+        "tcpConnect(host, port) creates real TCP connection via node:net and returns HostSocket",
+        "tcpListen(host, port) creates real TCP server and returns HostListener",
+        "udpBind(host, port) creates real UDP socket via node:dgram and returns HostUdpSocket",
+        "dnsLookup(hostname, rrtype) uses node:dns",
+        "HostSocket.write/read/close/setOption/shutdown delegate to real net.Socket",
+        "HostListener.accept/close/port delegate to real net.Server",
+        "Typecheck passes"
+      ],
+      "priority": 21,
+      "passes": true,
+      "notes": "Concrete implementation of interfaces from US-003. Testing will be via integration tests with real sockets."
+    },
+    {
+      "id": "US-022",
+      "title": "Migrate Node.js FD table to kernel (N-1)",
+      "description": "As a developer, I need the Node.js bridge to use the kernel FD table so file descriptors are shared across runtimes.",
+      "acceptanceCriteria": [
+        "Remove fdTable Map and nextFd counter from bridge/fs.ts",
+        "All fdTable.get(fd)/fdTable.set(fd) calls replaced with kernel.fdTable.open()/read()/close() etc.",
+        "Kernel ProcessFDTable is used for FD allocation",
+        "Existing fs tests still pass",
+        "Typecheck passes"
+      ],
+      "priority": 22,
+      "passes": true,
+      "notes": "See spec section 3.1. Wire bridge to existing kernel ProcessFDTable."
+    },
+    {
+      "id": "US-023",
+      "title": "Migrate Node.js net.connect to kernel sockets (N-4)",
+      "description": "As a developer, I need net.connect() to route through kernel.socketTable.connect() so connections share the kernel socket lifecycle.",
+      "acceptanceCriteria": [
+        "Remove activeNetSockets Map from bridge/network.ts",
+        "Remove netSockets Map from bridge-handlers.ts (if it exists)",
+        "net.connect() calls kernel.socketTable.create() then kernel.socketTable.connect()",
+        "Data flows through kernel socket send/recv",
+        "Socket close calls kernel.socketTable.close()",
+        "Existing net tests still pass",
+        "Typecheck passes"
+      ],
+      "priority": 23,
+      "passes": true,
+      "notes": "See spec section 3.3. Depends on socket table being wired to kernel (US-016) and host adapter (US-021)."
+    },
+    {
+      "id": "US-024",
+      "title": "Migrate Node.js http.createServer to kernel sockets (N-2, N-3)",
+      "description": "As a developer, I need http.createServer() to use kernel.socketTable.listen() so loopback HTTP works without real TCP.",
+      "acceptanceCriteria": [
+        "http.createServer().listen(port) calls kernel.socketTable.create() → bind() → listen()",
+        "For loopback: incoming connections from kernel connect() are kernel sockets",
+        "For external: kernel calls hostAdapter.tcpListen() for real TCP",
+        "Remove servers Map, ownedServerPorts Set from driver.ts",
+        "Remove serverRequestListeners Map from bridge/network.ts",
+        "HTTP protocol parsing stays in the bridge layer (not kernel)",
+        "Existing HTTP tests still pass",
+        "Typecheck passes"
+      ],
+      "priority": 24,
+      "passes": true,
+      "notes": "See spec section 3.2. Highest ROI — unlocks 492 Node.js conformance tests (FIX-01)."
+    },
+    {
+      "id": "US-025",
+      "title": "Migrate Node.js SSRF validation to kernel (N-11)",
+      "description": "As a developer, I need SSRF validation in the kernel so it applies to all runtimes uniformly.",
+      "acceptanceCriteria": [
+        "Remove SSRF validation logic from driver.ts NetworkAdapter",
+        "Remove ownedServerPorts whitelist from driver.ts",
+        "kernel.checkNetworkPermission() handles all SSRF checks",
+        "Loopback to kernel-owned ports is always allowed",
+        "External connections checked against kernel permission policy",
+        "Existing SSRF/permission tests still pass",
+        "Typecheck passes"
+      ],
+      "priority": 25,
+      "passes": true,
+      "notes": "See spec section 3.5. Depends on kernel network permissions (US-011)."
+    },
+    {
+      "id": "US-026",
+      "title": "Migrate Node.js child process registry to kernel (N-6)",
+      "description": "As a developer, I need child process tracking in the kernel process table so all runtimes share process state.",
+      "acceptanceCriteria": [
+        "Remove activeChildren Map from bridge/child-process.ts",
+        "Bridge calls kernel.processTable.register() on spawn",
+        "Bridge queries kernel.processTable.get() for child state/events",
+        "waitpid/kill route through kernel process table",
+        "Existing child process tests still pass",
+        "Typecheck passes"
+      ],
+      "priority": 26,
+      "passes": true,
+      "notes": "See spec section 3.4."
+    },
+    {
+      "id": "US-027",
+      "title": "Route WasmVM socket create/connect through kernel",
+      "description": "As a developer, I need existing WasmVM TCP to route through the kernel socket table instead of the driver's private _sockets Map.",
+      "acceptanceCriteria": [
+        "WasmVM driver.ts: remove _sockets Map and _nextSocketId counter",
+        "netSocket handler calls kernel.socketTable.create() instead of allocating local ID",
+        "netConnect handler calls kernel.socketTable.connect()",
+        "netSend handler calls kernel.socketTable.send()",
+        "netRecv handler calls kernel.socketTable.recv()",
+        "netClose handler calls kernel.socketTable.close()",
+        "kernel-worker.ts: localToKernelFd maps local WASM FDs to kernel socket FDs",
+        "Existing WasmVM network tests still pass",
+        "Typecheck passes"
+      ],
+      "priority": 27,
+      "passes": true,
+      "notes": "See spec section 4.2. Migrates existing working TCP to kernel routing."
+    },
+    {
+      "id": "US-028",
+      "title": "Add bind/listen/accept WASI extensions for WasmVM server sockets",
+      "description": "As a developer, I need WASI extensions for server sockets so WasmVM programs can accept TCP connections.",
+      "acceptanceCriteria": [
+        "Add net_bind, net_listen, net_accept to host_net module in native/wasmvm/crates/wasi-ext/src/lib.rs",
+        "Add safe Rust wrappers following existing pattern (pub fn bind, listen, accept)",
+        "kernel-worker.ts: add net_bind, net_listen, net_accept import handlers that call kernel.socketTable",
+        "driver.ts: add kernelSocketBind, kernelSocketListen, kernelSocketAccept RPC handlers",
+        "Typecheck passes"
+      ],
+      "priority": 28,
+      "passes": true,
+      "notes": "See spec sections 4.3 and 4.5. Rust WASI extensions + JS kernel worker handlers."
+    },
+    {
+      "id": "US-029",
+      "title": "Add C sysroot patches for bind/listen/accept",
+      "description": "As a developer, I need C libc implementations of bind(), listen(), accept() that call the WASI host imports.",
+      "acceptanceCriteria": [
+        "Extend 0008-sockets.patch or create new patch with bind(), listen(), accept() in host_socket.c",
+        "bind() serializes sockaddr and calls __host_net_bind",
+        "listen() calls __host_net_listen",
+        "accept() calls __host_net_accept, maps returned FD, deserializes remote address",
+        "Patch applies cleanly on wasi-libc",
+        "Typecheck passes"
+      ],
+      "priority": 29,
+      "passes": true,
+      "notes": "See spec section 4.4 (server socket C code). Builds on existing 0008-sockets.patch pattern."
+    },
+    {
+      "id": "US-030",
+      "title": "Add sendto/recvfrom WASI extensions for WasmVM UDP",
+      "description": "As a developer, I need WASI extensions for UDP so WasmVM programs can send/receive datagrams.",
+      "acceptanceCriteria": [
+        "Add net_sendto, net_recvfrom to host_net module in lib.rs",
+        "Add safe Rust wrappers",
+        "kernel-worker.ts: add net_sendto, net_recvfrom import handlers routing through kernel.socketTable",
+        "driver.ts: add kernelSocketSendTo, kernelSocketRecvFrom RPC handlers",
+        "Typecheck passes"
+      ],
+      "priority": 30,
+      "passes": true,
+      "notes": "See spec sections 4.3 and 4.5. UDP extensions for WasmVM."
+    },
+    {
+      "id": "US-031",
+      "title": "Add C sysroot patches for sendto/recvfrom and AF_UNIX",
+      "description": "As a developer, I need C libc sendto(), recvfrom() implementations and AF_UNIX support in sockaddr serialization.",
+      "acceptanceCriteria": [
+        "Add sendto() to host_socket.c patch — serializes dest addr, calls __host_net_sendto",
+        "Add recvfrom() to host_socket.c patch — calls __host_net_recvfrom, deserializes src addr",
+        "Add AF_UNIX support in sockaddr_to_string() / string_to_sockaddr() — handles struct sockaddr_un",
+        "Patch applies cleanly",
+        "Typecheck passes"
+      ],
+      "priority": 31,
+      "passes": true,
+      "notes": "See spec section 4.4 (UDP and AF_UNIX C code)."
+    },
+    {
+      "id": "US-032",
+      "title": "Add WasmVM server socket C test program and test",
+      "description": "As a developer, I need a C test program that exercises bind→listen→accept→recv→send→close through the WasmVM.",
+      "acceptanceCriteria": [
+        "Add native/wasmvm/c/programs/tcp_server.c that: socket() → bind(port) → listen() → accept() → recv() → send('pong') → close()",
+        "Add tcp_server to PATCHED_PROGRAMS in Makefile",
+        "Add packages/wasmvm/test/net-server.test.ts that: spawns tcp_server as WASM, connects from kernel as client, verifies data exchange",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 32,
+      "passes": true,
+      "notes": "See spec section 4.9. Integration test for WasmVM server sockets."
+    },
+    {
+      "id": "US-033",
+      "title": "Add WasmVM UDP C test program and test",
+      "description": "As a developer, I need a C test program that exercises UDP send/recv through the WasmVM.",
+      "acceptanceCriteria": [
+        "Add native/wasmvm/c/programs/udp_echo.c that: socket(SOCK_DGRAM) → bind() → recvfrom() → sendto() (echo server)",
+        "Add udp_echo to PATCHED_PROGRAMS in Makefile",
+        "Add packages/wasmvm/test/net-udp.test.ts that: spawns udp_echo as WASM, sends datagram, verifies echo response, verifies message boundaries",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 33,
+      "passes": true,
+      "notes": "See spec section 4.9."
+    },
+    {
+      "id": "US-034",
+      "title": "Add WasmVM Unix domain socket C test program and test",
+      "description": "As a developer, I need a C test program that exercises AF_UNIX sockets through the WasmVM.",
+      "acceptanceCriteria": [
+        "Add native/wasmvm/c/programs/unix_socket.c that: socket(AF_UNIX) → bind('/tmp/test.sock') → listen() → accept() → recv/send",
+        "Add unix_socket to PATCHED_PROGRAMS in Makefile",
+        "Add packages/wasmvm/test/net-unix.test.ts that: spawns unix_socket WASM, connects from kernel, verifies data exchange",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 34,
+      "passes": true,
+      "notes": "See spec section 4.9."
+    },
+    {
+      "id": "US-035",
+      "title": "Add WasmVM signal handler WASI extension and C test",
+      "description": "As a developer, I need sigaction() support in WasmVM so WASM programs can register signal handlers.",
+      "acceptanceCriteria": [
+        "Add net_sigaction WASI extension to lib.rs (registers handler function pointer + mask + flags)",
+        "kernel-worker.ts: store handler pointer in kernel process table on sigaction call",
+        "Signal delivery at syscall boundary: check pendingSignals bitmask, invoke WASM trampoline",
+        "Add __wasi_signal_trampoline export in C sysroot patch",
+        "Add native/wasmvm/c/programs/signal_handler.c: sigaction(SIGINT, handler) → busy loop → verify handler called",
+        "Add packages/wasmvm/test/signal-handler.test.ts: spawn signal_handler, deliver SIGINT via kernel, verify handler fires",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 35,
+      "passes": true,
+      "notes": "See spec sections 4.8 and 4.9. Cooperative delivery at syscall boundaries."
+    },
+    {
+      "id": "US-036",
+      "title": "Add cross-runtime network integration test",
+      "description": "As a developer, I need to verify that WasmVM and Node.js can communicate via kernel sockets.",
+      "acceptanceCriteria": [
+        "Add packages/secure-exec/tests/kernel/cross-runtime-network.test.ts (or packages/core/test/kernel/)",
+        "Test: WasmVM tcp_server on port 9090, Node.js net.connect(9090) — verify data exchange",
+        "Test: Node.js http.createServer on port 8080, WasmVM curl-like client connects — verify response",
+        "Verify loopback: neither connection touches the host network stack",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 36,
+      "passes": true,
+      "notes": "See spec Part 6 cross-runtime integration test. The signature test that kernel consolidation works."
+    },
+    {
+      "id": "US-037",
+      "title": "Run Node.js conformance suite and update expectations for HTTP server tests",
+      "description": "As a developer, I need to re-run the 492 FIX-01 HTTP server tests and reclassify ones that now pass.",
+      "acceptanceCriteria": [
+        "Run packages/secure-exec/tests/node-conformance/runner.test.ts for FIX-01 tests",
+        "Remove expectations.json entries for tests that now genuinely pass",
+        "Update remaining entries with specific failure reasons (not vague 'fails in sandbox')",
+        "Update docs-internal/nodejs-compat-roadmap.md pass counts",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 37,
+      "passes": true,
+      "notes": "See spec section 7.3. This is the conformance payoff from the kernel consolidation."
+    },
+    {
+      "id": "US-038",
+      "title": "Run Node.js conformance suite and update expectations for dgram/net/tls tests",
+      "description": "As a developer, I need to re-run dgram, net, tls, https, http2 tests and reclassify from unsupported-module to specific reasons.",
+      "acceptanceCriteria": [
+        "Re-run all 76 dgram tests — remove expectations for tests that now pass",
+        "Re-run https/tls/net glob tests — reclassify from unsupported-module to specific failure reasons",
+        "Update docs-internal/nodejs-compat-roadmap.md with new pass counts",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 38,
+      "passes": true,
+      "notes": "See spec section 7.3. Reclassify stale glob categorizations."
+    },
+    {
+      "id": "US-039",
+      "title": "Proofing: adversarial review of kernel implementation completeness",
+      "description": "As a developer, I need a full audit verifying no networking code bypasses the kernel in either runtime.",
+      "acceptanceCriteria": [
+        "Verify: packages/nodejs driver.ts has no servers Map, ownedServerPorts Set, netSockets Map, upgradeSockets Map",
+        "Verify: packages/nodejs bridge/network.ts has no serverRequestListeners Map, activeNetSockets Map",
+        "Verify: packages/wasmvm driver.ts has no _sockets Map, _nextSocketId counter",
+        "Verify: all http.createServer() routes through kernel.socketTable.listen()",
+        "Verify: all net.connect() routes through kernel.socketTable.connect()",
+        "Verify: SSRF validation is only in kernel, not in host adapter",
+        "Document any remaining gaps as new stories if found",
+        "Typecheck passes"
+      ],
+      "priority": 39,
+      "passes": true,
+      "notes": "See spec section 7.1. This is the final proofing pass."
+    },
+    {
+      "id": "US-040",
+      "title": "Remove legacy networking Maps from Node.js driver and bridge",
+      "description": "As a developer, I need to complete the legacy code removal that US-023/024/025 deferred so all networking routes exclusively through the kernel.",
+      "acceptanceCriteria": [
+        "Remove `servers` Map (line ~294) from packages/nodejs/src/driver.ts and all references to it (httpServerListen, httpServerClose handlers)",
+        "Remove `ownedServerPorts` Set (line ~296) from driver.ts and all references (fetch, httpRequest SSRF checks)",
+        "Remove `upgradeSockets` Map (line ~298) from driver.ts and all references (upgrade handlers)",
+        "Remove `activeNetSockets` Map (line ~2042) from packages/nodejs/src/bridge/network.ts and all references (dispatch routing, connect)",
+        "All HTTP server operations route through kernel.socketTable — verify with grep: no direct net.Server or http.Server creation in driver.ts outside of HostNetworkAdapter",
+        "All net.connect operations route through kernel.socketTable — verify with grep: no direct net.Socket creation in bridge/network.ts outside of HostNetworkAdapter",
+        "SSRF validation uses only kernel.checkNetworkPermission, not ownedServerPorts",
+        "Existing tests pass: run `pnpm vitest run packages/secure-exec/tests/test-suite/node.test.ts` and `pnpm vitest run packages/secure-exec/tests/runtime-driver/`",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 40,
+      "passes": true,
+      "notes": "Addresses review finding H-1. US-024 added kernel socket path alongside legacy adapter path but never removed the legacy path. US-039 audit rationalized this as 'fallback' — it must be removed now. Read docs-internal/reviews/kernel-consolidation-prd-review.md for context."
+    },
+    {
+      "id": "US-041",
+      "title": "Fix CI crossterm build and verify WASM test programs compile and run",
+      "description": "As a developer, I need CI to pass on this branch so WASM binaries are built and skip-guarded tests actually execute.",
+      "acceptanceCriteria": [
+        "Identify and fix the crossterm crate compilation failure for wasm32-wasip1 (likely needs feature gate or dependency exclusion in native/wasmvm/crates/)",
+        "Run `cd native/wasmvm && make wasm` locally — all WASM command binaries build successfully in target/wasm32-wasip1/release/commands/",
+        "Run `cd native/wasmvm/c && make` — all PATCHED_PROGRAMS (including tcp_server, udp_echo, unix_socket, signal_handler) compile to c/build/",
+        "Run `pnpm vitest run packages/wasmvm/test/net-server.test.ts` — tests execute (not skipped) and pass",
+        "Run `pnpm vitest run packages/wasmvm/test/net-udp.test.ts` — tests execute (not skipped) and pass",
+        "Run `pnpm vitest run packages/wasmvm/test/net-unix.test.ts` — tests execute (not skipped) and pass",
+        "Run `pnpm vitest run packages/wasmvm/test/signal-handler.test.ts` — tests execute (not skipped) and pass",
+        "If any C sysroot patch (0008-sockets.patch, 0011-sigaction.patch) fails to apply, fix the patch hunks",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 41,
+      "passes": true,
+      "notes": "Addresses review findings H-2, H-3, S-1. The C programs and patches were committed by US-029/031/032-035 but never compiled or tested because WASM binaries were never built. This story requires the Rust toolchain (rustup will install from rust-toolchain.toml) and wasm-opt/binaryen."
+    },
+    {
+      "id": "US-042",
+      "title": "Wire kernel TimerTable and handle tracking to Node.js bridge",
+      "description": "As a developer, I need the Node.js bridge to use kernel timer and handle tracking so resource budgets are kernel-enforced.",
+      "acceptanceCriteria": [
+        "KernelImpl constructor creates a TimerTable instance and exposes it as kernel.timerTable",
+        "In packages/nodejs/src/bridge/process.ts: replace bridge-local `_timerId` counter (line ~975) and `_timers`/`_intervals` Maps (lines ~976-977) with calls to kernel.timerTable.createTimer() and kernel.timerTable.clearTimer()",
+        "In packages/nodejs/src/bridge/active-handles.ts: replace bridge-local `_activeHandles` Map (line ~18) with calls to kernel processTable.registerHandle()/unregisterHandle()",
+        "Timer budget enforcement works: setting a timer limit on the kernel causes excess setTimeout calls to throw",
+        "Handle budget enforcement works: setting a handle limit causes excess handle registrations to throw",
+        "Process exit cleans up all timers and handles for that process via kernel",
+        "Existing timer tests pass: run `pnpm vitest run packages/secure-exec/tests/test-suite/node.test.ts`",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 42,
+      "passes": true,
+      "notes": "Addresses review finding H-12. US-017 created TimerTable and US-018 added handle tracking to ProcessTable, but neither was wired to the Node.js bridge. The bridge still uses bridge-local Maps. This story connects the kernel infrastructure to the runtime."
+    },
+    {
+      "id": "US-043",
+      "title": "Route WasmVM setsockopt through kernel instead of ENOSYS",
+      "description": "As a developer, I need WasmVM setsockopt to route through the kernel SocketTable so socket options actually work for WASM programs.",
+      "acceptanceCriteria": [
+        "In packages/wasmvm/src/kernel-worker.ts: replace the ENOSYS stub at line ~984-987 in net_setsockopt with a call that routes through RPC to the kernel",
+        "In packages/wasmvm/src/driver.ts: add a kernelSocketSetopt RPC handler that calls kernel.socketTable.setsockopt(socketId, level, optname, optval)",
+        "Add getsockopt support similarly: kernel-worker net_getsockopt routes through RPC to kernel.socketTable.getsockopt()",
+        "Add test to packages/wasmvm/test/net-socket.test.ts: WASM program calls setsockopt(SO_REUSEADDR) and it succeeds (no ENOSYS)",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 43,
+      "passes": true,
+      "notes": "Addresses review finding M-10. kernel-worker.ts line 984 currently hardcodes `return ENOSYS` for net_setsockopt. The kernel SocketTable already has a working setsockopt() implementation at socket-table.ts line ~464."
+    },
+    {
+      "id": "US-044",
+      "title": "Implement SA_RESTART syscall restart logic",
+      "description": "As a developer, I need blocking syscalls to restart after a signal handler returns when SA_RESTART is set, matching POSIX behavior.",
+      "acceptanceCriteria": [
+        "In packages/core/src/kernel/socket-table.ts: recv() and accept() check for pending signals during blocking waits",
+        "When a signal interrupts a blocking recv/accept and the handler has SA_RESTART: the syscall transparently restarts (re-enters the wait loop)",
+        "When a signal interrupts a blocking recv/accept and the handler does NOT have SA_RESTART: the syscall returns EINTR error",
+        "Add tests to packages/core/test/kernel/signal-handlers.test.ts: (1) SA_RESTART recv restarts after signal, (2) no SA_RESTART recv returns EINTR, (3) SA_RESTART accept restarts after signal",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 44,
+      "passes": true,
+      "notes": "Addresses review finding H-4. US-020 defined SA_RESTART constant (0x10000000) and stores it on signal handlers, but no blocking syscall checks it. EINTR error code was added to KernelErrorCode 'for future SA_RESTART integration' — this story does that integration."
+    },
+    {
+      "id": "US-045",
+      "title": "Implement O_NONBLOCK enforcement in socket operations",
+      "description": "As a developer, I need socket operations to respect the nonBlocking flag so non-blocking I/O works correctly.",
+      "acceptanceCriteria": [
+        "In socket-table.ts: recv() on a socket with nonBlocking=true returns EAGAIN immediately when readBuffer is empty (instead of waiting)",
+        "In socket-table.ts: accept() on a socket with nonBlocking=true returns EAGAIN immediately when backlog is empty",
+        "In socket-table.ts: connect() on a socket with nonBlocking=true to an external address returns EINPROGRESS",
+        "Add setsockopt or fcntl-style method to toggle nonBlocking flag on an existing socket",
+        "Add tests to packages/core/test/kernel/socket-flags.test.ts: (1) nonBlocking recv returns EAGAIN, (2) nonBlocking accept returns EAGAIN, (3) toggle nonBlocking via setsockopt/fcntl",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 45,
+      "passes": true,
+      "notes": "Addresses review finding M-7. The nonBlocking field exists on KernelSocket (line ~116) and is initialized to false (line ~189) but is never read by recv/accept/connect. Spec section 4.7 describes the expected O_NONBLOCK behavior."
+    },
+    {
+      "id": "US-046",
+      "title": "Implement backlog limit and loopback port 0 ephemeral assignment",
+      "description": "As a developer, I need listen() to enforce backlog limits and bind() to support port 0 for loopback sockets.",
+      "acceptanceCriteria": [
+        "In socket-table.ts listen(): use the backlogSize parameter (currently prefixed with _ and unused at line ~297) to cap the backlog array length",
+        "When backlog is full, new loopback connections get ECONNREFUSED",
+        "In socket-table.ts bind(): when port is 0, assign an ephemeral port from range 49152-65535 that is not already in the listeners map",
+        "After ephemeral port assignment, socket.localAddr.port reflects the assigned port (not 0)",
+        "Add tests to packages/core/test/kernel/socket-table.test.ts: (1) listen with backlog=2, connect 3 times, 3rd gets ECONNREFUSED, (2) bind port 0 assigns ephemeral port, (3) two bind port 0 get different ports",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 46,
+      "passes": true,
+      "notes": "Addresses review findings M-9 (backlog overflow) and M-8 (port 0). Both are small changes in socket-table.ts combined into one story."
+    },
+    {
+      "id": "US-047",
+      "title": "Add getLocalAddr/getRemoteAddr methods and WasmVM getsockname/getpeername",
+      "description": "As a developer, I need formal SocketTable accessor methods and WasmVM WASI extensions so C programs can call getsockname()/getpeername().",
+      "acceptanceCriteria": [
+        "Add SocketTable.getLocalAddr(socketId): SockAddr method that returns socket.localAddr (throws EBADF if socket doesn't exist)",
+        "Add SocketTable.getRemoteAddr(socketId): SockAddr method that returns socket.remoteAddr (throws ENOTCONN if not connected)",
+        "Add net_getsockname and net_getpeername to host_net module in native/wasmvm/crates/wasi-ext/src/lib.rs",
+        "Add safe Rust wrappers following existing pattern",
+        "kernel-worker.ts: add net_getsockname and net_getpeername import handlers that call kernel.socketTable.getLocalAddr/getRemoteAddr via RPC",
+        "driver.ts: add kernelSocketGetLocalAddr and kernelSocketGetRemoteAddr RPC handlers",
+        "Add C implementations in sysroot patch: getsockname() calls __host_net_getsockname, getpeername() calls __host_net_getpeername",
+        "Add test: kernel socket after connect has correct localAddr and remoteAddr",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 47,
+      "passes": true,
+      "notes": "Addresses review finding H-9. Data is already accessible via socketTable.get(id).localAddr but formal methods and WasmVM WASI extensions are missing. Follows existing WASI extension pattern: Rust extern → kernel-worker handler → driver RPC."
+    },
+    {
+      "id": "US-048",
+      "title": "Wire InodeTable into VFS for deferred unlink and real nlink/ino",
+      "description": "As a developer, I need the InodeTable integrated into the VFS so stat() returns real inode numbers, hard links work, and unlinked-but-open files persist until last FD closes.",
+      "acceptanceCriteria": [
+        "KernelImpl constructor creates an InodeTable instance and exposes it as kernel.inodeTable",
+        "In packages/core/src/shared/in-memory-fs.ts: each file/directory gets an inode via inodeTable.allocate() on creation",
+        "stat() returns the inode's ino number instead of a hash or 0",
+        "stat() returns the inode's nlink count instead of hardcoded 1",
+        "In in-memory-fs.ts removeFile(): when file has open FDs (openRefCount > 0), remove directory entry but keep data — file disappears from listings but stays readable via open FDs",
+        "When last FD to an unlinked file closes (decrementOpenRefs → shouldDelete=true), data is deleted",
+        "fdOpen() calls inodeTable.incrementOpenRefs(ino), fdClose() calls inodeTable.decrementOpenRefs(ino)",
+        "Add tests to packages/core/test/kernel/inode-table.test.ts: (1) stat returns real ino, (2) unlink with open FD keeps data, (3) close last FD deletes data, (4) nlink increments on hard link",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 48,
+      "passes": true,
+      "notes": "InodeTable was created by US-002 with full allocate/incrementLinks/decrementLinks/shouldDelete logic but was never wired into the kernel or VFS. in-memory-fs.ts removeFile() at line ~201 immediately deletes with no refcounting. stat() returns hardcoded nlink:1 at line ~152."
+    },
+    {
+      "id": "US-049",
+      "title": "Add '.' and '..' entries to readdir",
+      "description": "As a developer, I need readdir to include '.' and '..' entries to match POSIX behavior.",
+      "acceptanceCriteria": [
+        "In packages/core/src/shared/in-memory-fs.ts listDirEntries(): prepend '.' (self) and '..' (parent) to the entry list before returning real entries",
+        "'.' entry has the directory's own inode number (if InodeTable is wired) and type DT_DIR",
+        "'..' entry has the parent directory's inode number and type DT_DIR; for root '/' the parent is itself",
+        "Existing readdir tests still pass (they may need updating if they assert exact entry counts)",
+        "Add test: readdir('/tmp') includes '.', '..', and any files in /tmp",
+        "Add test: readdir('/') has '..' pointing to itself",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 49,
+      "passes": true,
+      "notes": "in-memory-fs.ts listDirEntries() at lines ~43-74 builds entries from the files/dirs Maps but never adds '.' or '..'. Many POSIX programs and test suites expect these."
+    },
+    {
+      "id": "US-050",
+      "title": "Implement O_EXCL and O_TRUNC in kernel fdOpen",
+      "description": "As a developer, I need O_EXCL and O_TRUNC flags honored by fdOpen so file creation and truncation match POSIX semantics.",
+      "acceptanceCriteria": [
+        "In packages/core/src/kernel/kernel.ts or fd-table.ts: when O_CREAT | O_EXCL is set and the file already exists, return EEXIST error",
+        "When O_TRUNC is set and the file exists, truncate file contents to zero bytes on open",
+        "O_EXCL without O_CREAT is ignored (POSIX behavior)",
+        "Add tests: (1) O_CREAT|O_EXCL on new file succeeds, (2) O_CREAT|O_EXCL on existing file returns EEXIST, (3) O_TRUNC truncates existing file, (4) O_TRUNC on new file with O_CREAT creates empty file",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 50,
+      "passes": true,
+      "notes": "O_EXCL (0o200) and O_TRUNC (0o1000) are defined as constants in types.ts but fdOpen never checks them. The open() method in fd-table.ts line ~91 only handles O_CLOEXEC."
+    },
+    {
+      "id": "US-051",
+      "title": "Implement blocking flock with WaitQueue",
+      "description": "As a developer, I need flock() to block when a conflicting lock is held instead of returning EAGAIN, using the kernel's WaitQueue.",
+      "acceptanceCriteria": [
+        "In packages/core/src/kernel/file-lock.ts: add a WaitQueue (from kernel/wait.ts) to each lock entry",
+        "When flock() detects a conflict and nonBlocking is false, enqueue a WaitHandle and await it instead of returning EAGAIN",
+        "When a lock is released (unlock), wake one waiter from the WaitQueue so the next flock() caller acquires the lock",
+        "Blocking flock with a timeout: use WaitHandle timeout to implement POSIX-like behavior",
+        "Non-blocking flock (LOCK_NB) still returns EAGAIN immediately on conflict",
+        "Add tests: (1) process A holds exclusive lock, process B flock() blocks until A unlocks, (2) LOCK_NB returns EAGAIN, (3) multiple waiters are served FIFO",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 51,
+      "passes": true,
+      "notes": "file-lock.ts line ~60 currently throws EAGAIN on conflict even when nonBlocking is false, with comment 'Blocking not implemented'. WaitQueue from US-001 is the intended mechanism."
+    },
+    {
+      "id": "US-052",
+      "title": "Implement blocking pipe write with WaitQueue",
+      "description": "As a developer, I need pipe write() to block when the buffer is full instead of returning EAGAIN, using the kernel's WaitQueue.",
+      "acceptanceCriteria": [
+        "In packages/core/src/kernel/pipe-manager.ts: add writeWaiters WaitQueue to pipe state",
+        "When write() detects buffer full (currentSize + data.length > MAX_PIPE_BUFFER_BYTES) and pipe is blocking, enqueue a WaitHandle and await it instead of returning EAGAIN",
+        "When read() consumes data from the buffer, wake one write waiter so the blocked write can proceed",
+        "Non-blocking pipes (O_NONBLOCK) still return EAGAIN immediately when buffer is full",
+        "Partial writes: if only N bytes fit, write N bytes, wake reader, then block for the remainder",
+        "Add tests: (1) write to full pipe blocks until reader drains, (2) non-blocking pipe write returns EAGAIN, (3) partial write then block",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 52,
+      "passes": true,
+      "notes": "pipe-manager.ts lines ~106-108 return EAGAIN when buffer is full regardless of blocking mode. WaitQueue from US-001 is the intended mechanism. Read waiters already exist (readWaiters) but write waiters do not."
+    },
+    {
+      "id": "US-053",
+      "title": "Implement true poll timeout -1 infinite blocking",
+      "description": "As a developer, I need poll() with timeout -1 to block indefinitely until an FD becomes ready, not cap at 30 seconds.",
+      "acceptanceCriteria": [
+        "In packages/wasmvm/src/driver.ts netPoll handler: when timeout < 0, loop with WaitQueue waits instead of capping at 30s",
+        "Each iteration checks all polled FDs for readiness; if none ready, re-enter wait",
+        "When any polled FD becomes ready (data arrives, connection accepted, pipe written), the wait is woken",
+        "poll() with timeout 0 still returns immediately (non-blocking poll)",
+        "poll() with timeout > 0 still uses the specified timeout in milliseconds",
+        "Add test to packages/wasmvm/test/: poll with timeout -1 on a pipe, write to pipe from another process, verify poll returns",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 53,
+      "passes": true,
+      "notes": "driver.ts line ~1136 sets waitMs=30000 when timeout<0. This means long-running WASM programs using poll(-1) will spuriously wake every 30s. The fix should use WaitQueue wake notifications from socket/pipe data arrival."
+    },
+    {
+      "id": "US-054",
+      "title": "Populate /proc filesystem with basic entries",
+      "description": "As a developer, I need /proc populated with standard entries so programs that read /proc/self/* work correctly.",
+      "acceptanceCriteria": [
+        "In packages/core/src/kernel/kernel.ts: populate /proc during kernel init with a proc device layer",
+        "/proc/self is a symlink-like entry that resolves to /proc/<current_pid>",
+        "/proc/self/fd/ lists open file descriptors for the current process (from kernel ProcessFDTable)",
+        "/proc/self/exe is a symlink or readable entry returning the process binary path",
+        "/proc/self/cwd contains the current working directory path",
+        "/proc/self/environ contains environment variables (or empty if sandboxed)",
+        "Reading /proc/self/fd/<n> returns info about that FD",
+        "Add tests: (1) readdir /proc/self/fd returns open FD numbers, (2) readlink /proc/self/fd/0 returns stdin path, (3) readFile /proc/self/cwd returns cwd",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 54,
+      "passes": true,
+      "notes": "kernel.ts line ~148 creates /proc as an empty directory. No proc entries are populated. Programs that check /proc/self/fd or /proc/self/cwd fail. This needs a virtual device layer that generates content dynamically from kernel state."
+    },
+    {
+      "id": "US-055",
+      "title": "Implement SA_RESETHAND (one-shot signal handler)",
+      "description": "As a developer, I need SA_RESETHAND support so signal handlers can be automatically reset to SIG_DFL after first invocation.",
+      "acceptanceCriteria": [
+        "Add SA_RESETHAND constant (0x80000000) to packages/core/src/kernel/types.ts alongside existing SA_RESTART",
+        "In process-table.ts signal delivery: when handler has SA_RESETHAND flag, reset handler to SIG_DFL after invoking it once",
+        "sigaction() accepts SA_RESETHAND flag and stores it on the handler",
+        "SA_RESETHAND + SA_RESTART can be combined (both flags honored)",
+        "Add tests to packages/core/test/kernel/signal-handlers.test.ts: (1) handler with SA_RESETHAND fires once then reverts to default, (2) second delivery of same signal uses default action, (3) SA_RESETHAND | SA_RESTART works",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 55,
+      "passes": true,
+      "notes": "SA_RESETHAND is a POSIX sigaction flag for one-shot handlers. The spec lists it alongside SA_RESTART. US-020 implemented sigaction but only SA_RESTART flag — SA_RESETHAND was missed."
+    },
+    {
+      "id": "US-056",
+      "title": "Finish Node.js ESM parity for exec(), import conditions, and dynamic import failures",
+      "description": "As a developer, I need SecureExec's Node runtime to execute ESM entrypoints with Node-like semantics so package exports, type=module, built-in ESM imports, and dynamic import all behave correctly inside the sandbox.",
+      "acceptanceCriteria": [
+        "Verify and keep passing the ESM runtime-driver tests for: package exports/import entrypoints, deep ESM import chains, 1000-module graphs, package type module .js entrypoints, Node built-in ESM imports, and dynamic import success paths",
+        "exec(code, { filePath: '/entry.mjs' }) runs the entry as ESM instead of compiling it as CommonJS",
+        "ESM resolution uses import conditions for V8 module loading, while require() inside the same execution still uses require conditions",
+        "Built-in ESM imports like node:fs and node:path expose both default and named exports",
+        "Dynamic import success paths pass in sandbox for relative .mjs modules, including namespace caching on repeated imports",
+        "Dynamic import error paths pass in sandbox for missing module, syntax error, and evaluation error cases with non-zero exit codes and preserved error messages",
+        "Run pnpm exec vitest run tests/runtime-driver/node/index.test.ts with the ESM/dynamic-import-focused filter and record the first concrete failing case if any remain",
+        "Typecheck passes"
+      ],
+      "priority": 56,
+      "passes": true,
+      "notes": "Verified in this branch on 2026-03-24: the focused runtime-driver slice now passes for ESM entry execution, package exports, type=module .js entrypoints, built-in ESM imports, successful dynamic imports, and dynamic-import missing-module/syntax/evaluation error paths. The remaining gap was closed by propagating async entrypoint rejections through the native V8 exec path and resolving dynamic imports with import conditions."
+    },
+    {
+      "id": "US-057",
+      "title": "Fix top-level await semantics for Node.js ESM execution",
+      "description": "As a developer, I need top-level await in sandboxed ESM to block execution until completion so modules with long async startup behave like Node.js.",
+      "acceptanceCriteria": [
+        "Add focused runtime-driver coverage for top-level await in entry modules and transitive imported modules",
+        "An ESM entrypoint with top-level await does not return early before the awaited work completes",
+        "Dynamic import of a module that contains top-level await waits for that module's completion before resolving",
+        "Long-running awaited work respects cpuTimeLimitMs and surfaces timeout errors correctly",
+        "Document the final behavior in docs-internal/friction.md and remove or update the existing top-level-await friction note when fixed",
+        "Run the targeted top-level-await tests through the SecureExec sandbox, not host Node.js",
+        "Typecheck passes"
+      ],
+      "priority": 57,
+      "passes": true,
+      "notes": "This is the follow-up for the long-standing 'ESM + top-level await can return early' runtime gap. The user request said 'top-level weights'; treated here as top-level await."
+    }
+  ]
+}

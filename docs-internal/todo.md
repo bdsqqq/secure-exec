@@ -12,6 +12,10 @@ Priority order is:
 
 ---
 
+## Rename
+
+- [ ] Rename `wasmvm` back to `seos` (Secure Exec OS) across the codebase (packages, directories, imports, docs)
+
 docs-internal/proposal-kernel-consolidation.md
 docs-internal/specs/custom-bindings.md
 docs-internal/specs/cli-tool-e2e.md

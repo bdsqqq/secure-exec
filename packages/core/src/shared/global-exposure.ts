@@ -244,9 +244,49 @@ export const NODE_CUSTOM_GLOBAL_INVENTORY: readonly CustomGlobalInventoryEntry[]
 		rationale: "Host crypto verify bridge reference.",
 	},
 	{
+		name: "_cryptoAsymmetricOp",
+		classification: "hardened",
+		rationale: "Host asymmetric crypto operation bridge reference.",
+	},
+	{
+		name: "_cryptoCreateKeyObject",
+		classification: "hardened",
+		rationale: "Host asymmetric key import bridge reference.",
+	},
+	{
 		name: "_cryptoGenerateKeyPairSync",
 		classification: "hardened",
 		rationale: "Host crypto key-pair generation bridge reference.",
+	},
+	{
+		name: "_cryptoGenerateKeySync",
+		classification: "hardened",
+		rationale: "Host symmetric crypto key generation bridge reference.",
+	},
+	{
+		name: "_cryptoGeneratePrimeSync",
+		classification: "hardened",
+		rationale: "Host prime generation bridge reference.",
+	},
+	{
+		name: "_cryptoDiffieHellman",
+		classification: "hardened",
+		rationale: "Host stateless Diffie-Hellman bridge reference.",
+	},
+	{
+		name: "_cryptoDiffieHellmanGroup",
+		classification: "hardened",
+		rationale: "Host Diffie-Hellman group bridge reference.",
+	},
+	{
+		name: "_cryptoDiffieHellmanSessionCreate",
+		classification: "hardened",
+		rationale: "Host Diffie-Hellman/ECDH session creation bridge reference.",
+	},
+	{
+		name: "_cryptoDiffieHellmanSessionCall",
+		classification: "hardened",
+		rationale: "Host Diffie-Hellman/ECDH session method bridge reference.",
 	},
 	{
 		name: "_cryptoSubtle",

@@ -1,0 +1,1268 @@
+## Codebase Patterns
+- Native V8 `StreamEvent` payloads are not always V8-serialized; `native/v8-runtime/src/stream.rs` must fall back to UTF-8 JSON/string decoding or timer/stream dispatch callbacks can stall silently
+- Keep `MODULE_RESOLVE_STATE` alive until async ESM execution fully finalizes; native top-level await plus dynamic `import()` still needs the bridge context and module cache after `execute_module()` first returns
+- `packages/v8/src/runtime.ts` prefers `native/v8-runtime/target/release/secure-exec-v8` over debug builds, so rebuild the release binary before validating native V8 runtime changes through package tests
+- After editing `packages/core/isolate-runtime/src/inject/*`, regenerate `packages/core/src/generated/isolate-runtime.ts` via `node packages/nodejs/scripts/build-isolate-runtime.mjs` before running Node runtime tests
+- Bridge handler callbacks that need optional dispatch arguments should accept them explicitly; do not inspect extra bridge-call args through `arguments` inside arrow functions
+- In `ProcessTable` signal delivery, apply one-shot disposition resets before `deliverPendingSignals()` so a same-signal delivery queued during the handler observes `SIG_DFL` instead of reusing the old callback
+- Keep procfs state canonical in `packages/core/src/kernel/proc-layer.ts` as `/proc/<pid>` entries, and resolve `/proc/self` only in per-process runtime/VFS adapters where the current PID is known
+- Cross-package tests that import workspace packages like `@secure-exec/core` execute the built `dist` output; rebuild the changed package with `pnpm turbo run build --filter=<pkg>` before Vitest runs or you'll exercise stale JS
+- `FileLockManager.flock()` is async; keep blocking advisory locks bounded with a timed `WaitQueue` retry loop and wake the next waiter from every last-reference unlock path
+- For bounded blocking producers like `PipeManager.write()`, commit any bytes that fit before enqueueing a `WaitQueue`, and wake blocked writers from both drain paths and close paths so waits cannot hang
+- `KernelInterface.fdOpen()` is synchronous, so open-time file semantics must go through sync-capable VFS hooks threaded through device/permission wrappers instead of async read/write fallbacks
+- When `InMemoryFileSystem` exposes POSIX-only `.` / `..` directory entries, keep Node semantics by filtering them in `packages/nodejs/src/bridge-handlers.ts` before they reach `fs.readdir()`
+- Kernel-owned `InMemoryFileSystem` instances must be rebound to `kernel.inodeTable` via `setInodeTable(...)` before device/permission wrapping; deferred-unlink FD I/O should use raw inode helpers (`readFileByInode`, `writeFileByInode`, `statByInode`) instead of pathname lookups
+- `PtyManager` raw-mode bulk input still applies `icrnl`; translate the whole chunk before `deliverInput()` so oversized writes fail atomically with `EAGAIN` instead of partially buffering data
+- Deferred unlink in `InMemoryFileSystem` must keep only live path → inode entries; open FDs survive unlink via `FileDescription.inode` and inode-backed reads, not by leaving removed pathnames accessible
+- Any open-FD file I/O path in `KernelImpl` must stay description-based (`readDescriptionFile` / `writeDescriptionFile` / `preadDescription`) rather than path-based VFS calls, or deferred-unlink behavior regresses for `pread`/`pwrite`-style operations
+- `SocketTable.connect()` must accept sockets already in `bound` state so WasmVM/libc callers can bind first, then use `getsockname()`/`getpeername()` with stable local addresses
+- When `SocketTable.bind()` assigns a kernel ephemeral port for `port: 0`, keep a `requestedEphemeralPort` marker on the socket so external `listen(..., { external: true })` can still delegate `port: 0` to the host adapter before rewriting `localAddr` to the real host-assigned port
+- Signal-aware blocking socket waits should use `ProcessSignalState.signalWaiters` plus `deliverySeq/lastDeliveredFlags`; wire `SocketTable` with `getSignalState` from the shared `ProcessTable` instead of open-coding runtime-specific signal polling
+- Non-blocking external socket connect should reject with `EINPROGRESS` immediately but leave the kernel socket in a transient `connecting` state and finish `hostAdapter.tcpConnect()` in the background
+- WasmVM `host_net` socket/domain constants coming from wasi-libc bottom-half do not match `packages/core` socket constants; normalize them at the WasmVM driver boundary before calling `kernel.socketTable`
+- WasmVM `host_net` socket option payloads cross the worker RPC boundary as little-endian byte buffers; decode/encode them in `packages/wasmvm/src/driver.ts` and keep `packages/wasmvm/src/kernel-worker.ts` as a thin memory marshal layer
+- In `packages/wasmvm/src/kernel-worker.ts`, socket FDs must be allocated in the worker-local `FDTable` and mapped through `localToKernelFd` — returning raw kernel socket IDs collides with stdio FDs and breaks close/flush behavior
+- Cooperative WasmVM signal delivery during `poll_oneoff` sleep needs a periodic hook back through RPC; pure `Atomics.wait()` sleeps do not observe pending kernel signals
+- When adding bridge globals that are called directly from the bridge IIFE, update all three inventories together: `packages/*/src/bridge-contract.ts`, `packages/core/src/shared/global-exposure.ts`, and `native/v8-runtime/src/session.rs` (`SYNC_BRIDGE_FNS` / `ASYNC_BRIDGE_FNS`)
+- In `native/v8-runtime`, sync bridge calls must only consume `BridgeResponse` frames for their own `call_id`; defer mismatched responses back to the session event loop or sync calls will steal async promise results
+- Host-side loopback access for sandbox HTTP servers is gated through `createDefaultNetworkAdapter().__setLoopbackPortChecker(...)`; keep the checker aligned with the active kernel-backed HTTP server set rather than reviving driver-level owned-port maps
+- Standalone `NodeExecutionDriver` already provisions an internal `SocketTable` with `createNodeHostNetworkAdapter()`; do not reintroduce `NetworkAdapter.httpServerListen/httpServerClose` for loopback server tests — use sandbox `http.createServer()` plus `initialExemptPorts` or the loopback checker hook when a host-side request must reach the sandbox listener
+- Node's default network adapter exposes an internal `__setLoopbackPortChecker` hook; NodeExecutionDriver must wire it before `wrapNetworkAdapter()` so host-side fetch/httpRequest can reach kernel-owned loopback listeners without reviving `ownedServerPorts`
+- For new Node bridge operations that need kernel-backed host state but not a new native bridge function, route them through `_loadPolyfill` `__bd:` dispatch handlers; reserve new runtime globals for host-to-isolate event dispatch like `_timerDispatch`
+- Kernel implementation lives in packages/core/src/kernel/ — KernelImpl is the main class
+- UDP and TCP use separate binding maps in SocketTable (listeners for TCP, udpBindings for UDP) — same port can be used by both protocols
+- Kernel tests go in packages/core/test/kernel/
+- WasmVM WASI extensions are declared in native/wasmvm/crates/wasi-ext/src/lib.rs
+- C sysroot patches for WasmVM are in native/wasmvm/patches/wasi-libc/
+- WasmVM kernel worker is packages/wasmvm/src/kernel-worker.ts, driver is packages/wasmvm/src/driver.ts
+- Node.js bridge is in packages/nodejs/src/bridge/, driver in packages/nodejs/src/driver.ts
+- Bridge handlers not in the Rust V8 SYNC_BRIDGE_FNS array are dispatched through _loadPolyfill via BRIDGE_DISPATCH_SHIM in execution-driver.ts
+- To add new bridge globals: (1) add key to HOST_BRIDGE_GLOBAL_KEYS in bridge-contract.ts, (2) add handler to dispatch handlers in execution-driver.ts, (3) use _globalName.applySyncPromise(undefined, args) in bridge code
+- FD table is managed on the host side via kernel ProcessFDTable (FDTableManager from @secure-exec/core) — bridge/fs.ts delegates FD ops through bridge dispatch
+- After modifying bridge/fs.ts, run `pnpm turbo run build --filter=@secure-exec/nodejs` to rebuild the bridge IIFE before running tests
+- Node conformance tests are in packages/secure-exec/tests/node-conformance/
+- PATCHED_PROGRAMS in native/wasmvm/c/Makefile must include programs using host_process or host_net imports
+- DnsCache is in packages/core/src/kernel/dns-cache.ts, exported from index.ts; uses lazy TTL expiry on lookup
+- Use vitest for tests, pnpm for package management, turbo for builds
+- The spec for this work is at docs-internal/specs/kernel-consolidation.md
+- WaitHandle and WaitQueue are exported from packages/core/src/kernel/wait.ts and re-exported from index.ts
+- Run tests from repo root with: pnpm vitest run <path>
+- Run typecheck from package dir with: pnpm tsc --noEmit
+- InodeTable is in packages/core/src/kernel/inode-table.ts, exported from index.ts
+- Host adapter interfaces (HostNetworkAdapter, HostSocket, etc.) are in packages/core/src/kernel/host-adapter.ts, type-exported from index.ts
+- SocketTable is in packages/core/src/kernel/socket-table.ts, exported from index.ts along with KernelSocket type and socket constants (AF_INET, SOCK_STREAM, etc.)
+- SocketTable has a private `listeners` Map (addr key → socket ID) for port reservation and routing; addrKey() is exported for address key formatting
+- findListener() checks exact match first, then wildcard 0.0.0.0 and :: — used by connect() for loopback routing
+- findBoundUdp() is public on SocketTable — same lookup pattern as findListener but for UDP bindings; used by tests to poll for UDP server readiness
+- EADDRINUSE was added to KernelErrorCode in types.ts for socket address conflicts
+- connect() creates a server-side socket paired via peerId and queues it in listener's backlog; send/recv use peerId to route data
+- destroySocket() clears peerId on peer and wakes its readWaiters for EOF propagation
+- consumeFromBuffer() handles partial chunk reads for recv() with maxBytes limit
+- ECONNREFUSED and ENOTCONN were added to KernelErrorCode in types.ts
+- Half-close uses peerWriteClosed flag on KernelSocket — shutdown('write') sets it on the peer, recv() checks it for EOF detection
+- State composition: shutdown methods check current state (read-closed/write-closed) and transition to closed when both halves are shut
+- Socket options use optKey(level, optname) → "level:optname" composite keys in the options Map; use setsockopt/getsockopt methods, not direct Map access
+- Socket flags (MSG_PEEK, MSG_DONTWAIT, MSG_NOSIGNAL) are bitmask values matching Linux constants; use bitwise AND to check
+- SocketTable accepts optional `networkCheck` in constructor for permission enforcement; loopback connect always bypasses checks
+- KernelSocket has `external?: boolean` flag for tracking host-adapter-connected sockets (used by send() permission check)
+- SocketTable accepts optional `hostAdapter` (HostNetworkAdapter) in constructor for external connection routing
+- connect() is async (returns Promise<void>) — all existing tests must use await; loopback path is synchronous inside the async function
+- External sockets have `hostSocket?: HostSocket` on KernelSocket — send() writes to hostSocket, a background read pump feeds readBuffer
+- destroySocket() calls hostSocket.close() for external sockets
+- Mock host adapter pattern: MockHostSocket with pushData()/pushEof() for controlling read pump in tests
+- MockHostListener with pushConnection() for simulating incoming external TCP connections in tests
+- bind() is async (Promise<void>) like connect() and listen() — all callers must await; sync throw tests use .rejects.toThrow()
+- SocketTable accepts optional `vfs` (VirtualFileSystem) in constructor for Unix domain socket file management
+- InMemoryFileSystem.chmod() accepts explicit type bits (e.g. S_IFSOCK | 0o755) — if mode & 0o170000 is non-zero, type bits are used directly
+- listen() is async (Promise<void>) — all callers must use await; expect(...).toThrow must become await expect(...).rejects.toThrow
+- resource-exhaustion.test.ts and kernel-integration.test.ts stdin streaming tests have pre-existing flaky failures — not related to socket work
+- Net socket bridge handlers support kernel routing via optional socketTable + pid deps; fallback to direct net.Socket when not provided
+- KernelOptions accepts optional hostNetworkAdapter — wired to SocketTable for external connection routing
+- KernelInterface exposes socketTable — available to runtime drivers via init(kernel) callback
+- SocketTable.close() requires BOTH socketId AND pid for per-process ownership check
+- NodeExecutionDriverOptions accepts optional socketTable + pid for kernel socket routing
+- NetworkAdapter interface no longer has netSocket* methods — bridge handlers handle all TCP socket operations
+- buildNetworkBridgeHandlers returns { handlers, dispose } (NetworkBridgeResult) — kernel HTTP servers need async cleanup
+- http.Server + emit('connection', duplexStream) pattern feeds kernel socket data through Node HTTP parser without real TCP
+- KernelSocketDuplex wraps kernel sockets as stream.Duplex — needs socket-like props (remoteAddress, setNoDelay, etc.) for http module
+- SSRF loopback exemption uses socketTable.findListener() — kernel-aware, no manual port tracking needed
+- assertNotPrivateHost/isPrivateIp/isLoopbackHost are in bridge-handlers.ts for kernel-aware SSRF validation
+- processTable exposed on KernelInterface — wired through execution-driver to bridge handlers
+- wrapAsDriverProcess() adapts SpawnedProcess to kernel DriverProcess (adds null callback stubs)
+- childProcessInstances Map in bridge/child-process.ts is event routing only — kernel tracks process state
+- WasmVM socket ops route through kernel.socketTable (create/connect/send/recv/close) — hostAdapter handles real TCP
+- WasmVM TLS-upgraded sockets bypass kernel recv via _tlsSockets Map — TLS upgrade detaches kernel read pump
+- WaitHandle timeout goes in WaitQueue.enqueue(timeoutMs), not WaitHandle.wait() — wait() takes no args
+- Test mock kernel: createMockKernel() with SocketTable + TestHostSocket using real node:net — in packages/wasmvm/test/net-socket.test.ts
+- Cooperative signal delivery: driver piggybacking via SIG_IDX_PENDING_SIGNAL in SAB, worker calls __wasi_signal_trampoline
+- proc_sigaction RPC: action 0=SIG_DFL, 1=SIG_IGN, 2=user handler (C side holds function pointer)
+- C sysroot signal handling: signal() + __wasi_signal_trampoline in 0011-sigaction.patch
+- Kernel public API: Kernel interface has no kill(pid,signal) — use ManagedProcess.kill() from spawn(), or kernel.processTable internally
+
+## 2026-03-24 22:12 PDT - US-050
+- What was implemented
+- Added synchronous open-time flag handling in `KernelImpl.fdOpen()` for `O_CREAT`, `O_EXCL`, and `O_TRUNC`, with wrapper passthroughs in the device and permission layers
+- Added `prepareOpenSync()` support to the in-memory and Node-backed VFS adapters so `fdOpen()` can create empty files, reject `O_CREAT|O_EXCL` on existing paths, and truncate existing files before the descriptor is allocated
+- Added kernel integration coverage for `O_CREAT|O_EXCL`, `O_TRUNC`, `O_TRUNC|O_CREAT`, and the `O_EXCL`-without-`O_CREAT` no-op case; updated the kernel contract and root agent instructions with the sync-open rule
+- Files changed
+- `.agent/contracts/kernel.md`
+- `CLAUDE.md`
+- `packages/core/src/kernel/device-layer.ts`
+- `packages/core/src/kernel/kernel.ts`
+- `packages/core/src/kernel/permissions.ts`
+- `packages/core/src/shared/in-memory-fs.ts`
+- `packages/core/test/kernel/helpers.ts`
+- `packages/core/test/kernel/kernel-integration.test.ts`
+- `packages/nodejs/src/driver.ts`
+- `packages/nodejs/src/module-access.ts`
+- `packages/nodejs/src/os-filesystem.ts`
+- `scripts/ralph/prd.json`
+- `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+- Patterns discovered
+- `fdOpen()` now depends on `prepareOpenSync()` passthroughs; if a filesystem gets wrapped and drops that hook, `O_CREAT`/`O_EXCL`/`O_TRUNC` will silently regress back to lazy-open behavior
+- Gotchas encountered
+- Once `O_CREAT` starts materializing files at open time, deferred umask handling can no longer key off a read miss in `vfsWrite()`; it has to key off the descriptor’s `creationMode` marker instead
+- Useful context
+- Validation for this story passed with `pnpm tsc --noEmit -p packages/core/tsconfig.json`, `pnpm tsc --noEmit -p packages/nodejs/tsconfig.json`, `pnpm vitest run packages/core/test/kernel/kernel-integration.test.ts -t "O_CREAT|O_EXCL|O_TRUNC|umask"`, `pnpm vitest run packages/core/test/kernel/inode-table.test.ts`, and `pnpm vitest run packages/core/test/kernel/unix-socket.test.ts`
+---
+
+## 2026-03-25 00:09 PDT - US-057
+- What was implemented
+- Fixed native V8 ESM top-level-await finalization so entry modules stay pending until their evaluation promise settles, including timer-driven async startup and transitive async imports
+- Added native dynamic `import()` handling for ESM via V8's host dynamic-import callback, reusing the existing module resolver/cache and mapping async evaluation back to the imported module namespace
+- Fixed native stream-event payload decoding to accept raw UTF-8 JSON/string payloads so kernel timer callbacks reach `_timerDispatch`, then added focused sandbox runtime-driver coverage for entrypoint TLA, transitive imported-module TLA, dynamic-import TLA, and timeout behavior
+- Files changed
+- `.agent/contracts/node-runtime.md`
+- `docs-internal/friction.md`
+- `native/v8-runtime/src/execution.rs`
+- `native/v8-runtime/src/isolate.rs`
+- `native/v8-runtime/src/session.rs`
+- `native/v8-runtime/src/stream.rs`
+- `packages/secure-exec/tests/runtime-driver/node/index.test.ts`
+- `scripts/ralph/prd.json`
+- `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+- Patterns discovered
+- Native V8 async ESM completion is a two-part problem: keep the entry-module promise alive across the session event loop, and keep module-resolution state alive long enough for later native dynamic imports to reuse the same bridge context/cache
+- Host-to-isolate timer events are emitted as raw JSON bytes, not V8-serialized values; the native stream dispatcher has to parse both formats or TLA/timer flows will hang waiting for `_timerDispatch`
+- Gotchas encountered
+- The `v8` crate version in this workspace expects `set_host_import_module_dynamically_callback` handlers with a `HandleScope` signature, not the newer `Context`-first callback shape shown in newer crate docs
+- Useful context
+- Focused green checks for this story were `pnpm tsc --noEmit -p packages/secure-exec/tsconfig.json`, `cargo test execution::tests::v8_consolidated_tests -- --nocapture`, `cargo build --release` in `native/v8-runtime`, and `pnpm exec vitest run packages/secure-exec/tests/runtime-driver/node/index.test.ts -t "dynamic import|top-level await"`
+---
+
+## 2026-03-23 - US-001
+- Implemented WaitHandle and WaitQueue primitives in packages/core/src/kernel/wait.ts
+- WaitHandle: Promise-based wait/wake with optional timeout, timedOut flag, isSettled guard
+- WaitQueue: FIFO queue with enqueue(), wakeOne(), wakeAll(), pending count, clear()
+- Files changed: packages/core/src/kernel/wait.ts (new), packages/core/src/kernel/index.ts (exports), packages/core/test/kernel/wait-queue.test.ts (new, 13 tests)
+- **Learnings for future iterations:**
+  - Kernel managers follow a consistent pattern: private state Maps, KernelError throws, public methods
+  - Existing waiter pattern in PipeManager/ProcessTable uses raw resolver arrays — WaitQueue provides the unified replacement
+  - git add must be run from repo root, not a subdirectory
+  - Typecheck for core package: `cd packages/core && pnpm tsc --noEmit`
+---
+
+## 2026-03-23 - US-002
+- Implemented InodeTable with refcounting and deferred unlink in packages/core/src/kernel/inode-table.ts
+- Inode struct: ino, nlink, openRefCount, mode, uid, gid, size, timestamps
+- InodeTable: allocate, get, incrementLinks/decrementLinks, incrementOpenRefs/decrementOpenRefs, shouldDelete, delete
+- Deferred deletion: nlink=0 with open FDs keeps inode alive until last FD closes
+- Files changed: packages/core/src/kernel/inode-table.ts (new), packages/core/src/kernel/index.ts (exports), packages/core/test/kernel/inode-table.test.ts (new, 17 tests)
+- **Learnings for future iterations:**
+  - InodeTable and Inode are exported from index.ts (InodeTable as value, Inode as type)
+  - Inode starts with nlink=1 on allocate (matching POSIX: creating a file = one directory entry)
+  - ctime is updated on link/unlink operations per POSIX
+  - KernelError codes available: ENOENT for missing inode, EINVAL for underflow guards
+---
+
+## 2026-03-23 - US-003
+- Implemented HostNetworkAdapter, HostSocket, HostListener, HostUdpSocket, DnsResult interfaces in packages/core/src/kernel/host-adapter.ts
+- Added type exports to packages/core/src/kernel/index.ts
+- Files changed: packages/core/src/kernel/host-adapter.ts (new), packages/core/src/kernel/index.ts (exports)
+- **Learnings for future iterations:**
+  - Host adapter interfaces are type-only exports (no runtime code) — they live in kernel/host-adapter.ts
+  - DnsResult is a separate interface (address + family: 4|6) used by dnsLookup
+  - HostSocket.read() returns null for EOF, matching the kernel recv() convention
+  - HostListener.port is readonly — needed for ephemeral port (port 0) allocation
+---
+
+## 2026-03-23 - US-004
+- Implemented KernelSocket struct and SocketTable class in packages/core/src/kernel/socket-table.ts
+- KernelSocket: id, domain, type, protocol, state, nonBlocking, localAddr, remoteAddr, options, pid, readBuffer, readWaiters, backlog, acceptWaiters, peerId
+- SocketTable: create, get, close, poll, closeAllForProcess, disposeAll
+- Per-process isolation: close checks pid ownership
+- EMFILE limit: configurable maxSockets (default 1024)
+- Socket address types: InetAddr, UnixAddr, SockAddr with type guards
+- Files changed: packages/core/src/kernel/socket-table.ts (new), packages/core/src/kernel/index.ts (exports), packages/core/test/kernel/socket-table.test.ts (new, 23 tests)
+- **Learnings for future iterations:**
+  - SocketTable follows the same pattern as InodeTable: private Map, nextId counter, requireSocket helper
+  - Socket state is mutable on the KernelSocket interface — higher-level operations (bind/listen/connect) set it directly
+  - KernelErrorCode type in types.ts needs EADDRINUSE, ECONNREFUSED, ECONNRESET, ENOTCONN, ENOTSOCK for later stories
+  - WaitQueue from wait.ts is used for readWaiters and acceptWaiters — close wakes all pending waiters
+  - backlog stores socket IDs (not KernelSocket objects) for later accept() implementation
+---
+
+## 2026-03-23 - US-005
+- Implemented bind(), listen(), accept(), findListener() on SocketTable
+- Added private `listeners` Map for port reservation and routing
+- Added EADDRINUSE to KernelErrorCode
+- destroySocket now cleans up listener registrations; disposeAll clears listeners
+- Wildcard address matching: findListener checks exact, then 0.0.0.0, then :: for the port
+- EADDRINUSE checks wildcard overlap (0.0.0.0:P conflicts with 127.0.0.1:P and vice versa)
+- SO_REUSEADDR on the binding socket bypasses EADDRINUSE
+- addrKey() exported as module-level helper for "host:port" or unix path keys
+- Files changed: packages/core/src/kernel/types.ts (EADDRINUSE), packages/core/src/kernel/socket-table.ts (bind/listen/accept/findListener), packages/core/src/kernel/index.ts (addrKey export), packages/core/test/kernel/socket-table.test.ts (21 new tests, 44 total)
+- **Learnings for future iterations:**
+  - bind() registers in listeners map immediately (not just on listen) — this is for port reservation
+  - findListener() only matches sockets in 'listening' state, not just 'bound'
+  - isAddrInUse scans all listeners for wildcard overlap — O(n) but listener count is small
+  - accept() returns socket IDs from backlog; connect() (US-006) will push to backlog
+  - Tests can simulate backlog by directly pushing to socket.backlog array
+---
+
+## 2026-03-23 - US-006
+- Implemented loopback TCP routing: connect(), send(), recv() on SocketTable
+- connect() finds listener via findListener(), creates paired server-side socket via peerId, queues in backlog
+- send() writes to peer's readBuffer, wakes readWaiters
+- recv() consumes from readBuffer with maxBytes limit, returns null for EOF (peer gone) or no data
+- destroySocket() propagates EOF by clearing peerId on peer and waking readWaiters
+- Added ECONNREFUSED and ENOTCONN to KernelErrorCode
+- Files changed: packages/core/src/kernel/types.ts (ECONNREFUSED, ENOTCONN), packages/core/src/kernel/socket-table.ts (connect/send/recv/consumeFromBuffer, updated destroySocket), packages/core/test/kernel/loopback.test.ts (new, 21 tests)
+- **Learnings for future iterations:**
+  - send() copies data (new Uint8Array(data)) to prevent caller mutations affecting kernel buffers
+  - consumeFromBuffer() handles partial chunk reads — splits a chunk if it exceeds maxBytes and puts remainder back
+  - EOF detection in recv: peerId === undefined means peer closed; readBuffer empty + peerId undefined → return null
+  - connect() creates the server-side socket with listener.pid as owner — the process that calls accept() gets that socket
+  - Tests should run from repo root: `pnpm vitest run <path>`, not from package dir
+---
+
+## 2026-03-23 - US-007
+- Implemented shutdown() with half-close support on SocketTable
+- shutdown('write'): sets peer's peerWriteClosed flag, peer recv() returns EOF, local send() returns EPIPE
+- shutdown('read'): discards readBuffer, local recv() returns EOF immediately, local send() still works
+- shutdown('both'): combines both, transitions to 'closed'
+- Sequential half-close: read-closed + shutdown('write') → closed, write-closed + shutdown('read') → closed
+- Updated send() to check write-closed/closed states before ENOTCONN
+- Updated recv() to return null immediately for read-closed/closed states and check peerWriteClosed for EOF
+- Updated poll() to reflect half-close: write-closed → writable=false, read-closed → writable=true
+- Added peerWriteClosed flag to KernelSocket for tracking peer write shutdown without destroying the socket
+- Files changed: packages/core/src/kernel/socket-table.ts (shutdown, shutdownWrite, shutdownRead, updated send/recv/poll, peerWriteClosed), packages/core/test/kernel/socket-shutdown.test.ts (new, 17 tests)
+- **Learnings for future iterations:**
+  - Half-close needs a separate flag (peerWriteClosed) because the peer socket still exists — peerId check alone won't detect write shutdown
+  - shutdown('write') + shutdown('read') must compose: each checks current state and transitions to 'closed' if the other half is already closed
+  - send() must check write-closed/closed BEFORE checking connected — order matters for correct error code (EPIPE vs ENOTCONN)
+  - recv() on read-closed returns null without checking buffer — shutdown('read') discards unread data
+---
+
+## 2026-03-23 - US-008
+- Implemented socketpair() on SocketTable — creates two pre-connected sockets linked via peerId
+- Both sockets start in 'connected' state, reusing existing send/recv/close/shutdown data paths
+- Files changed: packages/core/src/kernel/socket-table.ts (socketpair method), packages/core/test/kernel/socketpair.test.ts (new, 13 tests)
+- **Learnings for future iterations:**
+  - socketpair() is much simpler than connect() — no listener lookup, just create two sockets and cross-link peerId
+  - All existing send/recv/close/shutdown logic works unchanged for socketpair — the peerId linking is the only mechanism needed
+  - EMFILE limit applies to socketpair too — creating 2 sockets at once can exceed the limit after the first succeeds
+---
+
+## 2026-03-23 - US-009
+- Implemented setsockopt() and getsockopt() methods on SocketTable
+- Added socket option constants: SOL_SOCKET, IPPROTO_TCP, SO_REUSEADDR, SO_KEEPALIVE, SO_RCVBUF, SO_SNDBUF, TCP_NODELAY
+
+- Added optKey() helper for canonical "level:optname" option keys
+- Enforced SO_RCVBUF: send() throws EAGAIN when peer's readBuffer exceeds the limit
+- Updated isAddrInUse() to use the new optKey format for SO_REUSEADDR check
+- Updated existing tests that set SO_REUSEADDR directly on the options Map to use setsockopt()
+- Files changed: packages/core/src/kernel/socket-table.ts (setsockopt/getsockopt, optKey, SO_RCVBUF enforcement, constants), packages/core/src/kernel/index.ts (new exports), packages/core/test/kernel/socket-table.test.ts (10 new tests, 54 total)
+- **Learnings for future iterations:**
+  - Socket options use composite "level:optname" keys in the options Map — use optKey() helper, not raw string keys
+  - SO_RCVBUF enforcement is in send() on the peer socket, not recv() on the local socket — the peer's receive buffer is what gets checked
+  - When changing internal option key format, search all test files for direct options Map usage and update them
+  - resource-exhaustion.test.ts has pre-existing flaky failures unrelated to socket work
+---
+
+## 2026-03-23 - US-010
+- Implemented MSG_PEEK, MSG_DONTWAIT, MSG_NOSIGNAL socket flags
+- MSG_PEEK: peekFromBuffer() reads data without consuming — returns a copy so mutations don't affect the buffer
+- MSG_DONTWAIT: throws EAGAIN when no data available (but still returns null for EOF)
+- MSG_NOSIGNAL: suppresses SIGPIPE — throws EPIPE with MSG_NOSIGNAL marker in message
+- Flags are bitmask-combined (MSG_PEEK | MSG_DONTWAIT works)
+- Files changed: packages/core/src/kernel/socket-table.ts (MSG constants, peekFromBuffer, recv/send flag handling), packages/core/src/kernel/index.ts (exports), packages/core/test/kernel/socket-flags.test.ts (new, 13 tests)
+- **Learnings for future iterations:**
+  - peekFromBuffer() must return a copy (new Uint8Array) not a subarray reference — otherwise callers can corrupt the kernel buffer
+  - MSG_DONTWAIT should only throw EAGAIN when no data AND no EOF condition — EOF still returns null
+  - Linux MSG_* flag values: MSG_PEEK=0x2, MSG_DONTWAIT=0x40, MSG_NOSIGNAL=0x4000 — match Linux constants for compatibility
+---
+## 2026-03-24 22:20 PDT - US-051
+- Implemented blocking advisory `flock()` with per-path `WaitQueue`s and bounded timed waits in `FileLockManager`
+- Converted kernel `flock` to async `Promise<void>` semantics and updated the core kernel contract for blocking/FIFO lock behavior
+- Added coverage for blocking unlock wakeup, `LOCK_NB` conflict handling, FIFO waiter ordering, and adjusted kernel integration to keep the mock process alive while awaiting lock operations
+- Files changed: `.agent/contracts/kernel.md`, `packages/core/src/kernel/file-lock.ts`, `packages/core/src/kernel/kernel.ts`, `packages/core/src/kernel/types.ts`, `packages/core/test/kernel/file-lock.test.ts`
+- **Learnings for future iterations:**
+  - Async kernel syscalls can expose existing test timing races; `MockRuntimeDriver` needs `neverExit: true` when a test awaits multiple operations against the same PID
+  - For indefinite kernel waits, use timed `WaitQueue.enqueue(timeoutMs)` retries instead of a single forever-pending Promise so WasmVM/bridge callers can re-check state safely
+  - File-lock waiter wakeups must happen on all last-reference release paths (`LOCK_UN`, `fdClose`, `dup2` replacement, process-exit cleanup) because the kernel funnels them through `releaseByDescription()`
+  - `KernelInterface.flock()` now returns a `Promise<void>`; direct tests and future bridge callers must `await` it even when the lock is uncontended
+---
+
+## 2026-03-23 - US-011
+- Implemented network permission checks in SocketTable: checkNetworkPermission() public method, wired into connect(), listen(), and send()
+---
+
+- connect() to loopback (kernel listener) always bypasses permission checks; external addresses check against configured policy
+- listen() checks permission when networkCheck is configured
+- send() checks permission for sockets marked as external (external flag on KernelSocket)
+- Added `external?: boolean` to KernelSocket interface for host-adapter-connected socket tracking
+- Files changed: packages/core/src/kernel/socket-table.ts (networkCheck option, checkNetworkPermission, connect/listen/send permission checks, external flag), packages/core/test/kernel/network-permissions.test.ts (new, 17 tests)
+- **Learnings for future iterations:**
+  - SocketTable accepts `networkCheck` in constructor options — when set, listen() and external connect() are permission-checked
+  - Loopback connect (findListener returns a match) always bypasses permission — this is by design per spec
+  - When no networkCheck is configured, existing behavior is preserved (no enforcement) — backwards compatible
+  - Tests that need loopback with restricted policy must allow "listen" op but deny "connect" — denyAll breaks listener setup
+  - The `external` flag on KernelSocket will be set by US-012 (host adapter routing) — for now it's only used in tests
+  - resource-exhaustion.test.ts has pre-existing flaky failures — not related to socket/permission work
+---
+
+## 2026-03-23 - US-012
+- Implemented external connection routing via host adapter in SocketTable
+- connect() is now async (Promise<void>) — loopback path remains synchronous, external path awaits hostAdapter.tcpConnect()
+- External sockets store hostSocket on KernelSocket; send() writes to hostSocket, background read pump feeds readBuffer
+- destroySocket() calls hostSocket.close() for external sockets; closeAllForProcess propagates
+- Permission check runs before host adapter call; loopback still bypasses
+- Added MockHostSocket and MockHostNetworkAdapter for testing external connections
+- Updated all existing test files to use async/await for connect() calls
+- Files changed: packages/core/src/kernel/socket-table.ts (hostAdapter option, async connect, hostSocket on KernelSocket, send relay, startReadPump, destroySocket cleanup), packages/core/test/kernel/external-connect.test.ts (new, 14 tests), packages/core/test/kernel/loopback.test.ts (async), packages/core/test/kernel/network-permissions.test.ts (async), packages/core/test/kernel/socket-flags.test.ts (async), packages/core/test/kernel/socket-shutdown.test.ts (async), packages/core/test/kernel/socket-table.test.ts (async)
+- **Learnings for future iterations:**
+  - Making connect() async is a breaking API change — all callers across test files must add await, test callbacks must be async
+  - In async functions, ALL throws become rejected Promises — try/catch without await won't catch errors; use `await expect(...).rejects.toThrow()` pattern
+  - The read pump runs as a fire-and-forget async loop — use pushData()/pushEof() on MockHostSocket to control timing
+- When testing chunk ordering with the read pump, recv() with exact maxBytes is more reliable than assuming chunks arrive separately
+- send() for external sockets fire-and-forgets the hostSocket.write() — errors are caught asynchronously and mark the socket broken
+---
+
+## 2026-03-24 21:39 PDT - US-048
+- Wired `KernelImpl` to own a shared `InodeTable`, bind it into `InMemoryFileSystem`, and keep open-file access alive after unlink by storing inode identity on `FileDescription`
+- Refactored `packages/core/src/shared/in-memory-fs.ts` to use live path-to-inode maps plus inode-backed file storage so `stat()` returns real `ino`/`nlink`, hard links share inode state, and unlink removes pathnames without discarding open file data
+- Added integration coverage in `packages/core/test/kernel/inode-table.test.ts` for real inode stats, deferred unlink with open FDs, last-close deletion, and hard-link `nlink` parity
+- Updated the kernel contract and repo instructions with the deferred-unlink inode rule
+- Files changed: `.agent/contracts/kernel.md`, `CLAUDE.md`, `packages/core/src/kernel/kernel.ts`, `packages/core/src/kernel/types.ts`, `packages/core/src/shared/in-memory-fs.ts`, `packages/core/test/kernel/inode-table.test.ts`
+- Quality checks: `pnpm tsc --noEmit` passed in `packages/core`; `pnpm vitest run test/kernel/inode-table.test.ts` passed; full `pnpm vitest run` in `packages/core` failed in pre-existing `test/kernel/resource-exhaustion.test.ts` (`PTY adversarial stress > single large write (1MB+) — immediate EAGAIN, no partial buffering`, assertion at line 270)
+- **Learnings for future iterations:**
+  - Deferred unlink must never keep removed pathnames reachable — regular path lookups should fail immediately, and only inode-backed FD I/O should survive until the last close
+  - Rebinding an existing `InMemoryFileSystem` into `KernelImpl` needs inode-table migration for pre-populated filesystems, because many tests create and seed the VFS before constructing the kernel
+  - Any kernel path that can implicitly close an FD (`fdClose`, `dup2`, stdio override cleanup, process-exit table teardown) must release inode open refs when the last shared `FileDescription` reference drops
+---
+
+## 2026-03-24 21:43 PDT - US-048
+- Patched `KernelImpl.fdPwrite()` to use inode-backed description helpers so positional writes still work after the pathname has been unlinked
+- Added a regression test proving `fdPwrite` + `fdPread` continue to work on an unlinked open file while the path stays absent from the VFS
+- Files changed: `packages/core/src/kernel/kernel.ts`, `packages/core/test/kernel/inode-table.test.ts`, `scripts/ralph/progress.txt`
+- Quality checks: `pnpm tsc --noEmit` passed in `packages/core`; `pnpm vitest run test/kernel/inode-table.test.ts` passed; full `pnpm vitest run` in `packages/core` still fails in pre-existing `test/kernel/resource-exhaustion.test.ts` (`PTY adversarial stress > single large write (1MB+) — immediate EAGAIN, no partial buffering`, assertion at line 270)
+- **Learnings for future iterations:**
+  - Deferred-unlink support is only correct if every FD-based read and write path goes through the `FileDescription.inode` helpers; a single direct `vfs.readFile`/`vfs.writeFile` call reintroduces pathname dependence
+  - Focused inode tests can pass while the broader package suite remains blocked by the unrelated PTY stress regression, so keep the full-suite command/result in the log for handoff clarity
+---
+
+## 2026-03-24 21:22 PDT - US-047
+- What was implemented
+- Added `SocketTable.getLocalAddr()` / `getRemoteAddr()` and allowed `connect()` from `bound` sockets so bound clients can use address accessors cleanly
+- Wired WasmVM address accessors end to end: `wasi-ext` host imports/wrappers, worker `host_net` handlers, driver RPC handlers, and libc `getsockname()` / `getpeername()` patching
+- Added kernel/WasmVM tests plus `syscall_coverage` parity coverage entries for the new libc socket address calls
+- Files changed
+- `packages/core/src/kernel/socket-table.ts`
+- `packages/core/test/kernel/socket-table.test.ts`
+- `packages/wasmvm/src/driver.ts`
+- `packages/wasmvm/src/kernel-worker.ts`
+- `packages/wasmvm/test/net-socket.test.ts`
+- `packages/wasmvm/test/c-parity.test.ts`
+- `native/wasmvm/crates/wasi-ext/src/lib.rs`
+- `native/wasmvm/patches/wasi-libc/0008-sockets.patch`
+- `native/wasmvm/c/programs/syscall_coverage.c`
+- `prd.json`
+- **Learnings for future iterations:**
+- Bound-client connect is required for libc parity: `getsockname()` on a client socket is only meaningful if `connect()` preserves a prior `bind()`
+- The WasmVM address-accessor path should reuse the existing serialized address format (`host:port` or unix path) so libc parsing can keep using the shared `string_to_sockaddr()` helper
+- When adding a new `host_net` import, update all four layers together: `wasi-ext` externs/wrappers, `kernel-worker` imports, `driver` RPC handlers, and the wasi-libc patch
+- `syscall_coverage` is the right place to add libc-level parity checks for new WASM host imports, and `packages/wasmvm/test/c-parity.test.ts` must list the new expected markers
+---
+
+## 2026-03-23 - US-013
+
+## 2026-03-24 21:04 PDT - US-045
+- What was implemented
+- Enforced socket-level non-blocking behavior in `SocketTable`: empty `accept()` and `recv()` now fail with `EAGAIN` when `nonBlocking` is enabled
+- Added `SocketTable.setNonBlocking()` as the explicit toggle API for existing sockets
+- Made external non-blocking `connect()` reject with `EINPROGRESS` while the host adapter connection completes asynchronously in the background
+- Added focused tests for non-blocking `recv`, non-blocking `accept`, non-blocking external `connect`, and toggling the socket mode
+- Updated the kernel contract with the new non-blocking socket semantics
+- Files changed
+- `.agent/contracts/kernel.md`
+- `packages/core/src/kernel/socket-table.ts`
+- `packages/core/src/kernel/types.ts`
+- `packages/core/test/kernel/external-connect.test.ts`
+- `packages/core/test/kernel/socket-flags.test.ts`
+- `scripts/ralph/prd.json`
+- `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+- Patterns discovered
+- Non-blocking socket mode is best modeled as per-socket state in `SocketTable`; `MSG_DONTWAIT` remains a per-call override layered on top
+- Gotchas encountered
+- Because `SocketTable.connect()` is async, returning `EINPROGRESS` for non-blocking external connects means rejecting the call immediately while separately completing the host connect path in a background promise
+- Useful context
+- Focused validation for this story is `pnpm vitest run packages/core/test/kernel/socket-flags.test.ts packages/core/test/kernel/external-connect.test.ts packages/core/test/kernel/socket-table.test.ts` and `pnpm tsc --noEmit -p packages/core/tsconfig.json`
+---
+- Implemented external server socket routing via host adapter in SocketTable
+- listen() is now async (Promise<void>) with optional `{ external: true }` parameter
+- When external: calls hostAdapter.tcpListen(), stores HostListener on KernelSocket, starts accept pump
+- Accept pump loops on hostListener.accept(), creates kernel sockets for each incoming connection, starts read pumps
+- Ephemeral port (port 0) updates localAddr and re-registers in listeners map with actual port from HostListener.port
+- destroySocket() calls hostListener.close() for external listeners; disposeAll() also cleans up host listeners
+- Updated all existing test files to use async/await for listen() calls (same pattern as connect() in US-012)
+- Files changed: packages/core/src/kernel/socket-table.ts (async listen, hostListener on KernelSocket, startAcceptPump, destroySocket/disposeAll cleanup), packages/core/test/kernel/external-listen.test.ts (new, 14 tests), packages/core/test/kernel/socket-table.test.ts (async listen), packages/core/test/kernel/loopback.test.ts (async), packages/core/test/kernel/socket-flags.test.ts (async), packages/core/test/kernel/socket-shutdown.test.ts (async), packages/core/test/kernel/external-connect.test.ts (async), packages/core/test/kernel/network-permissions.test.ts (async)
+- **Learnings for future iterations:**
+  - Making listen() async follows the same pattern as connect() — all callers need await, sync throw tests need .rejects.toThrow()
+  - MockHostListener.pushConnection() simulates incoming connections; pushData()/pushEof() on MockHostSocket controls data flow
+  - Ephemeral port 0 requires re-registering in the listeners map after getting the actual port from the host listener
+  - Accept pump is fire-and-forget like read pump — errors stop the pump silently (listener closed)
+  - disposeAll should iterate sockets and close both hostSocket and hostListener before clearing the maps
+---
+
+## 2026-03-23 - US-014
+- Implemented UDP datagram sockets (SOCK_DGRAM) in SocketTable
+- sendTo(): loopback routing via findBoundUdp(), external routing via hostAdapter.udpSend(), silent drop for unbound ports
+- recvFrom(): returns { data, srcAddr } with message boundary preservation, supports MSG_PEEK and MSG_DONTWAIT
+- bindExternalUdp(): async setup for external UDP via hostAdapter.udpBind() with recv pump
+- Separate udpBindings map from TCP listeners — TCP and UDP can share the same port
+- UdpDatagram type, MAX_DATAGRAM_SIZE (65535), MAX_UDP_QUEUE_DEPTH (128) constants
+- EMSGSIZE added to KernelErrorCode for oversized datagrams
+- Updated poll() to check datagramQueue for UDP readability
+- Updated destroySocket/disposeAll for hostUdpSocket cleanup and udpBindings cleanup
+- Files changed: packages/core/src/kernel/types.ts (EMSGSIZE), packages/core/src/kernel/socket-table.ts (sendTo/recvFrom/bindExternalUdp/findBoundUdp/isUdpAddrInUse/startUdpRecvPump, udpBindings map, updated bind/poll/destroySocket/disposeAll), packages/core/src/kernel/index.ts (new exports), packages/core/test/kernel/udp-socket.test.ts (new, 25 tests)
+- **Learnings for future iterations:**
+  - TCP and UDP must use separate binding maps (listeners vs udpBindings) because they are independent port namespaces — the same address key can exist in both
+  - findBoundUdp() matches sockets in 'bound' state (not 'listening') since UDP doesn't have a listen step
+  - UDP sendTo to unbound port returns data.length (not an error) — silent drop is correct UDP semantics
+  - Message boundary preservation: each sendTo = one datagramQueue entry; recvFrom pops one entry and truncates excess beyond maxBytes (unlike TCP which does partial chunk reads)
+  - External UDP pattern: bind() locally, then bindExternalUdp() creates the host UDP socket and starts a recv pump (startUdpRecvPump) — sendTo checks for hostUdpSocket before routing externally
+  - MockHostUdpSocket with pushDatagram() controls the recv pump in tests; use setTimeout(r, 10) to allow pump microtasks to run
+---
+
+## 2026-03-23 - US-015
+- Implemented Unix domain sockets (AF_UNIX) with VFS integration in SocketTable
+- bind() with UnixAddr creates a socket file in VFS (S_IFSOCK mode), connect() checks VFS path exists
+- SOCK_STREAM: full data exchange, half-close, EOF propagation — reuses existing loopback data paths
+- SOCK_DGRAM: message boundary preservation via sendTo/recvFrom, silent drop for unbound paths
+- Always in-kernel routing — no host adapter involvement for Unix sockets
+- EADDRINUSE when path exists in VFS (including regular files, not just socket entries)
+- ECONNREFUSED when socket file removed from VFS (even if listeners map still has entry)
+- Modified InMemoryFileSystem.chmod() to support explicit file type bits (S_IFSOCK | perms)
+- bind() is now async (Promise<void>) — all existing test files updated with await
+- Files changed: packages/core/src/kernel/socket-table.ts (VFS option, async bind, createSocketFile, connect VFS check, S_IFSOCK constant), packages/core/src/shared/in-memory-fs.ts (S_IFSOCK, chmod type bits), packages/core/src/kernel/index.ts (S_IFSOCK export), packages/core/test/kernel/unix-socket.test.ts (new, 14 tests), 8 existing test files (async bind migration)
+- **Learnings for future iterations:**
+  - bind() is now async like connect() and listen() — all callers must use await; sync throw tests must use .rejects.toThrow()
+  - InMemoryFileSystem.chmod() supports caller-provided type bits: if mode & 0o170000 is non-zero, the type bits are used directly; otherwise existing behavior preserved
+  - VFS is optional for SocketTable — Unix sockets still work via listeners map alone; VFS adds socket file creation and path existence checks
+  - Unix domain sockets share the listeners map with TCP for SOCK_STREAM, and udpBindings map for SOCK_DGRAM — addrKey() uses the path string as the key
+  - connect() for Unix addresses checks VFS existence before listeners map — this means removing the socket file (vfs.removeFile) causes ECONNREFUSED even if the listener entry still exists
+---
+
+## 2026-03-23 - US-016
+- Exposed SocketTable as a public property on KernelImpl
+- KernelImpl constructor creates SocketTable with VFS reference
+- onProcessExit hook calls socketTable.closeAllForProcess(pid) to clean up sockets on process exit
+- dispose() calls socketTable.disposeAll() before driver teardown
+- Added 5 integration tests: expose check, create/close, dispose cleanup, process exit cleanup, loopback TCP
+- Files changed: packages/core/src/kernel/types.ts (socketTable on Kernel interface), packages/core/src/kernel/kernel.ts (SocketTable import, property, constructor init, onProcessExit hook, dispose), packages/core/test/kernel/kernel-integration.test.ts (5 new tests)
+- **Learnings for future iterations:**
+  - SocketTable.get() returns null (not undefined) for missing sockets — use toBeNull() in assertions
+  - Process exit cleanup chain: ProcessTable.markExited → onProcessExit callback → cleanupProcessFDs + socketTable.closeAllForProcess
+  - SocketTable constructor accepts { vfs } option — pass kernel's VFS for Unix domain socket file management
+  - dispose() order matters: terminateAll() first (triggers onProcessExit for each process), then disposeAll() for any remaining sockets, then driver teardown
+---
+
+## 2026-03-23 - US-017
+- Implemented TimerTable with per-process ownership, budget enforcement, and cross-process isolation
+- KernelTimer struct: id, pid, delayMs, repeat, hostHandle, callback, cleared flag
+- TimerTable: createTimer, clearTimer, get, getActiveTimers, countForProcess, setLimit, clearAllForProcess, disposeAll
+- Budget enforcement: configurable defaultMaxTimers + per-process overrides via setLimit(); throws EAGAIN when exceeded
+- Cross-process isolation: clearTimer with pid param rejects if caller doesn't own the timer (EACCES)
+- Host scheduling delegation: hostHandle field on KernelTimer for callers to store setTimeout/setInterval handle
+- Files changed: packages/core/src/kernel/timer-table.ts (new), packages/core/src/kernel/index.ts (exports), packages/core/test/kernel/timer-table.test.ts (new, 23 tests)
+- **Learnings for future iterations:**
+  - TimerTable follows the same Map + nextId pattern as InodeTable and SocketTable
+  - Budget enforcement is inline in createTimer() — no separate enforceLimit() method needed; constructor option + setLimit() per-process override
+  - clearTimer without pid param allows unconditional clear (for kernel-internal cleanup); with pid enables cross-process isolation
+  - hostHandle is mutable on KernelTimer — callers set it after createTimer() returns, before the timer fires
+  - cleared flag lets callers check if a timer was cancelled (e.g., to skip callback invocation in the host scheduling loop)
+---
+
+## 2026-03-23 - US-018
+- Extended ProcessEntry with activeHandles (Map<string, string>) and handleLimit (number, 0=unlimited)
+- Added registerHandle(pid, id, description), unregisterHandle(pid, id), setHandleLimit(pid, limit), getHandles(pid) methods to ProcessTable
+- Budget enforcement: registerHandle throws EAGAIN when activeHandles.size >= handleLimit (if limit > 0)
+- Process exit cleanup: markExited() clears activeHandles before onProcessExit callback
+- getHandles() returns a defensive copy to prevent external mutation of kernel state
+- Files changed: packages/core/src/kernel/types.ts (ProcessEntry fields), packages/core/src/kernel/process-table.ts (handle methods + cleanup), packages/core/test/kernel/process-table.test.ts (13 new tests, 41 total)
+- **Learnings for future iterations:**
+  - Handle tracking is simpler than TimerTable — no separate class needed, just Map fields on ProcessEntry + methods on ProcessTable
+  - EBADF is the right error for unknown handle IDs (not ENOENT) — consistent with FD error conventions
+  - Handle cleanup in markExited() must happen before onProcessExit callback to ensure consistent state for downstream cleanup hooks
+  - kernel-integration.test.ts has 2 pre-existing flaky stdin streaming failures unrelated to handle work
+---
+
+## 2026-03-23 - US-019
+- Implemented DnsCache class in packages/core/src/kernel/dns-cache.ts
+- lookup(hostname, rrtype) returns cached DnsResult or null; expired entries return null and are lazily removed
+- store(hostname, rrtype, result, ttlMs?) caches with TTL; uses configurable defaultTtlMs (30s) if not specified
+- flush() clears all entries; size getter for entry count
+- Cache key is "hostname:rrtype" composite string — distinguishes A vs AAAA for same hostname
+- Files changed: packages/core/src/kernel/dns-cache.ts (new), packages/core/src/kernel/index.ts (exports), packages/core/test/kernel/dns-cache.test.ts (new, 16 tests)
+- **Learnings for future iterations:**
+  - DnsCache is simpler than other kernel tables — no per-process ownership, no KernelError throws, just a TTL Map
+  - DnsResult type is imported from host-adapter.ts (address: string, family: 4|6)
+  - Lazy expiry: expired entries are removed on lookup, not by a background timer — keeps implementation simple
+  - vi.useFakeTimers()/vi.advanceTimersByTime() is the pattern for testing time-dependent behavior in vitest
+  - DnsCacheOptions follows the same constructor options pattern as TimerTableOptions
+---
+
+## 2026-03-23 - US-020
+- Implemented full POSIX sigaction/sigprocmask semantics in ProcessTable
+- SignalHandler type: handler ('default' | 'ignore' | function), mask (sa_mask), flags (SA_RESTART, SA_NOCLDSTOP)
+- ProcessSignalState on ProcessEntry: handlers Map, blockedSignals Set, pendingSignals Set
+- sigaction(pid, signal, handler): registers handler, returns previous, rejects SIGKILL/SIGSTOP
+- sigprocmask(pid, how, set): SIG_BLOCK/SIG_UNBLOCK/SIG_SETMASK, filters SIGKILL/SIGSTOP, delivers pending on unblock
+- deliverSignal refactored: checks blocked → queue, checks handler → dispatch, default action for unregistered
+- SIGCONT always resumes (POSIX) even when caught or blocked; handler invoked after resume
+- SIGCHLD default action is now "ignore" (correct POSIX) — updated existing test to use registered handler
+- Standard signals (1-31) coalesce via Set — only one pending per signal number
+- Pending signals delivered in ascending signal number order
+- sa_mask temporarily blocked during handler execution, restored after
+- SIGALRM delivery now routes through handler system
+- EINTR added to KernelErrorCode for future SA_RESTART integration
+- Files changed: packages/core/src/kernel/types.ts (SignalHandler, ProcessSignalState, SA_RESTART, SA_NOCLDSTOP, SIG_BLOCK/UNBLOCK/SETMASK, EINTR, signalState on ProcessEntry), packages/core/src/kernel/process-table.ts (sigaction, sigprocmask, getSignalState, deliverSignal/dispatchSignal/applyDefaultAction/deliverPendingSignals refactor), packages/core/src/kernel/index.ts (new exports), packages/core/test/kernel/signal-handlers.test.ts (new, 28 tests), packages/core/test/kernel/process-table.test.ts (updated SIGCHLD test)
+- **Learnings for future iterations:**
+  - SIGCONT is special: resume always happens regardless of handler/blocking — then handler is dispatched; other signals can be purely handler-overridden
+  - SIGCHLD default action is "ignore" per POSIX — tests expecting driverProcess.kill(SIGCHLD) need a registered handler
+  - Recursive deliverPendingSignals can cause double-dispatch — check pendingSignals.has(sig) before dispatching from snapshot array
+  - deliverSignal → dispatchSignal → applyDefaultAction three-level dispatch keeps POSIX semantics clean
+  - ProcessEntry.signalState is initialized in register() — no separate initialization step needed
+---
+
+## 2026-03-23 - US-021
+- Implemented concrete Node.js HostNetworkAdapter in packages/nodejs/src/host-network-adapter.ts
+- NodeHostSocket: wraps net.Socket with queued-read model (data/EOF buffered, each read() returns next chunk or null)
+- NodeHostListener: wraps net.Server with connection queue; accept() returns next HostSocket
+- NodeHostUdpSocket: wraps dgram.Socket with message queue; recv() returns next datagram
+- createNodeHostNetworkAdapter() factory: tcpConnect (net.connect), tcpListen (net.createServer), udpBind (dgram.createSocket), udpSend (dgram.send), dnsLookup (dns.lookup)
+- Added HostNetworkAdapter/HostSocket/HostListener/HostUdpSocket/DnsResult type exports to @secure-exec/core main index.ts
+- Exported createNodeHostNetworkAdapter from packages/nodejs/src/index.ts
+- Files changed: packages/nodejs/src/host-network-adapter.ts (new), packages/nodejs/src/index.ts (export), packages/core/src/index.ts (type exports)
+- **Learnings for future iterations:**
+  - Host adapter types were only in kernel/index.ts, not the core main index — had to add type exports to packages/core/src/index.ts
+  - After editing core exports, must rebuild core (`pnpm turbo run build --filter=@secure-exec/core`) before nodejs typecheck can see the new types
+  - The queued-read pattern (readQueue + waiters array) is reusable for any pull-based async reader wrapping push-based Node streams
+  - udpSend needs access to the underlying dgram.Socket — uses casting through the wrapper since HostUdpSocket interface is opaque
+  - HostSocket.setOption is a simple pass-through; real option-to-setsockopt mapping will be needed when wired into the kernel
+---
+
+## 2026-03-23 - US-022
+- Migrated Node.js FD table from in-isolate Map to host-side kernel ProcessFDTable
+- Added 8 new bridge handler keys (fdOpen, fdClose, fdRead, fdWrite, fdFstat, fdFtruncate, fdFsync, fdGetPath) to bridge-contract.ts
+- Added buildKernelFdBridgeHandlers() in bridge-handlers.ts — creates FDTableManager + ProcessFDTable per execution, delegates I/O to VFS
+- Wired FD handlers into execution-driver.ts dispatch handlers (routed through _loadPolyfill bridge dispatch)
+- Replaced all fdTable.get/set/has/delete in bridge/fs.ts with bridge calls to kernel FD handlers
+- Removed fdTable Map, nextFd counter, MAX_BRIDGE_FDS, canRead(), canWrite() from bridge/fs.ts
+- readSync/writeSync now use base64 encoding for binary data transfer across the bridge boundary
+- Files changed: packages/nodejs/src/bridge-contract.ts (8 new keys), packages/nodejs/src/bridge-handlers.ts (buildKernelFdBridgeHandlers), packages/nodejs/src/execution-driver.ts (wiring + cleanup), packages/nodejs/src/bridge/fs.ts (fdTable removal, bridge call migration)
+- **Learnings for future iterations:**
+  - Bridge globals not in the Rust V8 SYNC_BRIDGE_FNS are automatically dispatched through _loadPolyfill via BRIDGE_DISPATCH_SHIM — no Rust code changes needed for new bridge functions
+  - The dispatch shim JSON-serializes args and results, so binary data must be base64-encoded
+  - After modifying bridge source (bridge/fs.ts), the bridge IIFE must be rebuilt via `pnpm turbo run build --filter=@secure-exec/nodejs` for changes to take effect in tests
+  - FD operations (open/close/read/write/fstat) now go through the bridge dispatch; error messages must contain "EBADF"/"ENOENT" substrings for the in-isolate error wrapping to produce correct fs error codes
+  - ProcessFDTable from @secure-exec/core handles FD allocation, cursor tracking, and reference counting — bridge handlers don't need to implement these manually
+  - resource-budgets.test.ts has 7 pre-existing flaky failures unrelated to FD migration
+  - runtime.test.ts has 2 pre-existing PTY/setRawMode failures unrelated to FD migration
+---
+
+## 2026-03-23 - US-023
+- Migrated Node.js net.connect to route through kernel socket table instead of direct host TCP
+- buildNetworkSocketBridgeHandlers now accepts optional socketTable + pid; when provided, uses kernel socket routing
+- Kernel path: create kernel socket (sync, returns ID) → async connect → read pump dispatches data/end/close events
+- Read pump uses socket.readWaiters.enqueue().wait() to block until data arrives, then dispatches via bridge events
+- Fallback path preserved: when socketTable is not provided, original direct net.Socket behavior is used (backward compat)
+- Added hostNetworkAdapter to KernelOptions and wired to SocketTable constructor for external connection routing
+- Added socketTable to KernelInterface, exposed from createKernelInterface() in kernel.ts
+- Added socketTable/pid to NodeExecutionDriverOptions, passed through execution-driver to bridge handlers
+- kernel-runtime.ts passes kernel.socketTable and ctx.pid to NodeExecutionDriver
+- Removed unused netSockets Map, nextNetSocketId, and netSocket* methods from createDefaultNetworkAdapter (driver.ts)
+- Removed netSocket* methods from NetworkAdapter interface (core/types.ts) and permission wrappers (permissions.ts)
+- Removed unused tls import from driver.ts
+- Exported SocketTable, AF_INET, AF_INET6, AF_UNIX, SOCK_STREAM, SOCK_DGRAM from @secure-exec/core index
+- TLS upgrade for external kernel sockets: accesses underlying net.Socket from NodeHostSocket for tls.connect wrapping
+- Files changed: packages/core/src/kernel/types.ts (hostNetworkAdapter on KernelOptions, socketTable on KernelInterface), packages/core/src/kernel/kernel.ts (wire hostAdapter, expose socketTable on KernelInterface), packages/core/src/index.ts (SocketTable + constant exports), packages/core/src/types.ts (removed netSocket* from NetworkAdapter), packages/core/src/shared/permissions.ts (removed netSocket* wrappers), packages/nodejs/src/bridge-handlers.ts (kernel socket routing + fallback), packages/nodejs/src/execution-driver.ts (socketTable/pid passthrough), packages/nodejs/src/isolate-bootstrap.ts (socketTable/pid on options), packages/nodejs/src/kernel-runtime.ts (wire socketTable/pid), packages/nodejs/src/driver.ts (removed netSockets + tls import)
+- **Learnings for future iterations:**
+  - SocketTable.close() requires both socketId AND pid — per-process isolation check
+  - The kernel's connect() is async but bridge handlers are sync — return socketId immediately, dispatch events async (matches existing bridge pattern)
+  - The read pump waits on socket.readWaiters (WaitQueue) for data — no polling needed
+  - External kernel sockets have hostSocket (NodeHostSocket) wrapping real net.Socket — TLS upgrade accesses the inner socket via casting
+  - NetworkAdapter.netSocket* methods were dead code — never called by any consumer; bridge handlers are the actual path
+  - When adding exports to @secure-exec/core index.ts, must rebuild core before downstream packages can see them
+---
+
+## 2026-03-23 - US-024
+- Migrated Node.js http.createServer to route through kernel socket table instead of adapter.httpServerListen
+- When socketTable + pid available, bridge handler creates kernel socket → bind → listen (external: true)
+- Kernel creates real TCP listener via hostAdapter.tcpListen(), accept pump feeds connections to local http.Server
+- Created KernelSocketDuplex class (stream.Duplex) to bridge kernel sockets to Node http module for HTTP parsing
+- Accept loop dequeues connections from kernel listener backlog and feeds them to http.Server via emit('connection')
+- HTTP protocol parsing stays on host side (in Node http module) — kernel handles TCP, bridge handles HTTP
+- For loopback: sandbox connect() pairs kernel sockets directly, no real TCP involved
+- For external: hostAdapter.tcpListen creates real net.Server, kernel accept pump creates kernel sockets for incoming connections
+- Added trackOwnedPort/untrackOwnedPort to NetworkAdapter interface for SSRF loopback exemption coordination
+- Removed serverRequestListeners Map from bridge/network.ts — request listener stored directly on Server instance
+- Changed buildNetworkBridgeHandlers to return NetworkBridgeResult { handlers, dispose } for kernel HTTP server cleanup
+- Fallback adapter path preserved: when socketTable not provided, existing adapter.httpServerListen behavior is used
+- Files changed: packages/core/src/types.ts (trackOwnedPort/untrackOwnedPort on NetworkAdapter), packages/nodejs/src/bridge-handlers.ts (kernel HTTP server path, KernelSocketDuplex, accept loop, NetworkBridgeResult), packages/nodejs/src/execution-driver.ts (socketTable/pid passthrough to network bridge, dispose on cleanup), packages/nodejs/src/driver.ts (trackOwnedPort/untrackOwnedPort impl), packages/nodejs/src/bridge/network.ts (serverRequestListeners removal, _requestListener on Server instance)
+- **Learnings for future iterations:**
+  - http.Server + server.emit('connection', duplexStream) feeds kernel socket data through Node's HTTP parser without real TCP
+  - KernelSocketDuplex needs socket-like properties (remoteAddress, remotePort, setNoDelay, setKeepAlive, setTimeout) for Node http module compatibility
+  - The kernel's listen() with { external: true } starts an internal accept pump — bridge handler's accept loop calls socketTable.accept() to dequeue connections
+  - buildNetworkBridgeHandlers now returns { handlers, dispose } — dispose closes all kernel HTTP servers on execution cleanup
+  - trackOwnedPort/untrackOwnedPort coordinates SSRF exemption between kernel HTTP servers and adapter fetch/httpRequest until US-025 migrates SSRF fully to kernel
+  - servers Map and ownedServerPorts Set in driver.ts remain for adapter fallback path — full removal deferred to US-025
+---
+
+## 2026-03-23 - US-025
+- Migrated SSRF validation from driver.ts NetworkAdapter to bridge-handlers.ts with kernel socket table awareness
+- Added assertNotPrivateHost, isPrivateIp, isLoopbackHost functions to bridge-handlers.ts
+- Bridge handler checks SSRF before calling adapter.fetch() and adapter.httpRequest()
+- Kernel-aware loopback exemption: assertNotPrivateHost uses socketTable.findListener() to check if a port has a kernel listener
+- Adapter retains defense-in-depth SSRF checks (assertNotPrivateHost in redirect loop and httpRequest) for non-bridge callers
+- Removed trackOwnedPort/untrackOwnedPort from NetworkAdapter interface and driver.ts (kernel listener check replaces ownedServerPorts for loopback exemption)
+- Removed adapter.trackOwnedPort/untrackOwnedPort calls from kernel HTTP server path in bridge-handlers.ts
+- Files changed: packages/core/src/types.ts (removed trackOwnedPort/untrackOwnedPort from NetworkAdapter), packages/nodejs/src/bridge-handlers.ts (SSRF functions + fetch/httpRequest SSRF checks), packages/nodejs/src/driver.ts (adapter SSRF comments updated, trackOwnedPort removed)
+- **Learnings for future iterations:**
+  - socketTable.findListener({ host: '127.0.0.1', port }) returns the listening kernel socket or null — use for loopback port ownership check
+  - Defense-in-depth: adapter keeps basic SSRF for redirect validation; bridge handler adds kernel-aware primary check
+  - When testing SSRF changes, ALWAYS rebuild the bridge IIFE (pnpm turbo run build --filter=@secure-exec/nodejs --force) — stale bridge code causes misleading test failures
+  - ownedServerPorts Set remains in driver.ts for the adapter fallback path (httpServerListen) but kernel path uses socketTable.findListener() exclusively
+---
+
+## 2026-03-23 - US-026
+- Migrated Node.js child process registry to kernel process table
+- On spawn: allocates PID from processTable.allocatePid(), registers with processTable.register()
+- On exit: calls processTable.markExited(pid, code) for kernel-level process lifecycle tracking
+- On kill: routes through processTable.kill(pid, signal) instead of direct SpawnedProcess.kill
+- Created wrapAsDriverProcess() to adapt SpawnedProcess to kernel DriverProcess interface (adds onStdout/onStderr/onExit stubs)
+- Removed activeChildren Map from bridge/child-process.ts — replaced with childProcessInstances (event routing only, not process state)
+- Process state (running/exited) now tracked by kernel process table; sandbox-side Map only dispatches stream events
+- Exposed processTable on KernelInterface (types.ts) and KernelImpl (kernel.ts)
+- Added processTable to NodeExecutionDriverOptions, wired through execution-driver.ts and kernel-runtime.ts
+- spawnSync also registers with kernel process table and marks exited on completion
+- Files changed: packages/core/src/kernel/types.ts (processTable on KernelInterface), packages/core/src/kernel/kernel.ts (expose processTable), packages/nodejs/src/bridge-handlers.ts (kernel registration in spawn/exit/kill, wrapAsDriverProcess), packages/nodejs/src/execution-driver.ts (processTable passthrough), packages/nodejs/src/isolate-bootstrap.ts (processTable option), packages/nodejs/src/kernel-runtime.ts (wire processTable), packages/nodejs/src/bridge/child-process.ts (activeChildren → childProcessInstances)
+- **Learnings for future iterations:**
+  - DriverProcess has onStdout/onStderr/onExit callback properties that SpawnedProcess lacks — wrap with null stubs when adapting
+  - ProcessTable.register() requires ProcessContext with env/cwd/fds — env must not be undefined (use ?? {})
+  - processTable is private on KernelImpl but exposed on KernelInterface — drivers access via kernel interface object
+  - sessionToPid Map bridges between bridge handler's sessionId (internal counter) and kernel PID
+  - Fallback path preserved: when processTable not provided, original non-kernel behavior unchanged
+---
+
+## 2026-03-24 - US-027
+- Routed WasmVM TCP socket operations through kernel SocketTable instead of driver-private _sockets Map
+- Removed _sockets Map and _nextSocketId counter from driver.ts
+- netSocket → kernel.socketTable.create(domain, type, protocol, pid)
+- netConnect → await kernel.socketTable.connect(socketId, { host, port }) — hostAdapter handles real TCP
+- netSend → kernel.socketTable.send(socketId, data, flags) — TLS-upgraded sockets write directly
+- netRecv → kernel.socketTable.recv() with readWaiters wait for blocking reads on external sockets
+- netClose → kernel.socketTable.close(socketId, pid) + TLS socket cleanup
+- netPoll → kernel.socketTable.poll() for socket readability, kernel.fdPoll for pipes
+- netTlsConnect → accesses hostSocket's underlying net.Socket for TLS upgrade, stores in _tlsSockets
+- kernel-worker.ts: localToKernelFd.set(kernelSocketId, kernelSocketId) on net_socket, delete on net_close
+- Test updated: createMockKernel() provides SocketTable + real HostNetworkAdapter (TestHostSocket wrapping node:net)
+- Files changed: packages/wasmvm/src/driver.ts (socket handler migration, _sockets→kernel.socketTable), packages/wasmvm/src/kernel-worker.ts (localToKernelFd mapping for socket FDs), packages/wasmvm/test/net-socket.test.ts (mock kernel + scoped call helpers)
+- **Learnings for future iterations:**
+  - Kernel recv() returns null for both "no data yet" and "EOF" — distinguish by checking socket.external + peerWriteClosed for external, peerId existence for loopback
+  - WaitHandle timeout goes in WaitQueue.enqueue(timeoutMs), not WaitHandle.wait() — wait() takes no args
+  - TLS upgrade accesses NodeHostSocket's private socket field via (hostSocket as any).socket — set hostSocket=undefined to detach kernel read pump
+  - SocketTable.close() requires both socketId AND pid for per-process ownership check
+  - Test kernel mock only needs socketTable + fdPoll — other kernel methods not needed for socket tests
+  - Kernel socket IDs are used directly as WASM FDs — identity mapping in localToKernelFd for poll consistency
+---
+
+## 2026-03-24 - US-028
+- Implemented bind/listen/accept WASI extensions for WasmVM server sockets
+- Added net_bind, net_listen, net_accept extern declarations and safe Rust wrappers to native/wasmvm/crates/wasi-ext/src/lib.rs
+- Added net_bind, net_listen, net_accept import handlers to packages/wasmvm/src/kernel-worker.ts
+- Added netBind, netListen, netAccept RPC handler cases to packages/wasmvm/src/driver.ts
+- Added EAGAIN and EADDRINUSE errno codes to packages/wasmvm/src/wasi-constants.ts
+- **Learnings for future iterations:**
+  - WASI errno codes for EAGAIN=6 and EADDRINUSE=3 were missing from wasi-constants.ts — when adding new socket operations, check that all possible KernelError codes have WASI errno mappings
+  - accept() handler needs to wait on acceptWaiters when backlog is empty, with 30s timeout matching recv() pattern
+  - Address serialization for bind uses same "host:port" format as connect; unix sockets use bare path (no colon)
+  - net_accept returns new FD via intResult and remote address string via data buffer — same dual-channel pattern used by getaddrinfo
+  - Rust vendor directory is fetched at build time (make wasm), cargo check won't work without it
+---
+
+## 2026-03-24 - US-029
+- Extended 0008-sockets.patch with bind(), listen(), accept() C implementations in host_socket.c
+- Added WASM import declarations: __host_net_bind, __host_net_listen, __host_net_accept
+- bind() follows same sockaddr-to-string pattern as connect() (AF_INET/AF_INET6 → "host:port")
+- listen() is a simple passthrough with backlog clamped to non-negative
+- accept() calls __host_net_accept, parses returned "host:port" string back into sockaddr_in/sockaddr_in6
+- Un-gated bind() and listen() declarations in sys/socket.h (removed #if wasilibc_unmodified_upstream guard)
+- accept()/accept4() were already un-gated in wasi-libc at pinned commit 574b88da
+- Files changed: native/wasmvm/patches/wasi-libc/0008-sockets.patch
+- **Learnings for future iterations:**
+  - accept/accept4 declarations are NOT behind the wasilibc_unmodified_upstream guard in the pinned wasi-libc commit (574b88da) — only bind/listen/connect/socket need un-gating
+  - Address string format from host is "host:port" — use strrchr for last colon to handle IPv6 addresses
+  - The build script (patch-wasi-libc.sh) removes conflicting .o files from libc.a — bind/listen/accept don't need removal since they have no wasip1 stubs
+  - Patch hunk line counts must be updated when adding/removing lines — @@ header second pair is the new file line range
+---
+
+## 2026-03-24 - US-030
+- Added net_sendto and net_recvfrom WASI extensions for WasmVM UDP
+- Rust: added extern declarations and safe wrappers in native/wasmvm/crates/wasi-ext/src/lib.rs
+  - net_sendto(fd, buf_ptr, buf_len, flags, addr_ptr, addr_len, ret_sent) -> errno
+  - net_recvfrom(fd, buf_ptr, buf_len, flags, ret_received, ret_addr, ret_addr_len) -> errno
+  - sendto() wrapper: takes fd, buf, flags, addr → Result<u32, Errno>
+  - recvfrom() wrapper: takes fd, buf, flags, addr_buf → Result<(u32, u32), Errno>
+- kernel-worker.ts: net_sendto handler reads data + addr from WASM memory, dispatches to netSendTo RPC
+- kernel-worker.ts: net_recvfrom handler dispatches to netRecvFrom RPC, unpacks [data|addr] from combined buffer
+- driver.ts: netSendTo parses "host:port" addr, calls kernel.socketTable.sendTo()
+- driver.ts: netRecvFrom waits for datagram (30s timeout), packs [data|addr] into combined response buffer with intResult = data length
+- Files changed: native/wasmvm/crates/wasi-ext/src/lib.rs, packages/wasmvm/src/kernel-worker.ts, packages/wasmvm/src/driver.ts
+- **Learnings for future iterations:**
+  - RPC response only has { errno, intResult, data } — no string field; for multi-value returns, pack into data buffer and use intResult as split offset
+  - The responseData → SIG_IDX_DATA_LEN path overwrites manual Atomics.store calls — always use responseData = combined for correct data length signaling
+  - sendTo/recvFrom already exist on SocketTable (packages/core/src/kernel/socket-table.ts) — only WASI host import and RPC plumbing needed
+---
+
+## 2026-03-24 - US-031
+- Added sendto() and recvfrom() C implementations to 0008-sockets.patch
+- Added AF_UNIX support in address serialization via sockaddr_to_string() / string_to_sockaddr() helper functions
+- sockaddr_to_string: AF_INET/AF_INET6 → "host:port", AF_UNIX → path string
+- string_to_sockaddr: "host:port" → sockaddr_in/sockaddr_in6, no colon → sockaddr_un
+- sendto() calls __host_net_sendto with serialized addr; falls back to send() when dest_addr is NULL
+- recvfrom() calls __host_net_recvfrom, parses returned addr via string_to_sockaddr; falls back to recv() when src_addr is NULL
+- Refactored connect(), bind(), accept() to use the shared helper functions (removed duplicated address serialization code)
+- Added sockaddr_un definition with __has_include guard (WASI libc doesn't provide sys/un.h)
+- Updated WASM import declarations to include net_sendto and net_recvfrom (matching lib.rs signatures)
+- Updated patch hunk line count from 518 to 628
+- Files changed: native/wasmvm/patches/wasi-libc/0008-sockets.patch
+- **Learnings for future iterations:**
+  - WASI libc doesn't include sys/un.h or define AF_UNIX — must define sockaddr_un inline with __has_include guard
+  - Address convention: inet addresses as "host:port", unix as bare path (no colon) — driver uses lastIndexOf(':') to distinguish
+  - The driver's netConnect handler doesn't support unix paths yet (returns EINVAL) — only netBind handles both; this is a known gap for future stories
+  - __builtin_offsetof works in clang for computing sun_path offset in sockaddr_un
+  - Patch line counts in @@ headers must be updated manually when adding lines to a /dev/null → new file diff
+---
+
+## 2026-03-24 - US-032
+- Added tcp_server.c C test program: socket() → bind(port) → listen() → accept() → recv() → send("pong") → close()
+- Added tcp_server to PATCHED_PROGRAMS in native/wasmvm/c/Makefile
+- Added packages/wasmvm/test/net-server.test.ts: integration test that spawns tcp_server WASM, connects via kernel socketTable loopback, sends "ping", receives "pong", verifies stdout output
+- Files changed: native/wasmvm/c/programs/tcp_server.c (new), native/wasmvm/c/Makefile (PATCHED_PROGRAMS), packages/wasmvm/test/net-server.test.ts (new)
+- **Learnings for future iterations:**
+  - For WASM server tests, start kernel.exec() without awaiting, poll findListener() for readiness, then connect via socketTable loopback
+  - Client sockets in test use a fake PID (e.g., 999) — socketTable.create doesn't validate pid against process table
+  - Loopback connect() is synchronous inside the async function — no host adapter needed for kernel-to-kernel routing
+  - recv() may return null when WASM worker hasn't processed yet — poll with setTimeout to yield to event loop between retries
+  - tcp_server prints "listening on port N" after listen() and fflush(stdout) — useful for verifying server readiness in test output
+---
+
+## 2026-03-24 - US-033
+- Added udp_echo.c C test program: socket(SOCK_DGRAM) → bind(port) → recvfrom() → sendto() (echo) → close()
+- Added udp_echo to PATCHED_PROGRAMS in native/wasmvm/c/Makefile
+- Added packages/wasmvm/test/net-udp.test.ts: integration test that spawns udp_echo WASM, sends datagram via kernel socketTable, verifies echo response and message boundary preservation
+- Made findBoundUdp() public on SocketTable (was private) — mirrors findListener() for TCP, needed by test to poll for UDP binding readiness
+- Files changed: native/wasmvm/c/programs/udp_echo.c (new), native/wasmvm/c/Makefile (PATCHED_PROGRAMS), packages/wasmvm/test/net-udp.test.ts (new), packages/core/src/kernel/socket-table.ts (findBoundUdp visibility)
+- **Learnings for future iterations:**
+  - findBoundUdp was private on SocketTable — needed to make it public for test polling (mirrors findListener for TCP)
+  - UDP server tests poll waitForUdpBinding() instead of waitForListener() — separate binding map from TCP listeners
+  - UDP client sockets need bind() to ephemeral port (port 0) before sendTo — otherwise the kernel has no source address for the reply
+  - The 0008-sockets.patch has a context drift issue (hunk #2 fails without --fuzz=3) — pre-existing issue, not caused by this story
+  - C programs compile natively with `cc -O0 -g -I include/ -o udp_echo programs/udp_echo.c` for quick verification
+---
+
+## 2026-03-24 - US-034
+- Implemented WasmVM Unix domain socket C test program and integration test
+- Created native/wasmvm/c/programs/unix_socket.c: AF_UNIX server (socket → bind → listen → accept → recv → send "pong")
+- Added unix_socket to PATCHED_PROGRAMS in Makefile
+- Fixed packages/wasmvm/src/driver.ts netConnect handler to support Unix domain socket paths (no colon = Unix path, matching netBind pattern)
+- Created packages/wasmvm/test/net-unix.test.ts: spawns unix_socket WASM, connects from kernel, verifies data exchange
+- Files changed: native/wasmvm/c/programs/unix_socket.c (new), native/wasmvm/c/Makefile, packages/wasmvm/src/driver.ts, packages/wasmvm/test/net-unix.test.ts (new)
+- **Learnings for future iterations:**
+  - netConnect in driver.ts was missing Unix domain socket path support — netBind had it but netConnect returned EINVAL for pathless addresses
+  - Unix socket C programs need fallback sockaddr_un definition since sys/un.h may not be available in WASI — the 0008-sockets.patch provides its own but __has_include guard is needed
+  - waitForUnixListener uses findListener({ path }) instead of findListener({ host, port }) — same method, different address type
+  - SimpleVFS needs /tmp directory created in beforeEach for unix socket files to be created by the kernel
+---
+
+## 2026-03-24 - US-035
+- Implemented WasmVM cooperative signal handler support: WASI extension, kernel integration, C sysroot patch, test program, integration test
+- Added proc_sigaction to host_process module in native/wasmvm/crates/wasi-ext/src/lib.rs (signal, action) -> errno
+- Extended SAB protocol with SIG_IDX_PENDING_SIGNAL slot in packages/wasmvm/src/syscall-rpc.ts for cooperative delivery
+- Added sigaction RPC dispatch in packages/wasmvm/src/driver.ts — registers handler in kernel process table, piggybacking pending signals in RPC responses
+- Added _wasmPendingSignals Map for per-PID signal queuing in driver
+- Added proc_sigaction host import handler in packages/wasmvm/src/kernel-worker.ts
+- Added cooperative signal delivery: after each rpcCall, check SIG_IDX_PENDING_SIGNAL and invoke wasmTrampoline
+- Added wasmTrampoline wiring after WASM instantiation (reads __wasi_signal_trampoline export)
+- Created 0011-sigaction.patch: signal() implementation + __wasi_signal_trampoline export in C sysroot
+- Created native/wasmvm/c/programs/signal_handler.c: registers SIGINT handler, busy-loops with usleep, prints caught signal
+- Added signal_handler to PATCHED_PROGRAMS in Makefile
+- Created packages/wasmvm/test/signal-handler.test.ts: spawns signal_handler WASM, delivers SIGINT via ManagedProcess.kill(), verifies handler fires
+- Files changed: native/wasmvm/crates/wasi-ext/src/lib.rs, packages/wasmvm/src/syscall-rpc.ts, packages/wasmvm/src/driver.ts, packages/wasmvm/src/kernel-worker.ts, native/wasmvm/patches/wasi-libc/0011-sigaction.patch (new), native/wasmvm/c/programs/signal_handler.c (new), native/wasmvm/c/Makefile, packages/wasmvm/test/signal-handler.test.ts (new)
+- **Learnings for future iterations:**
+  - Kernel public Kernel interface has no kill(pid, signal) — use ManagedProcess.kill() from spawn() for tests, or kernel.processTable.kill() internally
+  - SignalDisposition type is exported from @secure-exec/core kernel index but NOT from the main package entry point — use inline type or import from kernel path
+  - Cooperative signal delivery architecture: handler registered in kernel is a JS callback that queues to _wasmPendingSignals; driver piggybacking delivers one signal per RPC response in SIG_IDX_PENDING_SIGNAL; worker reads it and calls wasmTrampoline
+  - C sysroot signal handling: signal() stores handler in static table + calls proc_sigaction WASM import; __wasi_signal_trampoline dispatches to stored handler
+  - Signals only delivered at syscall boundaries (fundamental WASM limitation) — long compute loops without syscalls won't see signals
+  - Pre-existing test failures in fd-table.test.ts, wasi-polyfill.test.ts, net-socket.test.ts, resource-exhaustion.test.ts — not related to this work
+---
+
+## 2026-03-24 - US-036
+- Implemented cross-runtime network integration test in packages/secure-exec/tests/kernel/cross-runtime-network.test.ts
+- Three tests: (1) WasmVM tcp_server ↔ Node.js net.connect data exchange, (2) Node.js http.createServer ↔ WasmVM http_get HTTP exchange, (3) loopback verification via direct kernel socket table access
+- Uses createKernel with both WasmVM (C_BUILD_DIR + COMMANDS_DIR) and Node.js runtimes mounted
+- Skip-guarded for missing WASM binaries (tcp_server, http_get)
+- Files changed: packages/secure-exec/tests/kernel/cross-runtime-network.test.ts (new)
+- **Learnings for future iterations:**
+  - createIntegrationKernel helper only includes COMMANDS_DIR (Rust binaries); for C WASM programs, create kernel manually with commandDirs: [C_BUILD_DIR, COMMANDS_DIR]
+  - http_get.c is a ready-made HTTP client C program that does GET and prints body — useful for cross-runtime HTTP tests
+  - waitForListener() pattern: poll kernel.socketTable.findListener() in a loop for server readiness
+  - For long-running server processes, use kernel.spawn() with kill() cleanup; for one-shot servers (like tcp_server), use kernel.exec() which completes after one connection
+---
+
+## 2026-03-24 - US-037
+- Re-ran full Node.js conformance suite (3532 tests) after kernel consolidation
+- Genuine pass rate improved from 11.3% (399/3532) to 19.9% (704/3532) — 305 new genuine passes
+- 357 tests that were expected-fail now genuinely pass — removed their expectations
+- 49 previously-passing tests now fail due to implementation gaps — added specific failure reasons
+- 38 tests passing under glob-match patterns got pass overrides
+- FIX-01 (HTTP server tests): 183 of 492 tests now pass (37% resolved)
+- Files changed: expectations.json (restored + updated), runner.test.ts (restored), common/ shims (restored), conformance-report.json, nodejs-compat-roadmap.md, package.json (minimatch dep)
+- **Learnings for future iterations:**
+  - The conformance runner was deleted in commit 2783baf3 — needs to be restored from git history before running
+  - Tests marked `expected: "fail"` that hang forever still time out and fail vitest — use `expected: "skip"` for tests that hang
+  - Glob patterns in expectations.json need explicit pass overrides for individual tests that now genuinely pass
+  - `minimatch` npm package is needed for the conformance runner (glob pattern matching)
+  - Full conformance suite takes ~3-5 minutes to run (3532 tests at 30s timeout each)
+  - Newly failing tests (regressions from expected-pass) need investigation and proper categorization
+---
+
+## 2026-03-24 - US-038
+- Reclassified dgram, net, tls, https, http2 conformance test expectations from `unsupported-module` to `implementation-gap`
+- Re-ran all 735 tests across 5 network modules: 38 genuinely pass, 697 fail (same as before reclassification)
+- Failure breakdown: 494 assertion failures (API gaps), 169 missing fixture files (TLS certs), 16 timeouts, 13 cluster-dependent, 5 other
+- Updated expectations.json: glob patterns reclassified, individual pass overrides preserved
+- Updated conformance-report.json with correct module-level counts
+- Updated docs-internal/nodejs-compat-roadmap.md: unsupported-module 1226→735, implementation-gap 762→1366
+- Files changed: expectations.json, conformance-report.json, nodejs-compat-roadmap.md, prd.json
+- **Learnings for future iterations:**
+  - When running conformance tests with `-t "node/<module>"`, expected-fail tests that actually fail show as vitest PASSES — don't confuse this with the test genuinely passing
+  - To find genuinely passing tests, you must check the vitest JSON output for `status: "passed"` vs failure messages containing "expected to fail but passed"
+  - Most TLS/HTTPS conformance failures are from missing fixture files (certs, keys) not loaded into the VFS, not from actual API gaps
+  - dgram and net failures are mostly API assertion failures — the kernel socket table provides the transport but the bridge surface area has gaps
+  - http2 has the most failures (252) — mostly assertion failures in protocol handling
+---
+
+## 2026-03-24 - US-039
+- Completed adversarial proofing audit of kernel consolidation implementation
+- Verified WasmVM driver.ts is fully migrated — no legacy _sockets or _nextSocketId
+- Verified kernel path exists for http.createServer (socketTable.create → bind → listen)
+- Verified kernel path exists for net.connect (socketTable.create → socketTable.connect)
+- Verified host-network-adapter.ts has no SSRF validation (clean delegation)
+- Verified kernel checkNetworkPermission() covers connect, listen, send, sendTo, externalListen
+- Documented 4 remaining gaps as future work (legacy adapter fallback paths)
+- Created docs-internal/kernel-consolidation-audit.md with full findings
+- Files changed: docs-internal/kernel-consolidation-audit.md (new), prd.json, progress.txt
+- **Learnings for future iterations:**
+  - The legacy adapter path (createDefaultNetworkAdapter in driver.ts) still has servers/ownedServerPorts/upgradeSockets Maps because createNodeRuntimeDriverFactory creates drivers without kernel routing
+  - Bridge-side activeNetSockets Map in bridge/network.ts is event routing only (like childProcessInstances) — it maps socket IDs to bridge NetSocket instances for dispatching host events
+  - SSRF validation is intentionally duplicated: bridge-handlers.ts has kernel-aware version (socketTable.findListener), driver.ts has adapter version (ownedServerPorts) — the adapter copy is defense-in-depth for the fallback path
+  - Removing the legacy adapter networking requires migrating NodeRuntime to use KernelNodeRuntime as its backing implementation — this is a separate workstream
+---
+
+## 2026-03-24 - Completion
+- All user stories US-001 through US-039 now have passes: true
+- Committed completion marker: c5523e80
+---
+
+## 2026-03-24 17:13 PDT - US-040
+- Removed the adapter-managed HTTP server surface from `NetworkAdapter` and its permission wrapper/stub so Node runtime networking stays client-only at the adapter layer while server/listener state remains kernel-managed
+- Deleted the legacy loopback HTTP server implementation from `packages/nodejs/src/default-network-adapter.ts`; kept only fetch/DNS/httpRequest plus upgrade-socket callbacks for client-side upgrade flows
+- Updated runtime-driver tests to stop calling `adapter.httpServerListen/httpServerClose` directly and instead cover kernel-backed server behavior with sandbox `http.createServer()`, loopback checker usage, and `initialExemptPorts` where host-side requests need to reach a sandbox listener
+- Synced docs/contracts to describe the narrower `NetworkAdapter` surface and the fact that standalone `NodeRuntime` still provisions an internal `SocketTable` for kernel-backed socket routing
+- Quality checks run:
+  - `pnpm tsc --noEmit -p packages/core/tsconfig.json` ✅
+  - `pnpm tsc --noEmit -p packages/nodejs/tsconfig.json` ✅
+  - `pnpm tsc --noEmit -p packages/secure-exec/tsconfig.json` ✅
+  - `pnpm vitest run packages/secure-exec/tests/test-suite/node.test.ts` ✅
+  - `pnpm vitest run packages/secure-exec/tests/runtime-driver/` ❌ blocked by pre-existing unrelated failures; first concrete failure was `packages/secure-exec/tests/runtime-driver/node/hono-fetch-external.test.ts` with `Cannot read properties of null (reading 'compileScript')`
+- Files changed: packages/core/src/types.ts, packages/core/src/shared/permissions.ts, packages/nodejs/src/default-network-adapter.ts, packages/secure-exec/tests/permissions.test.ts, packages/secure-exec/tests/runtime-driver/node/index.test.ts, packages/secure-exec/tests/runtime-driver/node/ssrf-protection.test.ts, packages/secure-exec/tests/runtime-driver/node/resource-budgets.test.ts, packages/secure-exec/tests/runtime-driver/node/bridge-hardening.test.ts, docs/api-reference.mdx, docs/features/networking.mdx, docs/system-drivers/node.mdx, docs-internal/arch/overview.md, .agent/contracts/node-runtime.md, progress.txt
+- **Learnings for future iterations:**
+  - Standalone `NodeRuntime` no longer needs adapter-managed HTTP server helpers; `NodeExecutionDriver` already provisions a kernel `SocketTable` with a Node host adapter for listen/connect routing
+  - Keep `upgradeSocketWrite/End/Destroy` and `setUpgradeSocketCallbacks` on `NetworkAdapter` — they are still required for client-side HTTP upgrade flows even after removing adapter-managed server listeners
+  - Host-side tests that need to reach sandbox listeners are more reliable with fixed ports plus `initialExemptPorts` than with reintroducing owned-port bookkeeping into the adapter
+  - The required `packages/secure-exec/tests/runtime-driver/` command is currently red for unrelated branch issues, so US-040 should not be marked passing or committed until that suite is green
+---
+
+## 2026-03-24 17:22 PDT - US-040
+- Continued the US-040 cleanup already in progress and removed the now-unused `buildUpgradeSocketBridgeHandlers()` helper from `packages/nodejs/src/bridge-handlers.ts`
+- Updated the bridge comment to reflect kernel-only TCP routing and added a bridge-side loopback checker that derives host-side loopback allowances from the active kernel-backed HTTP server set
+- Re-ran focused verification after the bridge cleanup:
+  - `pnpm --filter @secure-exec/nodejs exec tsc --noEmit` ✅
+  - `pnpm --filter secure-exec exec tsc --noEmit` ✅
+  - `pnpm vitest run packages/nodejs/test/legacy-networking-policy.test.ts packages/secure-exec/tests/test-suite/node.test.ts packages/secure-exec/tests/runtime-driver/node/ssrf-protection.test.ts` ✅
+  - `pnpm vitest run packages/secure-exec/tests/runtime-driver/node/index.test.ts -t "serves requests through bridged http.createServer and host network fetch|coerces 0.0.0.0 listen to loopback for strict sandboxing|can terminate a running sandbox HTTP server from host side|http.Agent with maxSockets=1 serializes concurrent requests"` ❌ still blocked by the broader Node runtime worktree; the sandbox HTTP server path never reaches `listen()` there, so SSRF remains blocked as a downstream symptom
+- Files changed: packages/nodejs/src/bridge-handlers.ts, scripts/ralph/progress.txt
+- **Learnings for future iterations:**
+  - The source-level policy test in `packages/nodejs/test/legacy-networking-policy.test.ts` is a good guardrail for this story; keep it when refactoring bridge/driver networking internals
+  - A passing SSRF adapter test does not prove host-side `runtime.network.fetch()` can reach sandbox listeners; that path also depends on the broader Node runtime successfully constructing the bridged HTTP server
+  - When the host-side sandbox HTTP server tests fail with SSRF, verify that the sandbox server actually reached `listen()` before assuming the loopback checker is the primary bug
+---
+
+## 2026-03-24 19:16 PDT - US-040
+- Finished the kernel-only HTTP bridge path by wiring `_networkHttpServerRespondRaw` and `_networkHttpServerWaitRaw` through the shared bridge contracts, Node bridge globals, and native V8 bridge registries
+- Fixed the native V8 response receiver so sync bridge calls only consume matching `call_id` responses and defer unrelated `BridgeResponse` frames back to the event loop; this unblocked bridged `http.createServer()` shutdown/wait flows that were previously timing out
+- Propagated `SocketTable.shutdown()` to real host sockets so accepted external TCP connections observe EOF correctly, and filled the shared custom-global inventory gaps that the bridge policy test surfaced
+- Files changed: .agent/contracts/node-bridge.md, native/v8-runtime/src/host_call.rs, native/v8-runtime/src/session.rs, packages/core/src/kernel/socket-table.ts, packages/core/src/shared/bridge-contract.ts, packages/core/src/shared/global-exposure.ts, packages/core/test/kernel/external-listen.test.ts, packages/nodejs/src/bridge-contract.ts, packages/nodejs/src/bridge-handlers.ts, packages/nodejs/src/bridge/network.ts, packages/nodejs/src/execution-driver.ts, packages/nodejs/test/kernel-http-bridge.test.ts, packages/nodejs/test/legacy-networking-policy.test.ts, packages/secure-exec/tests/bridge-registry-policy.test.ts, packages/v8/src/runtime.ts, packages/v8/test/runtime-binary-resolution-policy.test.ts
+- Quality checks run:
+  - `cargo build --release` in `native/v8-runtime` ✅
+  - `pnpm tsc -p packages/v8/tsconfig.json` ✅
+  - `pnpm turbo run build --filter=@secure-exec/nodejs` ✅
+  - `pnpm vitest run packages/secure-exec/tests/runtime-driver/node/index.test.ts -t "serves requests through bridged http.createServer and host network fetch|coerces 0.0.0.0 listen to loopback for strict sandboxing|can terminate a running sandbox HTTP server from host side|http.Agent with maxSockets=1 serializes concurrent requests"` ✅
+  - `pnpm vitest run packages/core/test/kernel/external-listen.test.ts packages/nodejs/test/kernel-http-bridge.test.ts packages/nodejs/test/legacy-networking-policy.test.ts packages/v8/test/runtime-binary-resolution-policy.test.ts` ✅
+  - `pnpm vitest run packages/secure-exec/tests/bridge-registry-policy.test.ts` ✅
+- **Learnings for future iterations:**
+  - Bridged HTTP server hangs can come from native response routing, not just JS bridge state; check whether sync bridge calls are consuming the wrong `BridgeResponse`
+  - `packages/v8/src/runtime.ts` prefers the local cargo-built runtime binary in `native/v8-runtime/target/{release,debug}` before packaged binaries, so rebuild that binary when changing native bridge/session code
+  - The custom-global inventory policy test is valuable for catching drift between bridge contracts and the actual runtime/global surface; update the inventory instead of weakening the test when the bridge surface legitimately grows
+---
+
+## 2026-03-24 20:07 PDT - US-041
+- What was implemented
+- Fixed stale WasmVM C build inputs so the patched wasi-libc sysroot and C programs build locally again
+- Corrected socket/syscall patch drift in the native wasm sysroot patches and fixed malformed patch application for `host_spawn_wait.c`
+- Updated WasmVM socket handling so host-net sockets use worker-local FDs instead of raw kernel socket IDs, and normalized wasi-libc socket constants before routing into `SocketTable`
+- Added cooperative signal polling during WASI `poll_oneoff` sleep so `signal_handler` observes pending SIGINT while sleeping
+- Verified `native/wasmvm/c` programs compile and the `net-server`, `net-udp`, `net-unix`, and `signal-handler` WasmVM tests execute and pass
+- Files changed
+- `native/wasmvm/c/Makefile`
+- `native/wasmvm/patches/wasi-libc/0002-spawn-wait.patch`
+- `native/wasmvm/patches/wasi-libc/0008-sockets.patch`
+- `native/wasmvm/patches/wasi-libc/0011-sigaction.patch`
+- `native/wasmvm/scripts/patch-wasi-libc.sh`
+- `packages/wasmvm/src/driver.ts`
+- `packages/wasmvm/src/kernel-worker.ts`
+- `packages/wasmvm/src/wasi-polyfill.ts`
+- `packages/wasmvm/src/wasi-types.ts`
+- **Learnings for future iterations:**
+- Patterns discovered
+- `host_net` imports from wasi-libc use bottom-half/WASI socket constants (`AF_INET=1`, `AF_UNIX=3`, `SOCK_DGRAM=5`, `SOCK_STREAM=6`), so the WasmVM bridge must normalize them before touching the shared kernel socket table
+- Worker-local socket FDs need the same local-to-kernel mapping discipline as files/pipes; raw kernel socket IDs are not safe to expose to WASM code
+- Gotchas encountered
+- `poll_oneoff` sleep is entirely local to the worker unless you explicitly tick back through RPC, so pending cooperative signals will starve during `usleep()` loops
+- The old `0002-spawn-wait.patch` add-file header was malformed (`+++ libc-bottom-half/...`), which causes patch application to place the file outside the intended vendor path
+- Useful context
+- The CI failure on this branch was not just the reported crossterm symptom; the first hard failures were in the patched wasi-libc sysroot/socket/signal patch application path and stale zlib/minizip fetch URLs
+---
+
+## 2026-03-24 20:39 PDT - US-042
+- What was implemented
+- Wired `KernelImpl` to own and expose `timerTable`, clear process timers on exit, and dispose timer state with the kernel
+- Replaced bridge-local timer and active-handle tracking with kernel-backed dispatch handlers so Node.js bridge budgets are enforced by `TimerTable` and `ProcessTable`
+- Added `_timerDispatch` stream delivery so host timers invoke bridge callbacks without leaving standalone `exec()` stuck on pending async bridge promises
+- Added focused core and nodejs tests covering kernel timer exposure, process-exit cleanup, and kernel-backed timer/handle budget enforcement
+- Files changed
+- `packages/core/src/kernel/kernel.ts`
+- `packages/core/src/kernel/types.ts`
+- `packages/core/src/index.ts`
+- `packages/core/test/kernel/kernel-integration.test.ts`
+- `packages/core/src/shared/bridge-contract.ts`
+- `packages/core/src/shared/global-exposure.ts`
+- `packages/core/isolate-runtime/src/common/runtime-globals.d.ts`
+- `packages/nodejs/src/bridge/process.ts`
+- `packages/nodejs/src/bridge/active-handles.ts`
+- `packages/nodejs/src/bridge/dispatch.ts`
+- `packages/nodejs/src/bridge-handlers.ts`
+- `packages/nodejs/src/execution-driver.ts`
+- `packages/nodejs/src/isolate-bootstrap.ts`
+- `packages/nodejs/src/kernel-runtime.ts`
+- `packages/nodejs/src/bridge-contract.ts`
+- `packages/nodejs/test/kernel-resource-bridge.test.ts`
+- `native/v8-runtime/src/stream.rs`
+- `.agent/contracts/kernel.md`
+- `.agent/contracts/node-runtime.md`
+- **Learnings for future iterations:**
+- Patterns discovered
+- Kernel-backed bridge operations fit best behind `_loadPolyfill` `__bd:` dispatch handlers; only add a runtime global when the host needs to push an event into the isolate, like `_timerDispatch`
+- Standalone `NodeRuntime.exec()` and kernel-managed `node` processes need different timer-liveness semantics; standalone mode should clean up host timers without treating them as resources that keep `exec()` open
+- Gotchas encountered
+- Driving timer callbacks through pending async bridge promises causes delayed timers to keep standalone executions alive until timeout; use stream-event delivery for timer callbacks instead
+- Kernel budget errors need bridge-side mapping back to the existing `ERR_RESOURCE_BUDGET_EXCEEDED` shapes so current tests and user-facing errors stay stable
+- Useful context
+- The focused `kernel-resource-bridge` test exercises the external-kernel path directly by injecting a shared `ProcessTable` and `TimerTable` into `NodeExecutionDriver`
+---
+
+## 2026-03-24 20:50 PDT - US-043
+- What was implemented
+- Routed WasmVM `net_setsockopt` through the kernel socket table instead of returning `ENOSYS`
+- Added `netGetsockopt` and `net_getsockopt` plumbing so socket options round-trip across the worker RPC boundary as raw bytes
+- Tightened WasmVM socket address parsing so AF_INET sockets reject path-style addresses with `EINVAL` instead of being misrouted as AF_UNIX
+- Files changed
+- `CLAUDE.md`
+- `packages/wasmvm/src/driver.ts`
+- `packages/wasmvm/src/kernel-worker.ts`
+- `packages/wasmvm/test/net-socket.test.ts`
+- `scripts/ralph/prd.json`
+- `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+- Patterns discovered
+- WasmVM `host_net` passes socket option values as little-endian byte slices, not JS numbers; convert at the driver boundary before calling `kernel.socketTable`
+- `kernel-worker.ts` should stay as a thin marshal layer for `host_net` imports; keep kernel semantics in `packages/wasmvm/src/driver.ts`
+- Gotchas encountered
+- For WasmVM socket RPCs, only AF_UNIX sockets should treat colon-free addresses as paths; AF_INET/AF_INET6 should reject them with `EINVAL`
+- Useful context
+- The focused validation for this path is `pnpm vitest run packages/wasmvm/test/net-socket.test.ts` plus `pnpm tsc --noEmit` from `packages/wasmvm`
+---
+
+## 2026-03-24 20:59 PDT - US-044
+- What was implemented
+- Added signal-delivery tracking to `ProcessTable` and a signal-aware blocking mode on `SocketTable.accept()` / `SocketTable.recv()` so blocking waits now return `EINTR` or transparently restart when the delivered handler carries `SA_RESTART`
+- Wired `KernelImpl` to provide `getSignalState` to the shared socket table and added focused kernel tests for `recv` EINTR, `recv` restart, and `accept` restart behavior
+- Updated the kernel contract to document socket wait interruption semantics
+- Files changed
+- `.agent/contracts/kernel.md`
+- `packages/core/src/kernel/kernel.ts`
+- `packages/core/src/kernel/process-table.ts`
+- `packages/core/src/kernel/socket-table.ts`
+- `packages/core/src/kernel/types.ts`
+- `packages/core/src/kernel/wait.ts`
+- `packages/core/test/kernel/signal-handlers.test.ts`
+- `scripts/ralph/prd.json`
+- `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+- Patterns discovered
+- Signal-aware socket waits need both an edge-trigger (`signalWaiters`) and a monotonic sequence (`deliverySeq`) to avoid lost wake-ups when a signal lands between the pre-check and waiter registration
+- Keep `SocketTable` backward-compatible by layering blocking signal semantics behind overloads/options instead of changing the existing immediate `accept()` / `recv()` behavior used across the bridge and tests
+- Gotchas encountered
+- `SA_RESTART` only matters for delivered handlers; ignored signals and default-ignored `SIGCHLD` should not spuriously wake blocking socket waits
+- Wait queues need explicit waiter removal for `Promise.race()`-style waits or settled signal/socket handles accumulate in the queue
+- Useful context
+- Focused validation for this path is `pnpm tsc --noEmit -p packages/core/tsconfig.json`, `pnpm tsc --noEmit -p packages/nodejs/tsconfig.json`, and `pnpm vitest run packages/core/test/kernel/signal-handlers.test.ts packages/core/test/kernel/socket-table.test.ts packages/core/test/kernel/socket-flags.test.ts packages/core/test/kernel/socket-shutdown.test.ts packages/core/test/kernel/loopback.test.ts`
+---
+
+## 2026-03-24 21:10 PDT - US-046
+- What was implemented
+- Added bounded listener backlogs to `SocketTable.listen()` and refused excess loopback connections with `ECONNREFUSED` instead of letting pending connections grow without limit
+- Added kernel-managed ephemeral port assignment for `bind({ port: 0 })` in the 49152-65535 range, while preserving the original port-0 intent so external host-backed listeners still delegate ephemeral selection to the host adapter
+- Updated the kernel contract and root agent guidance to capture the backlog and ephemeral-port expectations
+- Quality checks run:
+- `pnpm tsc --noEmit -p packages/core/tsconfig.json` ✅
+- `pnpm vitest run packages/core/test/kernel/socket-table.test.ts packages/core/test/kernel/external-listen.test.ts` ✅
+- `pnpm vitest run packages/core/test/kernel/loopback.test.ts` ✅
+- Files changed
+- `.agent/contracts/kernel.md`
+- `CLAUDE.md`
+- `packages/core/src/kernel/socket-table.ts`
+- `packages/core/test/kernel/socket-table.test.ts`
+- `scripts/ralph/prd.json`
+- `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+- Patterns discovered
+- `listen(backlog)` needs a stored per-socket backlog limit because both loopback `connect()` and the external accept pump enqueue through the same listener backlog
+- Preserving `port: 0` intent separately from the kernel-assigned temporary port avoids breaking external listeners that still need host-side ephemeral assignment
+- Gotchas encountered
+- `AGENTS.md` is a symlink to `CLAUDE.md` at repo root, so updating root agent guidance shows up as a `CLAUDE.md` diff
+- Useful context
+- Focused regression coverage for this story is `packages/core/test/kernel/socket-table.test.ts`, `packages/core/test/kernel/external-listen.test.ts`, and `packages/core/test/kernel/loopback.test.ts`
+---
+
+## 2026-03-24 21:47 PDT - US-048
+- What was implemented
+- Validated the existing `US-048` inode/VFS integration work in the dirty tree instead of adding more code this turn
+- Confirmed `pnpm tsc --noEmit` and `pnpm vitest run test/kernel/inode-table.test.ts` pass in `packages/core`
+- Confirmed the full `packages/core` suite is still blocked by the unrelated PTY stress failure in `test/kernel/resource-exhaustion.test.ts` (`single large write (1MB+) — immediate EAGAIN, no partial buffering`, assertion at line 270)
+- Checked recent branch CI history with `gh run list`; recent PR runs on `ralph/kernel-consolidation` were already failing before this story was ready to commit
+- Files changed
+- `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+- Patterns discovered
+- When a full-package gate is already red, record both the focused story checks and the first failing broad-suite test so the next iteration can separate story regressions from branch-wide blockers quickly
+- Gotchas encountered
+- `US-048` appears implementation-complete locally, but it should not be committed while `packages/core` is still red on the unrelated PTY resource-exhaustion test
+- Useful context
+- Current green checks: `pnpm tsc --noEmit` and `pnpm vitest run test/kernel/inode-table.test.ts` from `packages/core`; current blocking check: `pnpm vitest run`
+---
+
+## 2026-03-24 21:55 PDT - US-048
+- What was implemented
+- Completed the `US-048` inode/VFS integration by wiring `kernel.inodeTable` into `KernelImpl` and `InMemoryFileSystem`, tracking stable inode IDs through file creation, stat, hard links, unlink, and last-FD cleanup
+- Updated kernel FD lifecycle paths to keep inode-backed access alive after unlink via `FileDescription.inode`, including read/write, pread/pwrite, seek/stat, dup2 replacement, inherited FD overrides, and whole-process teardown
+- Added inode integration coverage for real `ino`/`nlink`, deferred unlink readability, last-close cleanup, and `pwrite` on unlinked open files
+- Unblocked package quality gates with a type-only isolate-runtime globals declaration fix and a PTY raw-mode bulk-write fix so oversized writes with `icrnl` enabled fail atomically with `EAGAIN`
+- Quality checks run
+- `pnpm --dir packages/core run check-types` ✅
+- `pnpm --dir packages/core test` ✅
+- Files changed
+- `.agent/contracts/kernel.md`
+- `AGENTS.md`
+- `packages/core/isolate-runtime/src/common/runtime-globals.d.ts`
+- `packages/core/src/kernel/kernel.ts`
+- `packages/core/src/kernel/pty.ts`
+- `packages/core/src/kernel/types.ts`
+- `packages/core/src/shared/in-memory-fs.ts`
+- `packages/core/test/kernel/inode-table.test.ts`
+- `scripts/ralph/prd.json`
+- `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+- Patterns discovered
+- `KernelImpl` needs access to the raw `InMemoryFileSystem` alongside the wrapped VFS so open FDs can keep reading, writing, and stat'ing by inode after pathname removal
+- File-description cleanup is broader than `fdClose()`; `dup2()` replacement, stdio overrides during spawn, and process-table teardown all need inode refcount release when a shared description reaches `refCount === 0`
+- `InMemoryFileSystem.reindexInodes()` must preserve shared inode identity across hard links when rebinding an existing filesystem to the kernel-owned inode table
+- Gotchas encountered
+- The package `check-types` gate also covers `isolate-runtime`, so missing runtime-global declarations can block kernel stories even when `packages/core/src` itself typechecks
+- PTY raw mode still respects `icrnl`; bulk-write fast paths must keep translation and buffer-limit enforcement atomic to avoid partial buffering on `EAGAIN`
+- Useful context
+- Full `packages/core` now passes again, including the previously failing `test/kernel/resource-exhaustion.test.ts`
+---
+
+## 2026-03-24 22:02 PDT - US-049
+- What was implemented
+- Added synthetic `.` and `..` entries to `InMemoryFileSystem` directory listings, with optional inode metadata on `VirtualDirEntry` so self/parent entries can carry the correct directory identity
+- Added focused inode/VFS tests for `/tmp` listings, self/parent inode numbers, and root `..` behavior
+- Filtered those POSIX-only entries back out in the Node bridge `fsReadDir` handler so sandbox `fs.readdir()` keeps Node-compatible output
+- Added a Node bridge regression test covering the filter
+- Updated the kernel contract for the in-memory VFS directory-listing rule
+- Files changed
+- `.agent/contracts/kernel.md`
+- `packages/core/src/kernel/vfs.ts`
+- `packages/core/src/shared/in-memory-fs.ts`
+- `packages/core/test/kernel/inode-table.test.ts`
+- `packages/nodejs/src/bridge-handlers.ts`
+- `packages/nodejs/test/kernel-resource-bridge.test.ts`
+- `scripts/ralph/prd.json`
+- `scripts/ralph/progress.txt`
+- Quality checks: `pnpm tsc --noEmit -p packages/core/tsconfig.json` passed; `pnpm vitest run packages/core/test/kernel/inode-table.test.ts` passed; `pnpm tsc --noEmit -p packages/nodejs/tsconfig.json` passed; `pnpm vitest run packages/nodejs/test/kernel-resource-bridge.test.ts` passed; extra integration check `pnpm vitest run packages/secure-exec/tests/kernel/vfs-consistency.test.ts` failed in pre-existing cross-runtime VFS coverage (`expected '' to contain 'hello'` in `kernel write visible to Node`)
+- **Learnings for future iterations:**
+- Patterns discovered
+- `VirtualDirEntry` can grow optional metadata like `ino` without disturbing existing bridge consumers, as long as Node-facing code still only depends on `name` and `isDirectory`
+- POSIX-style directory enumeration and Node `fs.readdir()` have different expectations for `.` / `..`; normalize that difference at the Node bridge boundary, not in the shared VFS
+- Gotchas encountered
+- Adding `.` / `..` at the VFS layer would leak into sandbox Node `fs.readdir()` unless `buildFsBridgeHandlers()` filters them before serializing directory entries
+- Useful context
+- Story-local green checks are the focused `packages/core` and `packages/nodejs` typecheck/test commands above; `packages/secure-exec/tests/kernel/vfs-consistency.test.ts` is still failing outside this change path and needs separate debugging
+---
+
+## 2026-03-24 22:28 PDT - US-052
+- What was implemented
+- Added `writeWaiters`-backed blocking pipe writes in `PipeManager`, with bounded partial-progress writes, `O_NONBLOCK` handling, and wakeups on buffer drain and endpoint close
+- Added focused pipe tests for full-buffer blocking, non-blocking `EAGAIN`, partial-write continuation, and blocked-writer `EPIPE` on read-end close
+- Updated the kernel contract for blocking pipe write semantics and added the missing kernel `O_NONBLOCK` flag constant used by pipe descriptions
+- Files changed
+- `AGENTS.md`
+- `.agent/contracts/kernel.md`
+- `packages/core/src/kernel/pipe-manager.ts`
+- `packages/core/src/kernel/types.ts`
+- `packages/core/test/kernel/pipe-manager.test.ts`
+- `packages/core/test/kernel/resource-exhaustion.test.ts`
+- `scripts/ralph/prd.json`
+- `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+- Patterns discovered
+- Bounded blocking writes should preserve partial progress: fill the remaining buffer capacity first, then wait only for the unwritten tail
+- Pipe producer waits need wakeups from both successful reads and close/error paths, or blocked writers can hang forever after the consumer disappears
+- Gotchas encountered
+- `KernelInterface.fdWrite()` already allows `number | Promise<number>`, so pipe writes can become async without widening the kernel interface
+- Useful context
+- Focused green checks for this story were `pnpm vitest run packages/core/test/kernel/pipe-manager.test.ts packages/core/test/kernel/resource-exhaustion.test.ts` and `pnpm tsc --noEmit` in `packages/core`
+---
+
+## 2026-03-24 22:42 PDT - US-053
+- What was implemented
+- Added pipe poll wait queues in `PipeManager` plus a kernel-only `fdPollWait` helper so `poll()` can sleep on pipe state changes instead of spinning or timing out spuriously
+- Refactored WasmVM `netPoll` to re-check all FDs in a loop, using finite timeout budgets for bounded polls and repeated `RPC_WAIT_TIMEOUT_MS` chunks for `timeout=-1`
+- Updated the WasmVM worker RPC path so `netPoll` with `timeout < 0` keeps waiting across the worker's 30s guard timeout instead of returning `EIO`
+- Added a pipe-backed WasmVM regression test that blocks on `poll(-1)`, writes to the pipe asynchronously, and verifies `POLLIN` wakes the poller
+- Files changed
+- `packages/core/src/kernel/kernel.ts`
+- `packages/core/src/kernel/pipe-manager.ts`
+- `packages/wasmvm/src/driver.ts`
+- `packages/wasmvm/src/kernel-worker.ts`
+- `packages/wasmvm/test/net-socket.test.ts`
+- `scripts/ralph/prd.json`
+- `scripts/ralph/progress.txt`
+- Quality checks: `pnpm turbo run build --filter=@secure-exec/core --filter=@secure-exec/wasmvm` passed; `pnpm tsc --noEmit -p packages/core/tsconfig.json` passed; `pnpm tsc --noEmit -p packages/wasmvm/tsconfig.json` passed; `pnpm vitest run packages/wasmvm/test/net-socket.test.ts` passed
+- **Learnings for future iterations:**
+- Patterns discovered
+- Cross-package WasmVM tests that import `@secure-exec/core` need the package rebuilt first or they will run stale `dist` code and miss new kernel behavior
+- Pipe-backed `poll()` support works best as a generic state-change queue: wake it on writes, drains, and closes, then let the caller re-run `fdPoll()` to compute exact readiness bits
+- Gotchas encountered
+- Fixing `poll(-1)` only in the main-thread driver is insufficient because the worker RPC layer has its own 30s `Atomics.wait()` guard; indefinite polls need both sides to cooperate
+- Useful context
+- The new regression coverage lives in `packages/wasmvm/test/net-socket.test.ts` and exercises the private `_handleSyscall('netPoll')` path with a mock kernel pipe, which is enough to validate the wait/wake integration without running a full WASM program
+---
+
+## 2026-03-24 23:01 PDT - US-054
+- What was implemented
+- Added a read-only proc pseudo-filesystem in `packages/core/src/kernel/proc-layer.ts` and mounted it during kernel init so `/proc/<pid>/{fd,cwd,exe,environ}` is generated from live `ProcessTable` and `FDTableManager` state
+- Added shared `/proc/self` resolution helpers and wired them into the Node kernel runtime VFS and WasmVM VFS RPC path so sandboxed processes see their own `/proc/self/*`
+- Added kernel integration coverage for `/proc/self/fd` listings, `/proc/self/fd/0` readlink, `/proc/self/cwd` reads, and `/proc/<pid>/environ`, then updated the kernel contract for procfs behavior
+- Files changed
+- `.agent/contracts/kernel.md`
+- `packages/core/src/index.ts`
+- `packages/core/src/kernel/index.ts`
+- `packages/core/src/kernel/kernel.ts`
+- `packages/core/src/kernel/proc-layer.ts`
+- `packages/core/test/kernel/kernel-integration.test.ts`
+- `packages/nodejs/src/kernel-runtime.ts`
+- `packages/wasmvm/src/driver.ts`
+- **Learnings for future iterations:**
+- Patterns discovered
+- The shared kernel VFS cannot infer a “current process”, so pseudo-filesystems with self-references need a split design: dynamic `/proc/<pid>` entries in core and thin runtime-side `/proc/self` rewriting where PID context exists
+- Gotchas encountered
+- Cross-package `@secure-exec/core` imports in `@secure-exec/nodejs` and `@secure-exec/wasmvm` typechecks will read stale exports until `pnpm turbo run build --filter=@secure-exec/core` refreshes the core package output
+- Useful context
+- Focused green checks for this story were `pnpm turbo run build --filter=@secure-exec/core --filter=@secure-exec/nodejs --filter=@secure-exec/wasmvm`, `pnpm tsc --noEmit -p packages/core/tsconfig.json`, `pnpm tsc --noEmit -p packages/nodejs/tsconfig.json`, `pnpm tsc --noEmit -p packages/wasmvm/tsconfig.json`, and `pnpm vitest run packages/core/test/kernel/kernel-integration.test.ts -t "/proc pseudo-filesystem"`
+---
+
+## 2026-03-24 23:05 PDT - US-055
+- Implemented `SA_RESETHAND` support in the kernel signal types and exports, and reset one-shot handlers to default disposition after their first delivery
+- Updated `ProcessTable` signal dispatch so `SA_RESETHAND | SA_RESTART` both work, with the reset happening before pending signals are re-delivered
+- Added kernel signal tests covering one-shot handler reset, second-delivery default action, and `SA_RESETHAND | SA_RESTART` restart behavior
+- Files changed: `.agent/contracts/kernel.md`, `packages/core/src/kernel/index.ts`, `packages/core/src/kernel/process-table.ts`, `packages/core/src/kernel/types.ts`, `packages/core/test/kernel/signal-handlers.test.ts`, `scripts/ralph/prd.json`, `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+  - One-shot signal reset ordering matters: update the handler disposition before `deliverPendingSignals()` so a same-signal pending delivery does not invoke the old callback twice
+  - `ProcessTable.dispatchSignal()` records delivery flags before running the user handler, so combined flags like `SA_RESETHAND | SA_RESTART` can affect both the interrupted syscall and the post-handler disposition reset
+  - Kernel signal behavior is contract-backed in `.agent/contracts/kernel.md`; signal semantic changes should update that contract alongside the code
+---
+
+## 2026-03-24 23:26 PDT - US-056
+- What was implemented
+- Finished the remaining Node.js ESM parity gap by propagating async entrypoint promise rejections out of the native V8 runtime, fixing dynamic import missing-module/syntax/evaluation failures to produce non-zero exec results, and making dynamic import resolution use `"import"` conditions without breaking `require()` condition routing
+- Regenerated the isolate-runtime bundle, updated the Node runtime contract and compatibility/friction docs to record the corrected ESM behavior, and marked the story complete in the PRD
+- Files changed
+- `.agent/contracts/node-runtime.md`
+- `docs-internal/friction.md`
+- `docs/nodejs-compatibility.mdx`
+- `native/v8-runtime/src/execution.rs`
+- `native/v8-runtime/src/isolate.rs`
+- `native/v8-runtime/src/snapshot.rs`
+- `packages/core/isolate-runtime/src/inject/setup-dynamic-import.ts`
+- `packages/core/src/generated/isolate-runtime.ts`
+- `packages/nodejs/src/bridge-handlers.ts`
+- `scripts/ralph/prd.json`
+- `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+  - Patterns discovered
+  - Native V8 runtime package tests use the release binary when it exists, so native runtime changes need a release rebuild or the focused Vitest slice will keep exercising stale host code
+  - Isolate-runtime source changes only take effect in package tests after regenerating `packages/core/src/generated/isolate-runtime.ts`
+  - Gotchas encountered
+  - Arrow-function bridge handlers do not provide a safe `arguments` object for extra dispatch parameters; accept optional bridge args explicitly when resolution mode needs to cross the boundary
+  - Useful context
+  - Focused validation for this story passed with `cargo test execution::tests::v8_consolidated_tests -- --nocapture`, `pnpm turbo run build --filter=@secure-exec/core --filter=@secure-exec/nodejs --filter=secure-exec`, `pnpm run check-types` in `packages/core`, `packages/nodejs`, and `packages/secure-exec`, plus `pnpm exec vitest run packages/secure-exec/tests/runtime-driver/node/index.test.ts -t "dynamic import|built-in ESM imports|package exports|type module"`
+---

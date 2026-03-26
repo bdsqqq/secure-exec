@@ -6,8 +6,14 @@ type DispatchBridgeRef = LoadPolyfillBridgeRef & {
 
 declare const _loadPolyfill: DispatchBridgeRef | undefined;
 
+function encodeDispatchArgs(args: unknown[]): string {
+	return JSON.stringify(args, (_key, value) =>
+		value === undefined ? { __secureExecDispatchType: "undefined" } : value,
+	);
+}
+
 function encodeDispatch(method: string, args: unknown[]): string {
-	return `__bd:${method}:${JSON.stringify(args)}`;
+	return `__bd:${method}:${encodeDispatchArgs(args)}`;
 }
 
 function parseDispatchResult<T>(resultJson: string | null): T {
@@ -16,11 +22,24 @@ function parseDispatchResult<T>(resultJson: string | null): T {
 	}
 
 	const parsed = JSON.parse(resultJson) as {
-		__bd_error?: string;
+		__bd_error?: {
+			message: string;
+			name?: string;
+			code?: string;
+			stack?: string;
+		};
 		__bd_result?: T;
 	};
 	if (parsed.__bd_error) {
-		throw new Error(parsed.__bd_error);
+		const error = new Error(parsed.__bd_error.message);
+		error.name = parsed.__bd_error.name ?? "Error";
+		if (parsed.__bd_error.code !== undefined) {
+			(error as Error & { code?: string }).code = parsed.__bd_error.code;
+		}
+		if (parsed.__bd_error.stack) {
+			error.stack = parsed.__bd_error.stack;
+		}
+		throw error;
 	}
 	return parsed.__bd_result as T;
 }

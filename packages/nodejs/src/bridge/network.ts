@@ -427,7 +427,7 @@ type EventListener = (...args: unknown[]) => void;
 
 // Module-level globalAgent used by ClientRequest when no agent option is provided.
 // Initialized lazily after Agent class is defined; set by createHttpModule().
-let _moduleGlobalAgent: { _acquireSlot(key: string): Promise<void>; _releaseSlot(key: string): void; _getHostKey(options: { hostname?: string; host?: string; port?: string | number }): string } | null = null;
+let _moduleGlobalAgent: Agent | null = null;
 
 /**
  * Polyfill of Node.js `http.IncomingMessage` (client-side response). Buffers
@@ -452,7 +452,7 @@ export class IncomingMessage {
   private _listeners: Record<string, EventListener[]>;
   complete: boolean;
   aborted: boolean;
-  socket: null;
+  socket: FakeSocket | UpgradeSocket | null;
   private _bodyConsumed: boolean;
   private _ended: boolean;
   private _flowing: boolean;
@@ -462,7 +462,7 @@ export class IncomingMessage {
   destroyed: boolean;
   private _encoding?: string;
 
-  constructor(response?: { headers?: Record<string, string>; url?: string; status?: number; statusText?: string; body?: string; trailers?: Record<string, string> }) {
+  constructor(response?: { headers?: Record<string, string>; url?: string; status?: number; statusText?: string; body?: string; trailers?: Record<string, string>; bodyEncoding?: "utf8" | "base64" }) {
     this.headers = response?.headers || {};
     this.rawHeaders = [];
     if (this.headers && typeof this.headers === "object") {
@@ -489,7 +489,7 @@ export class IncomingMessage {
     this.statusCode = response?.status;
     this.statusMessage = response?.statusText;
     // Decode base64 body if x-body-encoding header is set
-    const bodyEncoding = this.headers['x-body-encoding'];
+    const bodyEncoding = response?.bodyEncoding || this.headers['x-body-encoding'];
     if (bodyEncoding === 'base64' && response?.body && typeof Buffer !== 'undefined') {
       this._body = Buffer.from(response.body, 'base64').toString('binary');
       this._isBinary = true;
@@ -756,11 +756,13 @@ export class ClientRequest {
   private _body = "";
   private _bodyBytes = 0;
   private _ended = false;
-  private _agent: { _acquireSlot(key: string): Promise<void>; _releaseSlot(key: string): void; _getHostKey(options: { hostname?: string; host?: string; port?: string | number }): string } | null;
+  private _agent: Agent | null;
   private _hostKey: string;
-  socket: FakeSocket;
+  private _socketEndListener: EventListener | null = null;
+  socket!: FakeSocket;
   finished = false;
   aborted = false;
+  reusedSocket = false;
 
   constructor(options: nodeHttp.RequestOptions, callback?: (res: IncomingMessage) => void) {
     this._options = options;
@@ -777,23 +779,47 @@ export class ClientRequest {
     }
     this._hostKey = this._agent ? this._agent._getHostKey(options as { hostname?: string; host?: string; port?: string | number }) : "";
 
-    // Create socket-like object and emit 'socket' event
-    this.socket = new FakeSocket({
-      host: (options.hostname || options.host || "localhost") as string,
-      port: Number(options.port) || 80,
-    });
-    Promise.resolve().then(() => this._emit("socket", this.socket));
-
     // Execute request asynchronously
     Promise.resolve().then(() => this._execute());
   }
 
-  private async _execute(): Promise<void> {
-    // Acquire agent slot before executing
-    if (this._agent) {
-      await this._agent._acquireSlot(this._hostKey);
+  _assignSocket(socket: FakeSocket, reusedSocket: boolean): void {
+    this.socket = socket;
+    this.reusedSocket = reusedSocket;
+    const trackedSocket = socket as FakeSocket & {
+      _agentPermanentListenersInstalled?: boolean;
+    };
+    if (!trackedSocket._agentPermanentListenersInstalled) {
+      trackedSocket._agentPermanentListenersInstalled = true;
+      socket.on("error", () => {});
+      socket.on("end", () => {});
     }
+    this._socketEndListener = () => {};
+    socket.on("end", this._socketEndListener);
+    this._emit("socket", socket);
+    void this._dispatchWithSocket(socket);
+  }
 
+  _handleSocketError(err: Error): void {
+    this._emit("error", err);
+  }
+
+  private _finalizeSocket(
+    socket: FakeSocket,
+    keepSocketAlive: boolean,
+  ): void {
+    if (this._socketEndListener) {
+      socket.off("end", this._socketEndListener);
+      this._socketEndListener = null;
+    }
+    if (this._agent) {
+      this._agent._releaseSocket(this._hostKey, socket, this._options, keepSocketAlive);
+    } else if (!socket.destroyed) {
+      socket.destroy();
+    }
+  }
+
+  private async _dispatchWithSocket(socket: FakeSocket): Promise<void> {
     try {
       if (typeof _networkHttpRequestRaw === 'undefined') {
         console.error('http/https request requires NetworkAdapter to be configured');
@@ -835,8 +861,11 @@ export class ClientRequest {
         status?: number;
         statusText?: string;
         body?: string;
+        bodyEncoding?: "utf8" | "base64";
         trailers?: Record<string, string>;
         upgradeSocketId?: number;
+        connectionEnded?: boolean;
+        connectionReset?: boolean;
       };
 
       this.finished = true;
@@ -845,22 +874,37 @@ export class ClientRequest {
       if (response.status === 101) {
         const res = new IncomingMessage(response);
         // Use UpgradeSocket for bidirectional data relay when socketId is available
-        let socket: FakeSocket | UpgradeSocket = this.socket;
+        let upgradeSocket: FakeSocket | UpgradeSocket = socket;
         if (response.upgradeSocketId != null) {
-          socket = new UpgradeSocket(response.upgradeSocketId, {
+          upgradeSocket = new UpgradeSocket(response.upgradeSocketId, {
             host: this._options.hostname as string,
             port: Number(this._options.port) || 80,
           });
-          upgradeSocketInstances.set(response.upgradeSocketId, socket);
+          upgradeSocketInstances.set(response.upgradeSocketId, upgradeSocket);
         }
         const head = typeof Buffer !== "undefined"
           ? (response.body ? Buffer.from(response.body, "base64") : Buffer.alloc(0))
           : new Uint8Array(0);
-        this._emit("upgrade", res, socket, head);
+        res.socket = upgradeSocket;
+        this._emit("upgrade", res, upgradeSocket, head);
+        return;
+      }
+
+      if (response.connectionReset) {
+        const error = new Error("socket hang up");
+        this._emit("error", error);
+        setTimeout(() => socket.destroy(), 0);
         return;
       }
 
       const res = new IncomingMessage(response);
+      res.socket = socket;
+      res.once("end", () => {
+        this._finalizeSocket(socket, this._agent?.keepAlive === true && !this.aborted);
+        if (response.connectionEnded) {
+          setTimeout(() => socket.end(), 0);
+        }
+      });
 
       if (this._callback) {
         this._callback(res);
@@ -868,12 +912,20 @@ export class ClientRequest {
       this._emit("response", res);
     } catch (err) {
       this._emit("error", err);
-    } finally {
-      // Release agent slot
-      if (this._agent) {
-        this._agent._releaseSlot(this._hostKey);
-      }
+      this._finalizeSocket(socket, false);
     }
+  }
+
+  private _execute(): void {
+    if (this._agent) {
+      this._agent.addRequest(this, this._options);
+      return;
+    }
+    const socket = new FakeSocket({
+      host: (this._options.hostname || this._options.host || "localhost") as string,
+      port: Number(this._options.port) || 80,
+    });
+    this._assignSocket(socket, false);
   }
 
   private _buildUrl(): string {
@@ -896,12 +948,25 @@ export class ClientRequest {
       this.off(event, wrapper);
       listener(...args);
     };
+    (
+      wrapper as EventListener & {
+        listener?: EventListener;
+      }
+    ).listener = listener;
     return this.on(event, wrapper);
   }
 
   off(event: string, listener: EventListener): this {
     if (this._listeners[event]) {
-      const idx = this._listeners[event].indexOf(listener);
+      const idx = this._listeners[event].findIndex(
+        (registered) =>
+          registered === listener ||
+          (
+            registered as EventListener & {
+              listener?: EventListener;
+            }
+          ).listener === listener,
+      );
       if (idx !== -1) this._listeners[event].splice(idx, 1);
     }
     return this;
@@ -931,6 +996,9 @@ export class ClientRequest {
 
   abort(): void {
     this.aborted = true;
+    if (this.socket && !this.socket.destroyed) {
+      this.socket.destroy();
+    }
   }
 
   setTimeout(_timeout: number): this {
@@ -961,6 +1029,9 @@ class FakeSocket {
   writable = true;
   readable = true;
   private _listeners: Record<string, EventListener[]> = {};
+  private _closed = false;
+  private _closeScheduled = false;
+  _freeTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options?: { host?: string; port?: number }) {
     this.remoteAddress = options?.host || "127.0.0.1";
@@ -997,99 +1068,409 @@ class FakeSocket {
     return this.off(event, listener);
   }
 
+  removeAllListeners(event?: string): this {
+    if (event) {
+      delete this._listeners[event];
+    } else {
+      this._listeners = {};
+    }
+    return this;
+  }
+
   emit(event: string, ...args: unknown[]): boolean {
     const handlers = this._listeners[event];
     if (handlers) handlers.slice().forEach((fn) => fn(...args));
     return handlers !== undefined && handlers.length > 0;
   }
 
+  listenerCount(event: string): number {
+    return this._listeners[event]?.length || 0;
+  }
+
   write(_data: unknown): boolean { return true; }
-  end(): this { return this; }
+  end(): this {
+    if (this.destroyed || this._closed) return this;
+    this.writable = false;
+    queueMicrotask(() => {
+      if (this.destroyed || this._closed) return;
+      this.readable = false;
+      this.emit("end");
+      this.destroy();
+    });
+    return this;
+  }
 
   destroy(): this {
+    if (this.destroyed || this._closed) return this;
     this.destroyed = true;
+    this._closed = true;
     this.writable = false;
     this.readable = false;
+    if (!this._closeScheduled) {
+      this._closeScheduled = true;
+      queueMicrotask(() => {
+        this._closeScheduled = false;
+        this.emit("close");
+      });
+    }
     return this;
   }
 }
 
-// HTTP Agent with connection pooling via maxSockets
+type QueuedAgentRequest = {
+  request: ClientRequest;
+  options: nodeHttp.RequestOptions;
+};
+
+// HTTP Agent with connection pooling via maxSockets/maxTotalSockets
 class Agent {
+  static defaultMaxSockets = Infinity;
+
   maxSockets: number;
+  maxTotalSockets: number;
   maxFreeSockets: number;
   keepAlive: boolean;
   keepAliveMsecs: number;
   timeout: number;
-  requests: Record<string, unknown[]>;
-  sockets: Record<string, unknown[]>;
-  freeSockets: Record<string, unknown[]>;
-
-  // Per-host active count and pending queue
-  private _activeCounts = new Map<string, number>();
-  private _queues = new Map<string, Array<() => void>>();
+  requests: Record<string, QueuedAgentRequest[]>;
+  sockets: Record<string, FakeSocket[]>;
+  freeSockets: Record<string, FakeSocket[]>;
+  totalSocketCount: number;
+  private _listeners: Record<string, EventListener[]> = {};
 
   constructor(options?: {
     keepAlive?: boolean;
     keepAliveMsecs?: number;
     maxSockets?: number;
+    maxTotalSockets?: number;
     maxFreeSockets?: number;
     timeout?: number;
   }) {
+    this._validateSocketCountOption("maxSockets", options?.maxSockets);
+    this._validateSocketCountOption("maxFreeSockets", options?.maxFreeSockets);
+    this._validateSocketCountOption("maxTotalSockets", options?.maxTotalSockets);
     this.keepAlive = options?.keepAlive ?? false;
     this.keepAliveMsecs = options?.keepAliveMsecs ?? 1000;
-    this.maxSockets = options?.maxSockets ?? Infinity;
+    this.maxSockets = options?.maxSockets ?? Agent.defaultMaxSockets;
+    this.maxTotalSockets = options?.maxTotalSockets ?? Infinity;
     this.maxFreeSockets = options?.maxFreeSockets ?? 256;
     this.timeout = options?.timeout ?? -1;
     this.requests = {};
     this.sockets = {};
     this.freeSockets = {};
+    this.totalSocketCount = 0;
   }
 
-  _getHostKey(options: { hostname?: string; host?: string; port?: string | number }): string {
-    const host = options.hostname || options.host || "localhost";
-    const port = options.port || 80;
-    return `${host}:${port}`;
-  }
-
-  // Wait for an available slot; resolves immediately if under maxSockets
-  _acquireSlot(hostKey: string): Promise<void> {
-    const active = this._activeCounts.get(hostKey) || 0;
-    if (active < this.maxSockets) {
-      this._activeCounts.set(hostKey, active + 1);
-      return Promise.resolve();
+  private _validateSocketCountOption(
+    name: "maxSockets" | "maxFreeSockets" | "maxTotalSockets",
+    value: number | undefined,
+  ): void {
+    if (value === undefined) return;
+    if (typeof value !== "number") {
+      const received =
+        typeof value === "string"
+          ? `type string ('${value}')`
+          : `type ${typeof value} (${JSON.stringify(value)})`;
+      const err = new TypeError(
+        `The "${name}" argument must be of type number. Received ${received}`,
+      ) as TypeError & { code?: string };
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
     }
-    return new Promise<void>((resolve) => {
-      let queue = this._queues.get(hostKey);
-      if (!queue) {
-        queue = [];
-        this._queues.set(hostKey, queue);
-      }
-      queue.push(resolve);
-    });
+    if (Number.isNaN(value) || value <= 0) {
+      const err = new RangeError(
+        `The value of "${name}" is out of range. It must be > 0. Received ${String(value)}`,
+      ) as RangeError & { code?: string };
+      err.code = "ERR_OUT_OF_RANGE";
+      throw err;
+    }
   }
 
-  // Release a slot; dequeues next pending request if any
-  _releaseSlot(hostKey: string): void {
-    const queue = this._queues.get(hostKey);
-    if (queue && queue.length > 0) {
-      const next = queue.shift()!;
-      if (queue.length === 0) this._queues.delete(hostKey);
-      next();
-    } else {
-      const active = this._activeCounts.get(hostKey) || 1;
-      const next = active - 1;
-      if (next <= 0) this._activeCounts.delete(hostKey);
-      else this._activeCounts.set(hostKey, next);
+  getName(options?: {
+    hostname?: string | null;
+    host?: string | null;
+    port?: string | number | null;
+    localAddress?: string | null;
+    family?: string | number | null;
+    socketPath?: string | null;
+  }): string {
+    const host = options?.hostname || options?.host || "localhost";
+    const port = options?.port ?? "";
+    const localAddress = options?.localAddress ?? "";
+    let suffix = "";
+    if (options?.socketPath) {
+      suffix = `:${options.socketPath}`;
+    } else if (options?.family === 4 || options?.family === 6) {
+      suffix = `:${options.family}`;
+    }
+    return `${host}:${port}:${localAddress}${suffix}`;
+  }
+
+  _getHostKey(options: {
+    hostname?: string | null;
+    host?: string | null;
+    port?: string | number | null;
+    localAddress?: string | null;
+    family?: string | number | null;
+    socketPath?: string | null;
+  }): string {
+    return this.getName(options);
+  }
+
+  on(event: string, listener: EventListener): this {
+    if (!this._listeners[event]) this._listeners[event] = [];
+    this._listeners[event].push(listener);
+    return this;
+  }
+
+  once(event: string, listener: EventListener): this {
+    const wrapper = (...args: unknown[]): void => {
+      this.off(event, wrapper);
+      listener(...args);
+    };
+    return this.on(event, wrapper);
+  }
+
+  off(event: string, listener: EventListener): this {
+    const listeners = this._listeners[event];
+    if (!listeners) return this;
+    const index = listeners.indexOf(listener);
+    if (index !== -1) listeners.splice(index, 1);
+    return this;
+  }
+
+  removeListener(event: string, listener: EventListener): this {
+    return this.off(event, listener);
+  }
+
+  emit(event: string, ...args: unknown[]): boolean {
+    const listeners = this._listeners[event];
+    if (!listeners || listeners.length === 0) return false;
+    listeners.slice().forEach((listener) => listener(...args));
+    return true;
+  }
+
+  createConnection(
+    options: nodeHttp.RequestOptions & {
+      keepAlive?: boolean;
+      keepAliveInitialDelay?: number;
+    },
+    cb?: (err: Error | null, socket?: FakeSocket) => void,
+  ): FakeSocket {
+    const socket = new FakeSocket({
+      host: String(options.hostname || options.host || "localhost"),
+      port: Number(options.port) || 80,
+    });
+    if (cb) {
+      Promise.resolve().then(() => cb(null, socket));
+    }
+    return socket;
+  }
+
+  addRequest(request: ClientRequest, options: nodeHttp.RequestOptions): void {
+    const name = this.getName(options);
+    const freeSocket = this._takeFreeSocket(name);
+    if (freeSocket) {
+      this._activateSocket(name, freeSocket);
+      request._assignSocket(freeSocket, true);
+      return;
+    }
+
+    if (this._canCreateSocket(name)) {
+      this._createSocketForRequest(name, request, options);
+      return;
+    }
+
+    if (!this.requests[name]) {
+      this.requests[name] = [];
+    }
+    this.requests[name].push({ request, options });
+  }
+
+  _releaseSocket(
+    name: string,
+    socket: FakeSocket,
+    options: nodeHttp.RequestOptions,
+    keepSocketAlive: boolean,
+  ): void {
+    this._removeSocket(this.sockets, name, socket);
+    if (keepSocketAlive && !socket.destroyed) {
+      const freeList = this.freeSockets[name] ?? (this.freeSockets[name] = []);
+      if (freeList.length < this.maxFreeSockets) {
+        if (socket._freeTimer) {
+          clearTimeout(socket._freeTimer);
+          socket._freeTimer = null;
+        }
+        freeList.push(socket);
+        if (this.timeout > 0) {
+          socket._freeTimer = setTimeout(() => {
+            socket._freeTimer = null;
+            socket.destroy();
+          }, this.timeout);
+        }
+        socket.emit("free");
+        this.emit("free", socket, options);
+      } else {
+        socket.destroy();
+      }
+    } else if (!socket.destroyed) {
+      socket.destroy();
+    }
+    Promise.resolve().then(() => this._processPendingRequests());
+  }
+
+  _removeSocketCompletely(name: string, socket: FakeSocket): void {
+    if (socket._freeTimer) {
+      clearTimeout(socket._freeTimer);
+      socket._freeTimer = null;
+    }
+    const removed =
+      this._removeSocket(this.sockets, name, socket) ||
+      this._removeSocket(this.freeSockets, name, socket);
+    if (removed) {
+      this.totalSocketCount = Math.max(0, this.totalSocketCount - 1);
+      Promise.resolve().then(() => this._processPendingRequests());
+    }
+  }
+
+  private _canCreateSocket(name: string): boolean {
+    const activeCount = this.sockets[name]?.length ?? 0;
+    if (activeCount >= this.maxSockets) {
+      return false;
+    }
+    if (this.totalSocketCount < this.maxTotalSockets) {
+      return true;
+    }
+    this._evictFreeSocket(name);
+    return this.totalSocketCount < this.maxTotalSockets;
+  }
+
+  private _takeFreeSocket(name: string): FakeSocket | null {
+    const freeList = this.freeSockets[name];
+    while (freeList && freeList.length > 0) {
+      const socket = freeList.shift()!;
+      if (!socket.destroyed) {
+        if (socket._freeTimer) {
+          clearTimeout(socket._freeTimer);
+          socket._freeTimer = null;
+        }
+        if (freeList.length === 0) delete this.freeSockets[name];
+        return socket;
+      }
+      this.totalSocketCount = Math.max(0, this.totalSocketCount - 1);
+    }
+    if (freeList && freeList.length === 0) {
+      delete this.freeSockets[name];
+    }
+    return null;
+  }
+
+  private _activateSocket(name: string, socket: FakeSocket): void {
+    const activeList = this.sockets[name] ?? (this.sockets[name] = []);
+    activeList.push(socket);
+  }
+
+  private _createSocketForRequest(
+    name: string,
+    request: ClientRequest,
+    options: nodeHttp.RequestOptions,
+  ): void {
+    let settled = false;
+    const finish = (err: Error | null, socket?: FakeSocket): void => {
+      if (settled) return;
+      settled = true;
+      if (err || !socket) {
+        request._handleSocketError(err ?? new Error("Failed to create socket"));
+        this._processPendingRequests();
+        return;
+      }
+      this.totalSocketCount += 1;
+      this._activateSocket(name, socket);
+      socket.once("close", () => {
+        this._removeSocketCompletely(name, socket);
+      });
+      request._assignSocket(socket, false);
+    };
+
+    const connectionOptions = {
+      ...options,
+      keepAlive: this.keepAlive,
+      keepAliveInitialDelay: this.keepAliveMsecs,
+    };
+
+    try {
+      const maybeSocket = this.createConnection(connectionOptions, (err, socket) => {
+        finish(err, socket);
+      });
+      if (maybeSocket) {
+        finish(null, maybeSocket);
+      }
+    } catch (err) {
+      finish(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  private _processPendingRequests(): void {
+    for (const name of Object.keys(this.requests)) {
+      const queue = this.requests[name];
+      while (queue && queue.length > 0) {
+        const freeSocket = this._takeFreeSocket(name);
+        if (freeSocket) {
+          const entry = queue.shift()!;
+          this._activateSocket(name, freeSocket);
+          entry.request._assignSocket(freeSocket, true);
+          continue;
+        }
+        if (!this._canCreateSocket(name)) {
+          break;
+        }
+        const entry = queue.shift()!;
+        this._createSocketForRequest(name, entry.request, entry.options);
+      }
+      if (!queue || queue.length === 0) {
+        delete this.requests[name];
+      }
+    }
+  }
+
+  private _removeSocket(
+    sockets: Record<string, FakeSocket[]>,
+    name: string,
+    socket: FakeSocket,
+  ): boolean {
+    const list = sockets[name];
+    if (!list) return false;
+    const index = list.indexOf(socket);
+    if (index === -1) return false;
+    list.splice(index, 1);
+    if (list.length === 0) delete sockets[name];
+    return true;
+  }
+
+  private _evictFreeSocket(preferredName: string): void {
+    const keys = Object.keys(this.freeSockets);
+    const orderedKeys = keys.includes(preferredName)
+      ? [...keys.filter((key) => key !== preferredName), preferredName]
+      : keys;
+    for (const key of orderedKeys) {
+      const socket = this.freeSockets[key]?.[0];
+      if (!socket) continue;
+      socket.destroy();
+      return;
     }
   }
 
   destroy(): void {
-    this._activeCounts.clear();
-    for (const [, queue] of this._queues) {
-      queue.length = 0;
+    for (const socket of Object.values(this.sockets).flat()) {
+      socket.destroy();
     }
-    this._queues.clear();
+    for (const socket of Object.values(this.freeSockets).flat()) {
+      socket.destroy();
+    }
+    this.requests = {};
+    this.sockets = {};
+    this.freeSockets = {};
+    this.totalSocketCount = 0;
   }
 }
 
@@ -1116,6 +1497,8 @@ interface SerializedServerResponse {
   headers?: Array<[string, string]>;
   body?: string;
   bodyEncoding?: "utf8" | "base64";
+  connectionEnded?: boolean;
+  connectionReset?: boolean;
 }
 
 function debugBridgeNetwork(...args: unknown[]): void {
@@ -1318,6 +1701,8 @@ class ServerResponseBridge {
   private _listeners: Record<string, EventListener[]> = {};
   private _closedPromise: Promise<void>;
   private _resolveClosed: (() => void) | null = null;
+  private _connectionEnded = false;
+  private _connectionReset = false;
 
   constructor() {
     this._closedPromise = new Promise<void>((resolve) => {
@@ -1437,8 +1822,13 @@ class ServerResponseBridge {
     on: () => this.socket,
     once: () => this.socket,
     removeListener: () => this.socket,
-    destroy: () => {},
-    end: () => {},
+    destroy: () => {
+      this._connectionReset = true;
+      this._finalize();
+    },
+    end: () => {
+      this._connectionEnded = true;
+    },
     cork: () => {},
     uncork: () => {},
     write: () => true,
@@ -1460,6 +1850,7 @@ class ServerResponseBridge {
   }
 
   destroy(err?: Error): void {
+    this._connectionReset = true;
     if (err) {
       this._emit("error", err);
     }
@@ -1478,6 +1869,8 @@ class ServerResponseBridge {
       headers: Array.from(this._headers.entries()),
       body: bodyBuffer.toString("base64"),
       bodyEncoding: "base64",
+      connectionEnded: this._connectionEnded,
+      connectionReset: this._connectionReset,
     };
   }
 
@@ -1743,6 +2136,14 @@ class Server {
   }
 }
 
+// Function-style Server constructor for code that calls http.Server(...)
+// without `new`, matching the callable shape Node exposes.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ServerCallable(this: any, requestListener?: (req: ServerIncomingMessage, res: ServerResponseBridge) => unknown): Server {
+  return new Server(requestListener);
+}
+ServerCallable.prototype = Server.prototype;
+
 /** Route an incoming HTTP request to the server's request listener and return the serialized response. */
 async function dispatchServerRequest(
   serverId: number,
@@ -1786,6 +2187,9 @@ async function dispatchServerRequest(
     }
 
     await outgoing.waitForClose();
+    // Let same-turn deferred socket teardown (e.g. setImmediate(() => res.connection.end()))
+    // update the serialized connection flags before the client receives the response.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     return JSON.stringify(outgoing.serialize());
   } finally {
     server._endRequestDispatch();
@@ -2107,7 +2511,7 @@ function createHttpModule(protocol: string): Record<string, unknown> {
 
     Agent,
     globalAgent: moduleAgent,
-    Server: Server as unknown as typeof nodeHttp.Server,
+    Server: ServerCallable as unknown as typeof nodeHttp.Server,
     ServerResponse: ServerResponseCallable as unknown as typeof nodeHttp.ServerResponse,
     IncomingMessage: IncomingMessage as unknown as typeof nodeHttp.IncomingMessage,
     ClientRequest: ClientRequest as unknown as typeof nodeHttp.ClientRequest,
