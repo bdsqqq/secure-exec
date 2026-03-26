@@ -949,7 +949,7 @@
         "Typecheck passes"
       ],
       "priority": 44,
-      "passes": false,
+      "passes": true,
       "notes": "Reference: docs-internal/posix-gaps-audit.md. Primary files: packages/core/src/kernel/pipe-manager.ts, packages/core/src/kernel/file-lock.ts, and packages/core/src/drivers/."
     },
     {

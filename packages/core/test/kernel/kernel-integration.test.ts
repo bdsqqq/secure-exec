@@ -14,9 +14,11 @@ import {
 	O_TRUNC,
 	O_WRONLY,
 } from "../../src/kernel/types.js";
+import { LOCK_EX, LOCK_UN } from "../../src/kernel/file-lock.js";
 import { createKernel } from "../../src/kernel/kernel.js";
 import { filterEnv, wrapFileSystem } from "../../src/kernel/permissions.js";
 import { MAX_CANON, MAX_PTY_BUFFER_BYTES } from "../../src/kernel/pty.js";
+import { MAX_PIPE_BUFFER_BYTES } from "../../src/kernel/pipe-manager.js";
 import { createProcessScopedFileSystem } from "../../src/kernel/proc-layer.js";
 
 describe("kernel + MockRuntimeDriver integration", () => {
@@ -1685,6 +1687,101 @@ describe("kernel + MockRuntimeDriver integration", () => {
 	// -----------------------------------------------------------------------
 
 	describe("process exit FD cleanup chain", () => {
+		it("blocking pipe writes through the kernel wait until a reader drains capacity", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			const { kernel: k } = await createTestKernel({ drivers: [driver] });
+			kernel = k;
+			const ki = driver.kernelInterface!;
+
+			const proc = kernel.spawn("proc", []);
+			const { readFd, writeFd } = ki.pipe(proc.pid);
+
+			await Promise.resolve(ki.fdWrite(proc.pid, writeFd, new Uint8Array(MAX_PIPE_BUFFER_BYTES)));
+
+			let settled = false;
+			const blockedWrite = Promise.resolve(ki.fdWrite(proc.pid, writeFd, new Uint8Array([7, 8, 9])));
+			blockedWrite.then(() => {
+				settled = true;
+			});
+
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			expect(settled).toBe(false);
+
+			const drained = await ki.fdRead(proc.pid, readFd, MAX_PIPE_BUFFER_BYTES);
+			expect(drained).toHaveLength(MAX_PIPE_BUFFER_BYTES);
+
+			await expect(blockedWrite).resolves.toBe(3);
+			await expect(ki.fdRead(proc.pid, readFd, 16)).resolves.toEqual(new Uint8Array([7, 8, 9]));
+
+			proc.kill(9);
+			await proc.wait();
+		});
+
+		it("blocking flock through the kernel waits until the prior holder unlocks", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			const { kernel: k } = await createTestKernel({ drivers: [driver] });
+			kernel = k;
+			const ki = driver.kernelInterface!;
+
+			const proc1 = kernel.spawn("proc", []);
+			const proc2 = kernel.spawn("proc", []);
+			const fd1 = ki.fdOpen(proc1.pid, "/tmp/lockfile", O_CREAT);
+			const fd2 = ki.fdOpen(proc2.pid, "/tmp/lockfile", O_CREAT);
+
+			await ki.flock(proc1.pid, fd1, LOCK_EX);
+
+			let acquired = false;
+			const waiter = ki.flock(proc2.pid, fd2, LOCK_EX).then(() => {
+				acquired = true;
+			});
+
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			expect(acquired).toBe(false);
+
+			await ki.flock(proc1.pid, fd1, LOCK_UN);
+			await waiter;
+			expect(acquired).toBe(true);
+
+			proc1.kill(9);
+			proc2.kill(9);
+			await Promise.all([proc1.wait(), proc2.wait()]);
+		});
+
+		it("fdPollWait with timeout -1 stays blocked until a pipe becomes readable", async () => {
+			const driver = new MockRuntimeDriver(["proc"], {
+				proc: { neverExit: true },
+			});
+			const { kernel: k } = await createTestKernel({ drivers: [driver] });
+			kernel = k;
+			const ki = driver.kernelInterface!;
+
+			const proc = kernel.spawn("proc", []);
+			const { readFd, writeFd } = ki.pipe(proc.pid);
+
+			let settled = false;
+			const pollWait = ki.fdPollWait(proc.pid, readFd, -1).then(() => {
+				settled = true;
+			});
+
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			expect(settled).toBe(false);
+
+			await Promise.resolve(ki.fdWrite(proc.pid, writeFd, new TextEncoder().encode("wake")));
+			await pollWait;
+
+			expect(ki.fdPoll(proc.pid, readFd)).toMatchObject({
+				readable: true,
+				invalid: false,
+			});
+
+			proc.kill(9);
+			await proc.wait();
+		});
+
 		it("process exits with pipe write end → reader gets EOF", async () => {
 			const driver = new MockRuntimeDriver(["writer", "reader"], {
 				writer: { neverExit: true },

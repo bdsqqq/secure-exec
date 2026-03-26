@@ -15,8 +15,6 @@ export const LOCK_EX = 2;
 export const LOCK_UN = 8;
 export const LOCK_NB = 4;
 
-const FLOCK_WAIT_TIMEOUT_MS = 30_000;
-
 interface LockEntry {
 	descriptionId: number;
 	type: "sh" | "ex";
@@ -59,8 +57,8 @@ export class FileLockManager {
 				throw new KernelError("EAGAIN", "resource temporarily unavailable");
 			}
 
-			// Bound each wait so callers can re-check lock state without hanging forever.
-			const handle = state.waiters.enqueue(FLOCK_WAIT_TIMEOUT_MS);
+			// Wait indefinitely until an unlock wakes this waiter.
+			const handle = state.waiters.enqueue();
 			try {
 				await handle.wait();
 			} finally {

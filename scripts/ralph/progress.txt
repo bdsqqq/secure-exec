@@ -47,6 +47,7 @@
 - Vendored Node conformance helpers in `packages/secure-exec/tests/node-conformance/common/` must include sibling support files like `countdown.js`; missing common shims can masquerade as runtime regressions across many unrelated tests
 - Raw loopback `net.connect()` traffic into sandbox `http.createServer()` is parsed in `packages/nodejs/src/bridge/network.ts`; ignore leading `\r\n` between pipelined requests and only restart parsing on new socket writes, or leftover CRLF bytes can spin the parser forever
 - `http.Agent` pool progress under `maxTotalSockets` depends on evicting idle free sockets from other origins when the total socket budget is exhausted; otherwise cross-origin queues can deadlock even if per-origin logic looks correct
+- Kernel blocking-I/O completion claims should include `packages/core/test/kernel/kernel-integration.test.ts` coverage that exercises real process-owned FDs through `KernelInterface` (`fdWrite`, `flock`, `fdPollWait`), not just manager-level unit tests.
 
 ## [2026-03-26 10:53 PDT] - US-039
 - Corrected Node conformance vacuous-pass accounting by centralizing expectation classification in a shared helper that both `runner.test.ts` and `scripts/generate-node-conformance-report.ts` use.
@@ -611,4 +612,14 @@
   - In `InMemoryFileSystem`, directory creation/removal semantics are coupled: creating a directory must increment the parent inode's `nlink`, and removing an empty directory must drop both the child directory's own links and the parent's child-directory link.
   - Symlink metadata should stay inode-backed, not synthesized ad hoc, so `lstat()` and `readDirWithTypes()` report the same stable inode identity for the link itself.
   - Kernel integration tests should use exported open-flag constants instead of magic literals; stale numeric masks can silently stop testing the intended `O_CREAT`/`O_TRUNC` path.
+---
+## [2026-03-26 11:44 PDT] - US-044
+- Removed the artificial 30-second `flock()` wait cap so blocking file locks now stay queued until an actual unlock wakes them through the shared `WaitQueue`.
+- Added regression coverage for negative-timeout wait handles plus real kernel-interface blocking tests for full-pipe writes, blocking `flock()`, and `fdPollWait(..., -1)` wake-up behavior; updated the kernel contract and root agent guidance to document indefinite poll waits and the preferred integration-test pattern.
+- Verified with `pnpm vitest run packages/core/test/kernel/wait-queue.test.ts packages/core/test/kernel/file-lock.test.ts packages/core/test/kernel/pipe-manager.test.ts packages/core/test/kernel/kernel-integration.test.ts`, `pnpm vitest run packages/wasmvm/test/net-socket.test.ts -t 'poll with timeout=-1 on a pipe waits until a writer makes it readable'`, and `pnpm --filter @secure-exec/core check-types`.
+- Files changed: `AGENTS.md`, `.agent/contracts/kernel.md`, `packages/core/src/kernel/file-lock.ts`, `packages/core/test/kernel/wait-queue.test.ts`, `packages/core/test/kernel/kernel-integration.test.ts`, `scripts/ralph/prd.json`, `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+  - `WaitHandle(-1)` is the kernel’s indefinite-wait contract; negative timeouts should stay pending until an explicit wake instead of inheriting any internal guard timeout.
+  - For blocking kernel behavior, the authoritative regression path is `KernelInterface` against a real spawned PID and owned FDs; manager-only unit tests do not prove the syscall-facing integration.
+  - `fdPollWait(..., -1)` can be validated cheaply through a pipe FD in `kernel-integration.test.ts`, while the WasmVM `net-socket` poll smoke test confirms the worker RPC loop still honors the same indefinite wait semantics.
 ---

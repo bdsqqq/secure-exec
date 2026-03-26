@@ -349,6 +349,13 @@ The kernel pipe manager SHALL provide buffered unidirectional pipes with blockin
 - **WHEN** `createPipeFDs(fdTable)` is invoked
 - **THEN** the pipe manager MUST create a pipe and install both read and write FileDescriptions as FDs in the specified FD table, returning `{ readFd, writeFd }`
 
+### Requirement: FD Poll Waits Support Indefinite Blocking
+The kernel SHALL expose `fdPollWait` readiness waits that can either time out or remain pending until an FD state change occurs.
+
+#### Scenario: poll timeout -1 waits until FD readiness changes
+- **WHEN** a runtime calls `fdPollWait(pid, fd, -1)` for a pipe or other waitable FD that is not yet ready
+- **THEN** the wait MUST remain pending until that FD becomes readable, writable, or hung up, rather than timing out because of an internal guard interval
+
 ### Requirement: Socket Blocking Waits Respect Signal Handlers
 The kernel socket table SHALL allow blocking accept/recv waits to observe delivered signals so POSIX-style syscall interruption semantics can be enforced.
 

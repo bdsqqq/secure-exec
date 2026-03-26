@@ -30,6 +30,21 @@ describe("WaitHandle", () => {
 		expect(handle.timedOut).toBe(true);
 	});
 
+	it("negative timeout waits indefinitely until wake", async () => {
+		const handle = new WaitHandle(-1);
+		let resolved = false;
+		const pending = handle.wait().then(() => {
+			resolved = true;
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(resolved).toBe(false);
+
+		handle.wake();
+		await pending;
+		expect(handle.timedOut).toBe(false);
+	});
+
 	it("wake before timeout cancels timeout", async () => {
 		const handle = new WaitHandle(1000);
 		handle.wake();
