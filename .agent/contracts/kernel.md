@@ -500,6 +500,11 @@ The kernel permission system SHALL wrap VFS and environment access with deny-by-
 - **AND** when `permissions.network` is missing those external socket operations MUST fail with `EACCES`
 - **AND** loopback routing to kernel-owned listeners MUST remain allowed without a host-network allow rule
 
+#### Scenario: AF_UNIX sockets bypass host-network permission checks
+- **WHEN** a caller binds, listens on, connects to, or sends through an `AF_UNIX` socket path
+- **THEN** the kernel MUST keep that traffic entirely in-kernel without consulting `permissions.network`
+- **AND** missing Unix listeners MUST fail with `ECONNREFUSED` instead of `EACCES`
+
 #### Scenario: Preset allowAll grants all operations
 - **WHEN** `allowAll` permission preset is used
 - **THEN** all filesystem, network, child-process, and env operations MUST be allowed

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
 	SocketTable,
+	AF_UNIX,
 	AF_INET,
 	SOCK_DGRAM,
 	SOCK_STREAM,
@@ -8,12 +9,14 @@ import {
 } from "../../src/kernel/index.js";
 import type {
 	HostListener,
+	Kernel,
 	NetworkAccessRequest,
 	PermissionDecision,
 	HostNetworkAdapter,
 	HostSocket,
 	HostUdpSocket,
 	DnsResult,
+	DriverProcess,
 } from "../../src/kernel/index.js";
 import { createTestKernel } from "./helpers.js";
 
@@ -78,7 +81,9 @@ async function createListener(table: SocketTable, port: number) {
 function createMockHostSocket(): HostSocket {
 	return {
 		async write() {},
-		async read() { return null; },
+		async read() {
+			return null;
+		},
 		async close() {},
 		setOption() {},
 		shutdown() {},
@@ -88,9 +93,10 @@ function createMockHostSocket(): HostSocket {
 function createMockHostUdpSocket(): HostUdpSocket {
 	return {
 		async recv() {
-			return new Promise<{ data: Uint8Array; remoteAddr: { host: string; port: number } }>(
-				() => {},
-			);
+			return new Promise<{
+				data: Uint8Array;
+				remoteAddr: { host: string; port: number };
+			}>(() => {});
 		},
 		async close() {},
 	};
@@ -106,7 +112,9 @@ function createMockHostListener(port: number): HostListener {
 	};
 }
 
-function createMockHostAdapter(overrides?: Partial<HostNetworkAdapter>): HostNetworkAdapter {
+function createMockHostAdapter(
+	overrides?: Partial<HostNetworkAdapter>,
+): HostNetworkAdapter {
 	return {
 		async tcpConnect() {
 			return createMockHostSocket();
@@ -125,6 +133,47 @@ function createMockHostAdapter(overrides?: Partial<HostNetworkAdapter>): HostNet
 	};
 }
 
+function createMockDriverProcess(): DriverProcess {
+	let resolveExit: (code: number) => void;
+	const exitPromise = new Promise<number>((resolve) => {
+		resolveExit = resolve;
+	});
+
+	return {
+		writeStdin() {},
+		closeStdin() {},
+		kill(signal) {
+			resolveExit(128 + signal);
+		},
+		wait() {
+			return exitPromise;
+		},
+		onStdout: null,
+		onStderr: null,
+		onExit: null,
+	};
+}
+
+function registerKernelPid(kernel: Kernel, ppid = 0): number {
+	const internal = kernel as any;
+	const pid = internal.processTable.allocatePid();
+	internal.processTable.register(
+		pid,
+		"test",
+		"test",
+		[],
+		{
+			pid,
+			ppid,
+			env: {},
+			cwd: "/",
+			fds: { stdin: 0, stdout: 1, stderr: 2 },
+		},
+		createMockDriverProcess(),
+	);
+	return pid;
+}
+
 describe("Network permissions", () => {
 	// -------------------------------------------------------------------
 	// checkNetworkPermission (public method)
@@ -133,8 +182,9 @@ describe("Network permissions", () => {
 	describe("checkNetworkPermission()", () => {
 		it("throws EACCES when no policy is configured", () => {
 			const table = new SocketTable();
-			expect(() => table.checkNetworkPermission("connect", { host: "1.2.3.4", port: 80 }))
-				.toThrow(KernelError);
+			expect(() =>
+				table.checkNetworkPermission("connect", { host: "1.2.3.4", port: 80 }),
+			).toThrow(KernelError);
 			try {
 				table.checkNetworkPermission("connect", { host: "1.2.3.4", port: 80 });
 			} catch (e) {
@@ -144,8 +194,9 @@ describe("Network permissions", () => {
 
 		it("throws EACCES when policy denies", () => {
 			const table = new SocketTable({ networkCheck: denyAll });
-			expect(() => table.checkNetworkPermission("connect", { host: "1.2.3.4", port: 80 }))
-				.toThrow(KernelError);
+			expect(() =>
+				table.checkNetworkPermission("connect", { host: "1.2.3.4", port: 80 }),
+			).toThrow(KernelError);
 			try {
 				table.checkNetworkPermission("connect", { host: "1.2.3.4", port: 80 });
 			} catch (e) {
@@ -156,16 +207,23 @@ describe("Network permissions", () => {
 
 		it("passes when policy allows", () => {
 			const table = new SocketTable({ networkCheck: allowAll });
-			expect(() => table.checkNetworkPermission("connect", { host: "1.2.3.4", port: 80 }))
-				.not.toThrow();
+			expect(() =>
+				table.checkNetworkPermission("connect", { host: "1.2.3.4", port: 80 }),
+			).not.toThrow();
 		});
 
 		it("includes hostname in request passed to checker", () => {
 			let captured: NetworkAccessRequest | undefined;
 			const table = new SocketTable({
-				networkCheck: (req) => { captured = req; return { allow: true }; },
+				networkCheck: (req) => {
+					captured = req;
+					return { allow: true };
+				},
 			});
-			table.checkNetworkPermission("connect", { host: "example.com", port: 443 });
+			table.checkNetworkPermission("connect", {
+				host: "example.com",
+				port: 443,
+			});
 			expect(captured?.op).toBe("connect");
 			expect(captured?.hostname).toBe("example.com");
 		});
@@ -205,6 +263,21 @@ describe("Network permissions", () => {
 			const received = table.recv(serverId, 1024);
 			expect(received).not.toBeNull();
 			expect(new TextDecoder().decode(received!)).toBe("hello");
+		});
+	});
+
+	describe("AF_UNIX sockets stay in-kernel", () => {
+		it("allows Unix bind/listen/connect without a network permission policy", async () => {
+			const table = new SocketTable();
+			const listenId = table.create(AF_UNIX, SOCK_STREAM, 0, 1);
+			await table.bind(listenId, { path: "/tmp/kernel.sock" });
+			await table.listen(listenId);
+
+			const clientId = table.create(AF_UNIX, SOCK_STREAM, 0, 2);
+			await table.connect(clientId, { path: "/tmp/kernel.sock" });
+
+			const serverId = table.accept(listenId);
+			expect(serverId).not.toBeNull();
 		});
 	});
 
@@ -311,7 +384,10 @@ describe("Network permissions", () => {
 		it("passes local address to permission checker", async () => {
 			let captured: NetworkAccessRequest | undefined;
 			const table = new SocketTable({
-				networkCheck: (req) => { captured = req; return { allow: true }; },
+				networkCheck: (req) => {
+					captured = req;
+					return { allow: true };
+				},
 			});
 			const id = table.create(AF_INET, SOCK_STREAM, 0, 1);
 			await table.bind(id, { host: "0.0.0.0", port: 9090 });
@@ -341,13 +417,17 @@ describe("Network permissions", () => {
 				async write(data: Uint8Array) {
 					hostSocketWrites.push(data);
 				},
-				async read() { return null; },
+				async read() {
+					return null;
+				},
 				async close() {},
 				setOption() {},
 				shutdown() {},
 			};
 
-			expect(() => table.send(id, new Uint8Array([1, 2, 3]))).toThrow(KernelError);
+			expect(() => table.send(id, new Uint8Array([1, 2, 3]))).toThrow(
+				KernelError,
+			);
 			expect(hostSocketWrites).toHaveLength(0);
 		});
 
@@ -409,10 +489,12 @@ describe("Network permissions", () => {
 			sock.state = "bound";
 			sock.hostUdpSocket = createMockHostUdpSocket();
 
-			expect(() => table.sendTo(id, new Uint8Array([1, 2, 3]), 0, {
-				host: "8.8.8.8",
-				port: 53,
-			})).toThrow(KernelError);
+			expect(() =>
+				table.sendTo(id, new Uint8Array([1, 2, 3]), 0, {
+					host: "8.8.8.8",
+					port: 53,
+				}),
+			).toThrow(KernelError);
 			expect(udpSendCalls).toBe(0);
 		});
 	});
@@ -435,7 +517,9 @@ describe("Network permissions", () => {
 
 			const id = table.create(AF_INET, SOCK_STREAM, 0, 1);
 			await table.bind(id, { host: "0.0.0.0", port: 8082 });
-			await expect(table.listen(id, 128, { external: true })).rejects.toMatchObject({
+			await expect(
+				table.listen(id, 128, { external: true }),
+			).rejects.toMatchObject({
 				code: "EACCES",
 			});
 			expect(listenCalls).toBe(0);
@@ -483,19 +567,33 @@ describe("Network permissions", () => {
 	describe("createKernel() network permission wiring", () => {
 		it("denies external connect by default when kernel permissions omit network", async () => {
 			const { kernel } = await createTestKernel({ permissions: {} });
-			const clientId = kernel.socketTable.create(AF_INET, SOCK_STREAM, 0, 1);
+			const clientPid = registerKernelPid(kernel);
+			const clientId = kernel.socketTable.create(
+				AF_INET,
+				SOCK_STREAM,
+				0,
+				clientPid,
+			);
 
-			await expect(kernel.socketTable.connect(clientId, {
-				host: "93.184.216.34",
-				port: 80,
-			})).rejects.toMatchObject({ code: "EACCES" });
+			await expect(
+				kernel.socketTable.connect(clientId, {
+					host: "93.184.216.34",
+					port: 80,
+				}),
+			).rejects.toMatchObject({ code: "EACCES" });
 
 			await kernel.dispose();
 		});
 
 		it("denies listen by default when kernel permissions omit network", async () => {
 			const { kernel } = await createTestKernel({ permissions: {} });
-			const listenId = kernel.socketTable.create(AF_INET, SOCK_STREAM, 0, 1);
+			const listenPid = registerKernelPid(kernel);
+			const listenId = kernel.socketTable.create(
+				AF_INET,
+				SOCK_STREAM,
+				0,
+				listenPid,
+			);
 			await kernel.socketTable.bind(listenId, { host: "0.0.0.0", port: 9090 });
 
 			await expect(kernel.socketTable.listen(listenId)).rejects.toMatchObject({
@@ -509,13 +607,28 @@ describe("Network permissions", () => {
 			const { kernel } = await createTestKernel({
 				permissions: { network: denyConnect },
 			});
+			const serverPid = registerKernelPid(kernel);
+			const clientPid = registerKernelPid(kernel);
 
-			const listenId = kernel.socketTable.create(AF_INET, SOCK_STREAM, 0, 1);
+			const listenId = kernel.socketTable.create(
+				AF_INET,
+				SOCK_STREAM,
+				0,
+				serverPid,
+			);
 			await kernel.socketTable.bind(listenId, { host: "0.0.0.0", port: 9091 });
 			await kernel.socketTable.listen(listenId);
 
-			const clientId = kernel.socketTable.create(AF_INET, SOCK_STREAM, 0, 1);
-			await kernel.socketTable.connect(clientId, { host: "127.0.0.1", port: 9091 });
+			const clientId = kernel.socketTable.create(
+				AF_INET,
+				SOCK_STREAM,
+				0,
+				clientPid,
+			);
+			await kernel.socketTable.connect(clientId, {
+				host: "127.0.0.1",
+				port: 9091,
+			});
 			const serverId = kernel.socketTable.accept(listenId);
 
 			expect(serverId).not.toBeNull();

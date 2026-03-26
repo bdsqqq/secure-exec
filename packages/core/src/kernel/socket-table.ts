@@ -11,7 +11,12 @@ import { WaitQueue } from "./wait.js";
 import { KernelError, SA_RESTART } from "./types.js";
 import type { NetworkAccessRequest, PermissionCheck } from "./types.js";
 import type { ProcessSignalState } from "./types.js";
-import type { HostNetworkAdapter, HostSocket, HostListener, HostUdpSocket } from "./host-adapter.js";
+import type {
+	HostNetworkAdapter,
+	HostSocket,
+	HostListener,
+	HostUdpSocket,
+} from "./host-adapter.js";
 import type { VirtualFileSystem } from "./vfs.js";
 
 // ---------------------------------------------------------------------------
@@ -196,7 +201,10 @@ export class SocketTable {
 			throw new KernelError("EMFILE", "too many open sockets");
 		}
 		if (this.processExists && !this.processExists(pid)) {
-			throw new KernelError("ESRCH", `cannot create socket for unknown pid ${pid}`);
+			throw new KernelError(
+				"ESRCH",
+				`cannot create socket for unknown pid ${pid}`,
+			);
 		}
 
 		const id = this.nextSocketId++;
@@ -237,14 +245,20 @@ export class SocketTable {
 	 * configured policy denies the request or if no policy is set
 	 * (deny-by-default). Loopback callers should skip this method.
 	 */
-	checkNetworkPermission(op: NetworkAccessRequest["op"], addr?: SockAddr): void {
+	checkNetworkPermission(
+		op: NetworkAccessRequest["op"],
+		addr?: SockAddr,
+	): void {
 		const request: NetworkAccessRequest = { op };
 		if (addr && isInetAddr(addr)) {
 			request.hostname = addr.host;
 		}
 
 		if (!this.networkCheck) {
-			throw new KernelError("EACCES", `network ${op} denied (no permission policy)`);
+			throw new KernelError(
+				"EACCES",
+				`network ${op} denied (no permission policy)`,
+			);
 		}
 
 		const decision = this.networkCheck(request);
@@ -265,24 +279,37 @@ export class SocketTable {
 	 * For Unix domain sockets (UnixAddr), creates a socket file in the
 	 * VFS if one is configured.
 	 */
-	async bind(socketId: number, addr: SockAddr, options?: { mode?: number }): Promise<void> {
+	async bind(
+		socketId: number,
+		addr: SockAddr,
+		options?: { mode?: number },
+	): Promise<void> {
 		const socket = this.requireSocket(socketId);
 		if (socket.state !== "created") {
-			throw new KernelError("EINVAL", "socket must be in created state to bind");
+			throw new KernelError(
+				"EINVAL",
+				"socket must be in created state to bind",
+			);
 		}
 		const boundAddr = this.assignEphemeralPort(addr, socket);
 
 		// Unix domain sockets: check VFS for existing path
 		if (isUnixAddr(boundAddr) && this.vfs) {
 			if (await this.vfs.exists(boundAddr.path)) {
-				throw new KernelError("EADDRINUSE", `address already in use: ${boundAddr.path}`);
+				throw new KernelError(
+					"EADDRINUSE",
+					`address already in use: ${boundAddr.path}`,
+				);
 			}
 		}
 
 		// UDP uses a separate binding map from TCP
 		if (socket.type === SOCK_DGRAM) {
 			if (this.isUdpAddrInUse(boundAddr, socket)) {
-				throw new KernelError("EADDRINUSE", `address already in use: ${addrKey(boundAddr)}`);
+				throw new KernelError(
+					"EADDRINUSE",
+					`address already in use: ${addrKey(boundAddr)}`,
+				);
 			}
 			socket.localAddr = boundAddr;
 			socket.state = "bound";
@@ -295,7 +322,10 @@ export class SocketTable {
 		}
 
 		if (this.isAddrInUse(boundAddr, socket)) {
-			throw new KernelError("EADDRINUSE", `address already in use: ${addrKey(boundAddr)}`);
+			throw new KernelError(
+				"EADDRINUSE",
+				`address already in use: ${addrKey(boundAddr)}`,
+			);
 		}
 
 		socket.localAddr = boundAddr;
@@ -316,18 +346,30 @@ export class SocketTable {
 	 * real TCP listener via `hostAdapter.tcpListen()` and starts an accept
 	 * pump that feeds incoming connections into the kernel backlog.
 	 */
-	async listen(socketId: number, backlogSize: number = 128, options?: { external?: boolean }): Promise<void> {
+	async listen(
+		socketId: number,
+		backlogSize: number = 128,
+		options?: { external?: boolean },
+	): Promise<void> {
 		const socket = this.requireSocket(socketId);
 		if (socket.state !== "bound") {
 			throw new KernelError("EINVAL", "socket must be bound before listen");
 		}
 		socket.backlogLimit = Math.max(0, backlogSize);
 
-		// Check host-visible listeners through the deny-by-default network policy.
-		this.checkNetworkPermission("listen", socket.localAddr);
+		// AF_UNIX listeners stay entirely in-kernel, so host-network policy
+		// only applies to inet listeners.
+		if (socket.localAddr && isInetAddr(socket.localAddr)) {
+			this.checkNetworkPermission("listen", socket.localAddr);
+		}
 
 		// External listen — delegate to host adapter
-		if (options?.external && this.hostAdapter && socket.localAddr && isInetAddr(socket.localAddr)) {
+		if (
+			options?.external &&
+			this.hostAdapter &&
+			socket.localAddr &&
+			isInetAddr(socket.localAddr)
+		) {
 			const hostListener = await this.hostAdapter.tcpListen(
 				socket.localAddr.host,
 				socket.requestedEphemeralPort ? 0 : socket.localAddr.port,
@@ -339,7 +381,10 @@ export class SocketTable {
 			// Update port for ephemeral (port 0) bindings
 			if (socket.requestedEphemeralPort || socket.localAddr.port === 0) {
 				const oldKey = addrKey(socket.localAddr);
-				socket.localAddr = { host: socket.localAddr.host, port: hostListener.port };
+				socket.localAddr = {
+					host: socket.localAddr.host,
+					port: hostListener.port,
+				};
 				// Re-register in listeners map with actual port
 				this.listeners.delete(oldKey);
 				this.listeners.set(addrKey(socket.localAddr), socketId);
@@ -359,13 +404,19 @@ export class SocketTable {
 	 */
 	accept(socketId: number): number | null;
 	accept(socketId: number, options: BlockingSocketWait): Promise<number | null>;
-	accept(socketId: number, options?: BlockingSocketWait): number | null | Promise<number | null> {
+	accept(
+		socketId: number,
+		options?: BlockingSocketWait,
+	): number | null | Promise<number | null> {
 		const socket = this.requireSocket(socketId);
 		if (socket.state !== "listening") {
 			throw new KernelError("EINVAL", "socket is not listening");
 		}
 		if (socket.backlog.length === 0 && socket.nonBlocking) {
-			throw new KernelError("EAGAIN", "no pending connections on non-blocking socket");
+			throw new KernelError(
+				"EAGAIN",
+				"no pending connections on non-blocking socket",
+			);
 		}
 		if (!options?.block) {
 			const connId = socket.backlog.shift();
@@ -406,7 +457,11 @@ export class SocketTable {
 	 */
 	shutdown(socketId: number, how: "read" | "write" | "both"): void {
 		const socket = this.requireSocket(socketId);
-		if (socket.state !== "connected" && socket.state !== "write-closed" && socket.state !== "read-closed") {
+		if (
+			socket.state !== "connected" &&
+			socket.state !== "write-closed" &&
+			socket.state !== "read-closed"
+		) {
 			throw new KernelError("ENOTCONN", "socket is not connected");
 		}
 
@@ -494,7 +549,12 @@ export class SocketTable {
 	/**
 	 * Set a socket option. Stores the value keyed by "level:optname".
 	 */
-	setsockopt(socketId: number, level: number, optname: number, optval: number): void {
+	setsockopt(
+		socketId: number,
+		level: number,
+		optname: number,
+		optval: number,
+	): void {
 		const socket = this.requireSocket(socketId);
 		socket.options.set(optKey(level, optname), optval);
 	}
@@ -508,7 +568,11 @@ export class SocketTable {
 	/**
 	 * Get a socket option. Returns the value, or undefined if not set.
 	 */
-	getsockopt(socketId: number, level: number, optname: number): number | undefined {
+	getsockopt(
+		socketId: number,
+		level: number,
+		optname: number,
+	): number | undefined {
 		const socket = this.requireSocket(socketId);
 		return socket.options.get(optKey(level, optname));
 	}
@@ -545,7 +609,10 @@ export class SocketTable {
 	async connect(socketId: number, addr: SockAddr): Promise<void> {
 		const socket = this.requireSocket(socketId);
 		if (socket.state !== "created" && socket.state !== "bound") {
-			throw new KernelError("EINVAL", "socket must be in created or bound state to connect");
+			throw new KernelError(
+				"EINVAL",
+				"socket must be in created or bound state to connect",
+			);
 		}
 
 		// Mirror POSIX auto-bind behavior so connected client sockets always
@@ -562,14 +629,24 @@ export class SocketTable {
 
 		// Unix domain sockets: check VFS for socket file existence
 		if (isUnixAddr(addr) && this.vfs) {
-			if (!await this.vfs.exists(addr.path)) {
-				throw new KernelError("ECONNREFUSED", `connection refused: ${addr.path}`);
+			if (!(await this.vfs.exists(addr.path))) {
+				throw new KernelError(
+					"ECONNREFUSED",
+					`connection refused: ${addr.path}`,
+				);
 			}
 		}
 
 		const listener = this.findListener(addr);
 
 		if (!listener) {
+			if (isUnixAddr(addr)) {
+				throw new KernelError(
+					"ECONNREFUSED",
+					`connection refused: ${addr.path}`,
+				);
+			}
+
 			// Check external connections through the deny-by-default network policy.
 			this.checkNetworkPermission("connect", addr);
 
@@ -579,10 +656,16 @@ export class SocketTable {
 					socket.state = "connecting";
 					socket.remoteAddr = addr;
 					this.startExternalConnect(socket, addr);
-					throw new KernelError("EINPROGRESS", `connection in progress: ${addrKey(addr)}`);
+					throw new KernelError(
+						"EINPROGRESS",
+						`connection in progress: ${addrKey(addr)}`,
+					);
 				}
 
-				const hostSocket = await this.hostAdapter.tcpConnect(addr.host, addr.port);
+				const hostSocket = await this.hostAdapter.tcpConnect(
+					addr.host,
+					addr.port,
+				);
 				socket.state = "connected";
 				socket.external = true;
 				socket.remoteAddr = addr;
@@ -591,17 +674,26 @@ export class SocketTable {
 				return;
 			}
 
-			throw new KernelError("ECONNREFUSED", `connection refused: ${addrKey(addr)}`);
+			throw new KernelError(
+				"ECONNREFUSED",
+				`connection refused: ${addrKey(addr)}`,
+			);
 		}
 
 		// Loopback — always allowed, no permission check
 		if (listener.backlog.length >= listener.backlogLimit) {
-			throw new KernelError("ECONNREFUSED", `connection refused: backlog full for ${addrKey(addr)}`);
+			throw new KernelError(
+				"ECONNREFUSED",
+				`connection refused: backlog full for ${addrKey(addr)}`,
+			);
 		}
 
 		// Create server-side socket paired with the client
 		const serverSockId = this.create(
-			listener.domain, listener.type, listener.protocol, listener.pid,
+			listener.domain,
+			listener.type,
+			listener.protocol,
+			listener.pid,
 		);
 		const serverSock = this.get(serverSockId)!;
 
@@ -641,9 +733,12 @@ export class SocketTable {
 		const nosignal = (flags & MSG_NOSIGNAL) !== 0;
 
 		if (socket.state === "write-closed" || socket.state === "closed") {
-			throw new KernelError("EPIPE", nosignal
-				? "broken pipe (MSG_NOSIGNAL)"
-				: "broken pipe: write side shut down");
+			throw new KernelError(
+				"EPIPE",
+				nosignal
+					? "broken pipe (MSG_NOSIGNAL)"
+					: "broken pipe: write side shut down",
+			);
 		}
 		if (socket.state !== "connected" && socket.state !== "read-closed") {
 			throw new KernelError("ENOTCONN", "socket is not connected");
@@ -665,17 +760,19 @@ export class SocketTable {
 		}
 
 		if (socket.peerId === undefined) {
-			throw new KernelError("EPIPE", nosignal
-				? "broken pipe (MSG_NOSIGNAL)"
-				: "broken pipe: peer closed");
+			throw new KernelError(
+				"EPIPE",
+				nosignal ? "broken pipe (MSG_NOSIGNAL)" : "broken pipe: peer closed",
+			);
 		}
 
 		const peer = this.sockets.get(socket.peerId);
 		if (!peer) {
 			socket.peerId = undefined;
-			throw new KernelError("EPIPE", nosignal
-				? "broken pipe (MSG_NOSIGNAL)"
-				: "broken pipe: peer closed");
+			throw new KernelError(
+				"EPIPE",
+				nosignal ? "broken pipe (MSG_NOSIGNAL)" : "broken pipe: peer closed",
+			);
 		}
 
 		// Enforce SO_RCVBUF on the peer's receive buffer
@@ -705,7 +802,12 @@ export class SocketTable {
 	 * - MSG_DONTWAIT: return EAGAIN if no data (even on blocking socket)
 	 */
 	recv(socketId: number, maxBytes: number, flags?: number): Uint8Array | null;
-	recv(socketId: number, maxBytes: number, flags: number, options: BlockingSocketWait): Promise<Uint8Array | null>;
+	recv(
+		socketId: number,
+		maxBytes: number,
+		flags: number,
+		options: BlockingSocketWait,
+	): Promise<Uint8Array | null>;
 	recv(
 		socketId: number,
 		maxBytes: number,
@@ -732,7 +834,11 @@ export class SocketTable {
 		}
 
 		// Buffer empty — check for EOF (peer gone or peer shut down write)
-		if (socket.peerId === undefined || !this.sockets.has(socket.peerId) || socket.peerWriteClosed) {
+		if (
+			socket.peerId === undefined ||
+			!this.sockets.has(socket.peerId) ||
+			socket.peerWriteClosed
+		) {
 			return null;
 		}
 
@@ -763,7 +869,12 @@ export class SocketTable {
 	 *
 	 * Returns bytes "sent" (always data.length for UDP — drops are silent).
 	 */
-	sendTo(socketId: number, data: Uint8Array, flags: number, destAddr: SockAddr): number {
+	sendTo(
+		socketId: number,
+		data: Uint8Array,
+		flags: number,
+		destAddr: SockAddr,
+	): number {
 		const socket = this.requireSocket(socketId);
 		if (socket.type !== SOCK_DGRAM) {
 			throw new KernelError("EINVAL", "sendTo requires a datagram socket");
@@ -787,9 +898,14 @@ export class SocketTable {
 		// External routing via host adapter
 		if (socket.hostUdpSocket && this.hostAdapter && isInetAddr(destAddr)) {
 			this.checkNetworkPermission("connect", destAddr);
-			this.hostAdapter.udpSend(
-				socket.hostUdpSocket, new Uint8Array(data), destAddr.host, destAddr.port,
-			).catch(() => {});
+			this.hostAdapter
+				.udpSend(
+					socket.hostUdpSocket,
+					new Uint8Array(data),
+					destAddr.host,
+					destAddr.port,
+				)
+				.catch(() => {});
 			return data.length;
 		}
 
@@ -845,15 +961,17 @@ export class SocketTable {
 		if (socket.datagramQueue.length > 0) {
 			if (peek) {
 				const dgram = socket.datagramQueue[0];
-				const data = dgram.data.length <= maxBytes
-					? new Uint8Array(dgram.data)
-					: new Uint8Array(dgram.data.subarray(0, maxBytes));
+				const data =
+					dgram.data.length <= maxBytes
+						? new Uint8Array(dgram.data)
+						: new Uint8Array(dgram.data.subarray(0, maxBytes));
 				return { data, srcAddr: dgram.srcAddr };
 			}
 			const dgram = socket.datagramQueue.shift()!;
-			const data = dgram.data.length <= maxBytes
-				? dgram.data
-				: dgram.data.subarray(0, maxBytes);
+			const data =
+				dgram.data.length <= maxBytes
+					? dgram.data
+					: dgram.data.subarray(0, maxBytes);
 			return { data, srcAddr: dgram.srcAddr };
 		}
 
@@ -872,19 +990,30 @@ export class SocketTable {
 	async bindExternalUdp(socketId: number): Promise<void> {
 		const socket = this.requireSocket(socketId);
 		if (socket.type !== SOCK_DGRAM) {
-			throw new KernelError("EINVAL", "bindExternalUdp requires a datagram socket");
+			throw new KernelError(
+				"EINVAL",
+				"bindExternalUdp requires a datagram socket",
+			);
 		}
 		if (socket.state !== "bound") {
-			throw new KernelError("EINVAL", "socket must be bound before external UDP bind");
+			throw new KernelError(
+				"EINVAL",
+				"socket must be bound before external UDP bind",
+			);
 		}
-		if (!this.hostAdapter || !socket.localAddr || !isInetAddr(socket.localAddr)) {
+		if (
+			!this.hostAdapter ||
+			!socket.localAddr ||
+			!isInetAddr(socket.localAddr)
+		) {
 			throw new KernelError("EINVAL", "host adapter and inet address required");
 		}
 
 		this.checkNetworkPermission("listen", socket.localAddr);
 
 		const hostUdpSocket = await this.hostAdapter.udpBind(
-			socket.localAddr.host, socket.localAddr.port,
+			socket.localAddr.host,
+			socket.localAddr.port,
 		);
 		socket.hostUdpSocket = hostUdpSocket;
 		socket.external = true;
@@ -902,7 +1031,10 @@ export class SocketTable {
 	close(socketId: number, pid: number): void {
 		const socket = this.requireSocket(socketId);
 		if (socket.pid !== pid) {
-			throw new KernelError("EBADF", `socket ${socketId} not owned by pid ${pid}`);
+			throw new KernelError(
+				"EBADF",
+				`socket ${socketId} not owned by pid ${pid}`,
+			);
 		}
 		this.destroySocket(socket);
 	}
@@ -910,18 +1042,24 @@ export class SocketTable {
 	/**
 	 * Poll a socket for readability, writability, and hangup.
 	 */
-	poll(socketId: number): { readable: boolean; writable: boolean; hangup: boolean } {
+	poll(socketId: number): {
+		readable: boolean;
+		writable: boolean;
+		hangup: boolean;
+	} {
 		const socket = this.requireSocket(socketId);
 
 		const closed = socket.state === "closed";
 		const readClosed = socket.state === "read-closed";
 		const writeClosed = socket.state === "write-closed";
-		const pendingAccept = socket.state === "listening" && socket.backlog.length > 0;
+		const pendingAccept =
+			socket.state === "listening" && socket.backlog.length > 0;
 
 		// UDP: readable when datagramQueue has data
-		const readable = socket.type === SOCK_DGRAM
-			? socket.datagramQueue.length > 0 || closed
-			: socket.readBuffer.length > 0 || pendingAccept || closed || readClosed;
+		const readable =
+			socket.type === SOCK_DGRAM
+				? socket.datagramQueue.length > 0 || closed
+				: socket.readBuffer.length > 0 || pendingAccept || closed || readClosed;
 
 		const writable =
 			socket.state === "connected" ||
@@ -976,7 +1114,10 @@ export class SocketTable {
 	// -----------------------------------------------------------------------
 
 	/** Create a socket file in the VFS with S_IFSOCK mode. */
-	private async createSocketFile(path: string, mode: number = 0o755): Promise<void> {
+	private async createSocketFile(
+		path: string,
+		mode: number = 0o755,
+	): Promise<void> {
 		if (!this.vfs) return;
 		await this.vfs.writeFile(path, new Uint8Array(0));
 		await this.vfs.chmod(path, S_IFSOCK | (mode & 0o777));
@@ -991,7 +1132,10 @@ export class SocketTable {
 	}
 
 	/** Wait for an inbound connection, restarting when SA_RESTART applies. */
-	private async acceptBlocking(socket: KernelSocket, pid: number): Promise<number | null> {
+	private async acceptBlocking(
+		socket: KernelSocket,
+		pid: number,
+	): Promise<number | null> {
 		while (true) {
 			const connId = socket.backlog.shift();
 			if (connId !== undefined) return connId;
@@ -1090,30 +1234,33 @@ export class SocketTable {
 	private startExternalConnect(socket: KernelSocket, addr: InetAddr): void {
 		if (!this.hostAdapter) return;
 
-		this.hostAdapter.tcpConnect(addr.host, addr.port).then(hostSocket => {
-			const current = this.sockets.get(socket.id);
-			if (!current || current !== socket || current.state === "closed") {
-				hostSocket.close().catch(() => {});
-				return;
-			}
+		this.hostAdapter
+			.tcpConnect(addr.host, addr.port)
+			.then((hostSocket) => {
+				const current = this.sockets.get(socket.id);
+				if (!current || current !== socket || current.state === "closed") {
+					hostSocket.close().catch(() => {});
+					return;
+				}
 
-			current.state = "connected";
-			current.external = true;
-			current.remoteAddr = addr;
-			current.hostSocket = hostSocket;
-			this.startReadPump(current);
-		}).catch(() => {
-			const current = this.sockets.get(socket.id);
-			if (!current || current !== socket || current.state === "closed") {
-				return;
-			}
+				current.state = "connected";
+				current.external = true;
+				current.remoteAddr = addr;
+				current.hostSocket = hostSocket;
+				this.startReadPump(current);
+			})
+			.catch(() => {
+				const current = this.sockets.get(socket.id);
+				if (!current || current !== socket || current.state === "closed") {
+					return;
+				}
 
-			current.state = "created";
-			current.remoteAddr = undefined;
-			current.external = false;
-			current.hostSocket = undefined;
-			current.readWaiters.wakeAll();
-		});
+				current.state = "created";
+				current.remoteAddr = undefined;
+				current.external = false;
+				current.hostSocket = undefined;
+				current.readWaiters.wakeAll();
+			});
 	}
 
 	/** Background pump: accepts incoming connections from host listener and feeds kernel backlog. */
@@ -1122,7 +1269,10 @@ export class SocketTable {
 		const hostListener = socket.hostListener;
 		const pump = async () => {
 			try {
-				while (socket.state === "listening" && socket.hostListener === hostListener) {
+				while (
+					socket.state === "listening" &&
+					socket.hostListener === hostListener
+				) {
 					const hostSocket = await hostListener.accept();
 					if (socket.backlog.length >= socket.backlogLimit) {
 						hostSocket.close().catch(() => {});
@@ -1130,7 +1280,12 @@ export class SocketTable {
 					}
 
 					// Create a kernel socket for this incoming connection
-					const connId = this.create(socket.domain, socket.type, socket.protocol, socket.pid);
+					const connId = this.create(
+						socket.domain,
+						socket.type,
+						socket.protocol,
+						socket.pid,
+					);
 					const connSock = this.get(connId)!;
 					connSock.state = "connected";
 					connSock.external = true;
@@ -1188,7 +1343,10 @@ export class SocketTable {
 	}
 
 	/** Consume up to maxBytes from a socket's readBuffer. */
-	private consumeFromBuffer(socket: KernelSocket, maxBytes: number): Uint8Array {
+	private consumeFromBuffer(
+		socket: KernelSocket,
+		maxBytes: number,
+	): Uint8Array {
 		const chunks: Uint8Array[] = [];
 		let totalLen = 0;
 
@@ -1243,11 +1401,19 @@ export class SocketTable {
 		if (socket.external) {
 			return !socket.peerWriteClosed;
 		}
-		return socket.peerId !== undefined && this.sockets.has(socket.peerId) && !socket.peerWriteClosed;
+		return (
+			socket.peerId !== undefined &&
+			this.sockets.has(socket.peerId) &&
+			!socket.peerWriteClosed
+		);
 	}
 
 	/** Wait for socket readiness or an interrupting signal. */
-	private async waitForSocketWake(waiters: WaitQueue, pid: number, op: "accept" | "recv"): Promise<void> {
+	private async waitForSocketWake(
+		waiters: WaitQueue,
+		pid: number,
+		op: "accept" | "recv",
+	): Promise<void> {
 		const signalState = this.getSignalState?.(pid);
 		if (!signalState) {
 			const handle = waiters.enqueue();
@@ -1274,7 +1440,10 @@ export class SocketTable {
 				if ((signalState.lastDeliveredFlags & SA_RESTART) !== 0) {
 					return;
 				}
-				throw new KernelError("EINTR", `${op} interrupted by signal ${signalState.lastDeliveredSignal ?? "unknown"}`);
+				throw new KernelError(
+					"EINTR",
+					`${op} interrupted by signal ${signalState.lastDeliveredSignal ?? "unknown"}`,
+				);
 			}
 		} finally {
 			waiters.remove(socketHandle);
@@ -1310,7 +1479,8 @@ export class SocketTable {
 		if (!isInetAddr(addr)) {
 			return this.udpBindings.has(addr.path);
 		}
-		if (socket.options.get(optKey(SOL_SOCKET, SO_REUSEADDR)) === 1) return false;
+		if (socket.options.get(optKey(SOL_SOCKET, SO_REUSEADDR)) === 1)
+			return false;
 		if (this.udpBindings.has(addrKey(addr))) return true;
 		const isWildcard = addr.host === "0.0.0.0" || addr.host === "::";
 		for (const existingId of this.udpBindings.values()) {
@@ -1318,7 +1488,8 @@ export class SocketTable {
 			if (!existing?.localAddr || !isInetAddr(existing.localAddr)) continue;
 			if (existing.localAddr.port !== addr.port) continue;
 			const existingIsWildcard =
-				existing.localAddr.host === "0.0.0.0" || existing.localAddr.host === "::";
+				existing.localAddr.host === "0.0.0.0" ||
+				existing.localAddr.host === "::";
 			if (isWildcard || existingIsWildcard) return true;
 		}
 		return false;
@@ -1330,12 +1501,18 @@ export class SocketTable {
 		const hostUdpSocket = socket.hostUdpSocket;
 		const pump = async () => {
 			try {
-				while (socket.state !== "closed" && socket.hostUdpSocket === hostUdpSocket) {
+				while (
+					socket.state !== "closed" &&
+					socket.hostUdpSocket === hostUdpSocket
+				) {
 					const result = await hostUdpSocket.recv();
 					if (socket.datagramQueue.length < MAX_UDP_QUEUE_DEPTH) {
 						socket.datagramQueue.push({
 							data: result.data,
-							srcAddr: { host: result.remoteAddr.host, port: result.remoteAddr.port },
+							srcAddr: {
+								host: result.remoteAddr.host,
+								port: result.remoteAddr.port,
+							},
 						});
 						socket.readWaiters.wakeOne();
 					}
@@ -1354,7 +1531,8 @@ export class SocketTable {
 		}
 
 		// SO_REUSEADDR on the new socket skips the check
-		if (socket.options.get(optKey(SOL_SOCKET, SO_REUSEADDR)) === 1) return false;
+		if (socket.options.get(optKey(SOL_SOCKET, SO_REUSEADDR)) === 1)
+			return false;
 
 		// Exact match
 		if (this.listeners.has(addrKey(addr))) return true;
@@ -1366,7 +1544,8 @@ export class SocketTable {
 			if (!existing?.localAddr || !isInetAddr(existing.localAddr)) continue;
 			if (existing.localAddr.port !== addr.port) continue;
 			const existingIsWildcard =
-				existing.localAddr.host === "0.0.0.0" || existing.localAddr.host === "::";
+				existing.localAddr.host === "0.0.0.0" ||
+				existing.localAddr.host === "::";
 			if (isWildcard || existingIsWildcard) return true;
 		}
 
@@ -1383,9 +1562,10 @@ export class SocketTable {
 		socket.requestedEphemeralPort = true;
 		for (let port = EPHEMERAL_PORT_MIN; port <= EPHEMERAL_PORT_MAX; port++) {
 			const candidate: InetAddr = { host: addr.host, port };
-			const inUse = socket.type === SOCK_DGRAM
-				? this.isUdpAddrInUse(candidate, socket)
-				: this.isAddrInUse(candidate, socket);
+			const inUse =
+				socket.type === SOCK_DGRAM
+					? this.isUdpAddrInUse(candidate, socket)
+					: this.isAddrInUse(candidate, socket);
 			if (!inUse) {
 				return candidate;
 			}

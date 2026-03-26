@@ -1021,7 +1021,7 @@
         "Typecheck passes"
       ],
       "priority": 48,
-      "passes": false,
+      "passes": true,
       "notes": "AF_UNIX is entirely in-kernel and should not depend on host networking."
     },
     {

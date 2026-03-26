@@ -6,7 +6,11 @@
  * needed by the kernel VFS interface.
  */
 
-import type { VirtualFileSystem, VirtualStat, VirtualDirEntry } from "@secure-exec/core";
+import type {
+	VirtualDirEntry,
+	VirtualFileSystem,
+	VirtualStat,
+} from "@secure-exec/core";
 
 const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
@@ -145,9 +149,8 @@ export class InMemoryFileSystem implements VirtualFileSystem {
 		// Ensure parent exists
 		await this.mkdir(dirname(normalized), { recursive: true });
 
-		const data = typeof content === "string"
-			? new TextEncoder().encode(content)
-			: content;
+		const data =
+			typeof content === "string" ? new TextEncoder().encode(content) : content;
 
 		const existing = this.entries.get(normalized);
 		if (existing && existing.type === "file") {
@@ -278,9 +281,8 @@ export class InMemoryFileSystem implements VirtualFileSystem {
 			this.entries.delete(key);
 		}
 		for (const [key, val] of toMove) {
-			const newKey = key === oldResolved
-				? newNorm
-				: newNorm + key.slice(oldResolved.length);
+			const newKey =
+				key === oldResolved ? newNorm : newNorm + key.slice(oldResolved.length);
 			this.entries.set(newKey, val);
 		}
 	}
@@ -344,8 +346,12 @@ export class InMemoryFileSystem implements VirtualFileSystem {
 	async chmod(path: string, mode: number): Promise<void> {
 		const entry = this.resolveEntry(path);
 		if (!entry) throw this.enoent("chmod", path);
-		// Preserve file type bits, update permission bits
-		entry.mode = (entry.mode & 0o170000) | (mode & 0o7777);
+		const callerTypeBits = mode & 0o170000;
+		if (callerTypeBits !== 0) {
+			entry.mode = mode;
+		} else {
+			entry.mode = (entry.mode & 0o170000) | (mode & 0o7777);
+		}
 		entry.ctimeMs = Date.now();
 	}
 
@@ -381,14 +387,21 @@ export class InMemoryFileSystem implements VirtualFileSystem {
 		entry.ctimeMs = Date.now();
 	}
 
-	async pread(path: string, offset: number, length: number): Promise<Uint8Array> {
+	async pread(
+		path: string,
+		offset: number,
+		length: number,
+	): Promise<Uint8Array> {
 		const entry = this.resolveEntry(path);
 		if (!entry || entry.type !== "file") {
 			throw this.enoent("open", path);
 		}
 		entry.atimeMs = Date.now();
 		if (offset >= entry.data.length) return new Uint8Array(0);
-		return entry.data.slice(offset, Math.min(offset + length, entry.data.length));
+		return entry.data.slice(
+			offset,
+			Math.min(offset + length, entry.data.length),
+		);
 	}
 
 	// --- Helpers ---

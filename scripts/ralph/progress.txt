@@ -1,4 +1,6 @@
 ## Codebase Patterns
+- `AF_UNIX` sockets are local IPC, not host networking: kernel `SocketTable` bind/listen/connect for path sockets must stay fully in-kernel, bypass `permissions.network`, and use only the listener registry plus VFS socket-file state.
+- When kernel/device code needs a special file type in the browser-facing `InMemoryFileSystem`, `packages/browser/src/os-filesystem.ts` `chmod()` must honor caller-supplied type bits like `S_IFSOCK`; preserving the old file type silently downgrades socket files back to regular files.
 - Kernel integration tests that need deferred-unlink or inode-lifetime semantics must build the kernel with `InMemoryFileSystem` and await `posixDirsReady`; the default `createTestKernel()` `TestFileSystem` does not exercise inode-backed FD lifetime behavior.
 - `packages/core/src/shared/in-memory-fs.ts` must keep POSIX directory metadata coherent end-to-end: directory `nlink` is `2 + immediate child directory count`, `readDir*()` synthesizes `.`/`..`, and symlink `lstat()` / typed readdir entries should report the symlink's own inode instead of `ino: 0`.
 - Tests that instantiate `createDefaultNetworkAdapter()` or `useDefaultNetwork` are legacy adapter compatibility coverage only; kernel-consolidation proof should live under `packages/secure-exec/tests/kernel/` and mount `createNodeRuntime()` into a real `Kernel`.
@@ -61,6 +63,16 @@
   - The Node conformance runner and the static report generator can drift if they each reimplement expectation classification; keep vacuous-pass logic in one shared helper.
   - `category: "vacuous-skip"` is only valid for `expected: "pass"` self-skips; an intentionally skipped vendored file still needs a real failure category or the vacuous bucket and docs totals become misleading.
   - A narrow Vitest run against `runner.test.ts` with `--testNamePattern` is enough to validate top-level expectation loading/validation without paying for the full vendored suite.
+---
+## [2026-03-26 12:15 PDT] - US-048
+- Fixed `SocketTable` so `AF_UNIX` listeners and path connects stay entirely in-kernel: Unix `listen()` no longer trips host-network permission checks, and missing Unix listeners now fail with `ECONNREFUSED` instead of falling into external-network denial paths.
+- Added explicit regression coverage for AF_UNIX bypassing `permissions.network`, added a real-kernel integration suite covering stream bind/listen/connect, datagram path routing, `socketpair()`, and shutdown semantics, and fixed the browser `InMemoryFileSystem` `chmod()` path to preserve `S_IFSOCK` when the kernel materializes Unix socket files.
+- Verified with `pnpm vitest run packages/core/test/kernel/unix-socket.test.ts packages/core/test/kernel/network-permissions.test.ts packages/secure-exec/tests/kernel/unix-socket-behavior.test.ts` and `pnpm --filter @secure-exec/core check-types && pnpm --filter secure-exec check-types && pnpm --filter @secure-exec/browser check-types`.
+- Files changed: `.agent/contracts/kernel.md`, `CLAUDE.md`, `packages/browser/src/os-filesystem.ts`, `packages/core/src/kernel/socket-table.ts`, `packages/core/test/kernel/network-permissions.test.ts`, `packages/secure-exec/tests/kernel/unix-socket-behavior.test.ts`, `scripts/ralph/prd.json`, `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+  - AF_UNIX is not a special case of host networking; once a socket path is in play, reachability should be decided by the kernel listener registry/VFS, not `permissions.network`.
+  - Real `createKernel()` socket tests must register process-table PIDs before calling `socketTable.create(...)`; kernel-owned socket tables now reject unknown owners with `ESRCH`.
+  - Browser-facing `InMemoryFileSystem` helpers need the same file-type-bit semantics as the core inode-aware implementation or kernel-created special files like Unix sockets degrade to regular files in integration tests.
 ---
 
 ## [2026-03-26 09:30 PDT] - US-035
