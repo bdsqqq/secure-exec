@@ -169,8 +169,12 @@ export function getWebStreamsState() {
 			}
 			const record = { state: initialState };
 			promiseStateMap.set(promise, record);
+			const trackerSource =
+				promise.constructor === NativePromise
+					? promise
+					: NativePromise.resolve(promise);
 			NativePromise.prototype.then.call(
-				promise,
+				trackerSource,
 				() => {
 					if (record.state === "pending") {
 						record.state = "fulfilled";
@@ -189,7 +193,13 @@ export function getWebStreamsState() {
 			if (!(this instanceof TrackedPromise)) {
 				throw new TypeError("Promise constructor cannot be invoked without 'new'");
 			}
-			return trackPromise(new NativePromise(executor));
+			return trackPromise(
+				Reflect.construct(
+					NativePromise,
+					[executor],
+					new.target ?? TrackedPromise,
+				),
+			);
 		}
 
 		Object.setPrototypeOf(TrackedPromise, NativePromise);
@@ -200,21 +210,24 @@ export function getWebStreamsState() {
 				value instanceof NativePromise
 					? (promiseStateMap.get(value)?.state ?? "pending")
 					: "fulfilled";
-			return trackPromise(NativePromise.resolve(value), initialState);
+			return trackPromise(
+				NativePromise.resolve.call(this, value),
+				initialState,
+			);
 		};
 		TrackedPromise.reject = function reject(reason) {
-			return trackPromise(NativePromise.reject(reason), "rejected");
+			return trackPromise(NativePromise.reject.call(this, reason), "rejected");
 		};
 		for (const key of ["all", "allSettled", "any", "race"]) {
 			if (typeof NativePromise[key] === "function") {
 				TrackedPromise[key] = function trackedStatic(iterable) {
-					return trackPromise(NativePromise[key](iterable));
+					return trackPromise(NativePromise[key].call(this, iterable));
 				};
 			}
 		}
 		if (typeof NativePromise.withResolvers === "function") {
 			TrackedPromise.withResolvers = function withResolvers() {
-				const resolvers = NativePromise.withResolvers();
+				const resolvers = NativePromise.withResolvers.call(this);
 				trackPromise(resolvers.promise);
 				return resolvers;
 			};

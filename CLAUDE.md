@@ -19,6 +19,7 @@
 - tests that validate sandbox behavior MUST run code through the secure-exec sandbox (NodeRuntime/proc.exec()), never directly on the host
 - CLI tool tests (Pi, Claude Code, OpenCode) must execute inside the sandbox: Pi runs as JS in the VM, Claude Code and OpenCode spawn their binaries via the sandbox's child_process.spawn bridge
 - real-provider CLI/SDK tool-integration tests must stay opt-in via an explicit env flag and load credentials at runtime from exported env vars or `~/misc/env.txt`; never commit secrets or replace the live provider path with a mock redirect when the story requires real traffic
+- real-provider NodeRuntime CLI/tool tests that need a mutable temp worktree must pair `moduleAccess` with a real host-backed base filesystem such as `new NodeFileSystem()`; `moduleAccess` alone makes projected packages readable but leaves sandbox tools unable to touch `/tmp` working files
 - e2e-docker fixtures connect to real Docker containers (Postgres, MySQL, Redis, SSH/SFTP) — skip gracefully via `skipUnlessDocker()` when Docker is unavailable
 - interactive/PTY tests must use `kernel.openShell()` with `@xterm/headless`, not host PTY via `script -qefc`
 - kernel blocking-I/O regressions should be proven through `packages/core/test/kernel/kernel-integration.test.ts` using real process-owned FDs via `KernelInterface` (`fdWrite`, `flock`, `fdPollWait`) rather than only manager-level unit tests
@@ -131,6 +132,8 @@
 - keep it up to date when adding, removing, or significantly changing components
 - keep host bootstrap polyfills in `packages/nodejs/src/execution-driver.ts` aligned with isolate bootstrap polyfills in `packages/core/isolate-runtime/src/inject/require-setup.ts`; drift in shared globals like `AbortController` causes sandbox-only behavior gaps that source-level tests can miss
 - WHATWG globals that sandbox code touches before any bridge module loads (`TextDecoder`, `TextEncoder`, `Event`, `CustomEvent`, `EventTarget`) must be fixed in both bootstrap layers and `packages/nodejs/src/bridge/polyfills.ts`; bridge-only fixes do not change the globals seen by direct `runtime.run()` / `runtime.exec()` code
+- bridged `fetch()` request serialization must normalize `Headers` instances before crossing the JSON bridge; passing the host a raw `Headers` object silently drops auth and SDK-specific headers because it stringifies to `{}`
+- sandbox stdout/stderr write bridges must preserve Node's callback semantics even for empty writes like `process.stdout.write('', cb)`; headless CLI tools use that zero-byte callback as a flush barrier before clean exit
 - When a builtin or `internal/*` module needs sandbox-specific behavior but still has to work through CommonJS `require()`, add it under `packages/nodejs/src/polyfills/` and register it in `packages/nodejs/src/polyfills.ts` `CUSTOM_POLYFILL_ENTRY_POINTS`; that keeps esbuild bundling it to CJS instead of letting the isolate loader choke on raw ESM `export` syntax
 - vendored fs abort tests deep-freeze option bags via `common.mustNotMutateObjectDeep()`, so sandbox `AbortSignal` state must live outside writable instance properties; freezing `{ signal }` must not break later `controller.abort()`
 - vendored `common.mustNotMutateObjectDeep()` helpers must skip populated typed-array/DataView instances; `Object.freeze(new Uint8Array([1]))` throws before the runtime under test executes, which turns option-bag immutability coverage into a harness failure
@@ -148,6 +151,7 @@
 - `/proc/sys/kernel/hostname` conformance hits both kernel-backed and standalone NodeRuntime paths; a procfs fix that only lands in the kernel layer still leaves `createTestNodeRuntime()` fs/FileHandle coverage red
 - require-transformed ESM must not rely on the CommonJS wrapper's `__filename` / `__dirname` parameter names; keep wrapper internals on private names, synthesize local CJS bindings only for plain CommonJS sources, and compute transformed `import.meta.url` from `pathToFileURL(__secureExecFilename).href`
 - `ModuleAccessFileSystem` must treat host-absolute package asset paths derived from `import.meta.url`, `__filename`, or `realpath()` as part of the same read-only projected `node_modules` closure when they canonicalize inside the configured overlay; Pi and similar SDKs walk to sibling `package.json`/README/theme assets that way
+- `ModuleAccessFileSystem` also has to include pnpm virtual-store dependency symlink targets reachable from projected packages; package-internal `imports` like Chalk's `#ansi-styles` resolve into those sibling `.pnpm/*/node_modules/*` targets rather than staying under the top-level package root
 
 ## Virtual Kernel Architecture
 

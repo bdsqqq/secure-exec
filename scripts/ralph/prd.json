@@ -1160,7 +1160,7 @@
         "Typecheck passes"
       ],
       "priority": 54,
-      "passes": false,
+      "passes": true,
       "notes": "Current Pi headless coverage in packages/secure-exec/tests/cli-tools/pi-headless.test.ts uses a mock Anthropic server plus NODE_OPTIONS preload interception. This story is specifically to prove the real-token path."
     },
     {

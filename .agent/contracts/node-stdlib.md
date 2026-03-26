@@ -184,6 +184,11 @@ Builtin module resolution through helper APIs MUST return builtin identifiers di
 - **WHEN** sandboxed code calls `createRequire("/app/entry.js").resolve("path")`
 - **THEN** the call MUST succeed and return a builtin identifier for `path` (for example `"path"` or `"node:path"`)
 
+#### Scenario: CommonJS builtin fallback stays CommonJS-safe
+- **WHEN** CommonJS package code loads a built-in such as `v8` through a fallback file-loading path instead of a pre-populated cache hit
+- **THEN** the runtime MUST still provide CommonJS-compatible source or exports for that builtin
+- **AND** the loader MUST NOT hand a CommonJS `require()` path an ESM wrapper that fails on `export` syntax
+
 ### Requirement: Bridged Builtins Support ESM Default and Named Imports
 For bridged built-in modules exposed to ESM, the runtime MUST provide both default export access and named-import access for supported APIs.
 

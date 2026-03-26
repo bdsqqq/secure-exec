@@ -303,6 +303,9 @@ importers:
       '@secure-exec/v8':
         specifier: workspace:*
         version: link:../v8
+      cjs-module-lexer:
+        specifier: ^2.1.0
+        version: 2.2.0
       es-module-lexer:
         specifier: ^1.7.0
         version: 1.7.0
@@ -5178,6 +5181,10 @@ packages:
       inherits: 2.0.4
       safe-buffer: 5.2.1
       to-buffer: 1.2.2
+    dev: false
+
+  /cjs-module-lexer@2.2.0:
+    resolution: {integrity: sha512-4bHTS2YuzUvtoLjdy+98ykbNB5jS0+07EvFNXerqZQJ89F7DI6ET7OQo/HJuW6K0aVsKA9hj9/RVb2kQVOrPDQ==}
     dev: false
 
   /cli-boxes@3.0.0:

@@ -1,14 +1,13 @@
 /**
- * E2E test: Pi coding agent headless mode inside the secure-exec sandbox.
+ * Compatibility coverage: Pi headless mode via host Node spawn plus a mock LLM.
  *
- * Pi runs as a child process spawned through the sandbox's child_process
- * bridge. The mock LLM server runs on the host; Pi reaches it through a
- * fetch interceptor injected via NODE_OPTIONS preload script.
+ * This file is intentionally not the real-provider sandbox proof for Pi. It
+ * keeps the old mocked CLI behavior covered while the true sandboxed headless
+ * path is validated separately.
  *
- * File read/write tests use the host filesystem (Pi operates on real files
- * within a temp directory). The bash test validates child_process spawning.
- *
- * Uses relative imports to avoid cyclic package dependencies.
+ * Pi runs as a host child process here, not inside NodeRuntime. The mock LLM
+ * server runs on the host, and a NODE_OPTIONS preload redirects Anthropic
+ * traffic to that mock endpoint.
  */
 
 import { spawn as nodeSpawn } from 'node:child_process';
@@ -115,7 +114,7 @@ function spawnPi(opts: {
 let mockServer: MockLlmServerHandle;
 let workDir: string;
 
-describe.skipIf(piSkip)('Pi headless E2E (sandbox VM)', () => {
+describe.skipIf(piSkip)('Pi headless mock compatibility (host spawn, not sandbox proof)', () => {
   beforeAll(async () => {
     mockServer = await createMockLlmServer([]);
     workDir = await mkdtemp(path.join(tmpdir(), 'pi-headless-'));

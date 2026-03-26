@@ -79,6 +79,11 @@ This hardening policy MUST NOT force Node stdlib globals to non-writable/non-con
 - **WHEN** bridge setup exposes a Node stdlib global surface (for example `process`, timers, `Buffer`, `URL`, `fetch`, or `console`)
 - **THEN** the bridge MUST preserve Node-compatible behavior and MUST NOT require non-writable/non-configurable descriptors for that stdlib global due to this policy alone
 
+#### Scenario: Bridge exposes Node global alias
+- **WHEN** sandboxed code or bridged dependencies access `global`
+- **THEN** the bridge/runtime bootstrap MUST expose `global` as an alias of `globalThis`
+- **AND** Node globals such as `process` and `Buffer` MUST remain reachable through that alias
+
 ### Requirement: WHATWG URL Bridge Preserves Node Validation And Scalar-Value Semantics
 Bridge-provided `URL` and `URLSearchParams` globals SHALL preserve the Node-observable validation, coercion, and inspection behavior that vendored conformance tests assert.
 

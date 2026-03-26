@@ -71,10 +71,13 @@ import { resolveModule, loadFile } from "./package-bundler.js";
 import { bundlePolyfill, hasPolyfill } from "./polyfills.js";
 import {
 	createBuiltinESMWrapper,
+	getBuiltinBindingExpression,
 	getStaticBuiltinWrapperSource,
 	getEmptyBuiltinESMWrapper,
 } from "./esm-compiler.js";
 import {
+	transformSourceForImport,
+	transformSourceForImportSync,
 	transformSourceForRequire,
 	transformSourceForRequireSync,
 } from "./module-source.js";
@@ -2854,6 +2857,58 @@ export interface ModuleResolutionBridgeDeps {
 	hostToSandboxPath: (hostPath: string) => string;
 }
 
+function normalizeModuleResolveContext(referrer: string): string {
+	if (!referrer || referrer.endsWith("/")) {
+		return referrer || "/";
+	}
+
+	return pathDirname(referrer) !== referrer && /\.[^/]+$/.test(referrer)
+		? pathDirname(referrer)
+		: referrer;
+}
+
+function selectPackageExportTarget(
+	entry: unknown,
+	mode: "require" | "import",
+): string | null {
+	if (typeof entry === "string") {
+		return entry;
+	}
+
+	if (Array.isArray(entry)) {
+		for (const candidate of entry) {
+			const resolved = selectPackageExportTarget(candidate, mode);
+			if (resolved) {
+				return resolved;
+			}
+		}
+		return null;
+	}
+
+	if (!entry || typeof entry !== "object") {
+		return null;
+	}
+
+	const conditionalEntry = entry as {
+		default?: unknown;
+		import?: unknown;
+		require?: unknown;
+	};
+	const candidates =
+		mode === "import"
+			? [conditionalEntry.import, conditionalEntry.default, conditionalEntry.require]
+			: [conditionalEntry.require, conditionalEntry.default, conditionalEntry.import];
+
+	for (const candidate of candidates) {
+		const resolved = selectPackageExportTarget(candidate, mode);
+		if (resolved) {
+			return resolved;
+		}
+	}
+
+	return null;
+}
+
 /**
  * Resolve a package specifier by walking up directories and reading package.json exports.
  * Handles both root imports ('pkg') and subpath imports ('pkg/sub').
@@ -2877,19 +2932,16 @@ function resolvePackageExport(
 			const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf-8"));
 			let entry: string | undefined;
 			if (pkg.exports) {
-				const exportEntry = pkg.exports[subpath];
-				if (typeof exportEntry === "string") entry = exportEntry;
-				else if (exportEntry) {
-					const conditionalEntry = exportEntry as {
-						import?: string;
-						require?: string;
-						default?: string;
-					};
-					entry =
-						mode === "import"
-							? conditionalEntry.import ?? conditionalEntry.default ?? conditionalEntry.require
-							: conditionalEntry.require ?? conditionalEntry.default ?? conditionalEntry.import;
-				}
+				const exportEntry =
+					subpath === "." &&
+					typeof pkg.exports === "object" &&
+					pkg.exports !== null &&
+					!Array.isArray(pkg.exports) &&
+					!("." in (pkg.exports as Record<string, unknown>))
+						? pkg.exports
+						: (pkg.exports as Record<string, unknown>)[subpath];
+				const resolvedEntry = selectPackageExportTarget(exportEntry, mode);
+				if (resolvedEntry) entry = resolvedEntry;
 			}
 			if (!entry && subpath === ".") entry = pkg.main;
 			if (entry) return pathResolve(pathDirname(pkgJsonPath), entry);
@@ -2933,8 +2985,13 @@ export function buildModuleResolutionBridgeHandlers(
 		if (builtin) return builtin;
 
 		// Translate sandbox fromDir to host path for resolution context
-		const sandboxDir = String(fromDir);
-		const hostDir = deps.sandboxToHostPath(sandboxDir) ?? sandboxDir;
+		const referrer = String(fromDir);
+		const sandboxDir = normalizeModuleResolveContext(referrer);
+		const hostDir = normalizeModuleResolveContext(
+			deps.sandboxToHostPath(referrer) ??
+				deps.sandboxToHostPath(sandboxDir) ??
+				sandboxDir,
+		);
 		const resolveFromExports = (dir: string) => {
 			const resolved = resolvePackageExport(req, dir, resolveMode);
 			return resolved ? deps.hostToSandboxPath(resolved) : null;
@@ -2976,13 +3033,7 @@ export function buildModuleResolutionBridgeHandlers(
 	handlers[K.loadFileSync] = (filePath: unknown) => {
 		const sandboxPath = String(filePath);
 		const hostPath = deps.sandboxToHostPath(sandboxPath) ?? sandboxPath;
-
-		try {
-			const source = readFileSync(hostPath, "utf-8");
-			return transformSourceForRequireSync(source, hostPath);
-		} catch {
-			return null;
-		}
+		return loadHostModuleSourceSync(hostPath, sandboxPath, "require");
 	};
 
 	return handlers;
@@ -3064,6 +3115,60 @@ export interface ModuleLoadingBridgeDeps {
 	resolveMode?: "require" | "import";
 	/** Convert sandbox path to host path for pnpm/symlink resolution fallback. */
 	sandboxToHostPath?: (sandboxPath: string) => string | null;
+}
+
+function getStaticBuiltinRequireSource(moduleName: string): string | null {
+	switch (moduleName) {
+		case "fs":
+			return "module.exports = globalThis.bridge?.fs || globalThis.bridge?.default || {};";
+		case "fs/promises":
+			return "module.exports = (globalThis.bridge?.fs || globalThis.bridge?.default || {}).promises || {};";
+		case "module":
+			return `module.exports = ${
+				"globalThis.bridge?.module || {" +
+				"createRequire: globalThis._createRequire || function(f) {" +
+				"const dir = f.replace(/\\\\[^\\\\]*$/, '') || '/';" +
+				"return function(m) { return globalThis._requireFrom(m, dir); };" +
+				"}," +
+				"Module: { builtinModules: [] }," +
+				"isBuiltin: () => false," +
+				"builtinModules: []" +
+				"}"
+			};`;
+		case "os":
+			return "module.exports = globalThis._osModule || {};";
+		case "http":
+			return "module.exports = globalThis._httpModule || globalThis.bridge?.network?.http || {};";
+		case "https":
+			return "module.exports = globalThis._httpsModule || globalThis.bridge?.network?.https || {};";
+		case "http2":
+			return "module.exports = globalThis._http2Module || {};";
+		case "dns":
+			return "module.exports = globalThis._dnsModule || globalThis.bridge?.network?.dns || {};";
+		case "child_process":
+			return "module.exports = globalThis._childProcessModule || globalThis.bridge?.childProcess || {};";
+		case "process":
+			return "module.exports = globalThis.process || {};";
+		case "v8":
+			return "module.exports = globalThis._moduleCache?.v8 || {};";
+		default:
+			return null;
+	}
+}
+
+function loadHostModuleSourceSync(
+	readPath: string,
+	logicalPath: string,
+	loadMode: "require" | "import",
+): string | null {
+	try {
+		const source = readFileSync(readPath, "utf-8");
+		return loadMode === "require"
+			? transformSourceForRequireSync(source, logicalPath)
+			: transformSourceForImportSync(source, logicalPath, readPath);
+	} catch {
+		return null;
+	}
 }
 
 /** Build module loading bridge handlers (loadPolyfill, resolveModule, loadFile). */
@@ -3170,10 +3275,10 @@ export function buildModuleLoadingBridgeHandlers(
 	// Async file read for CommonJS and ESM loader paths.
 	// Also serves ESM wrappers for built-in modules (fs, path, etc.) when
 	// used from V8's ES module system which calls _loadFile after _resolveModule.
-	handlers[K.loadFile] = async (
+	handlers[K.loadFile] = (
 		path: unknown,
 		requestedMode?: unknown,
-	): Promise<string | null> => {
+	): string | null | Promise<string | null> => {
 		const p = String(path);
 		const loadMode =
 			requestedMode === "require" || requestedMode === "import"
@@ -3181,6 +3286,17 @@ export function buildModuleLoadingBridgeHandlers(
 				: (deps.resolveMode ?? "require");
 		// Built-in module ESM wrappers (V8 module system resolves 'fs' then loads it)
 		const bare = p.replace(/^node:/, "");
+		if (loadMode === "require") {
+			const builtinRequireSource = getStaticBuiltinRequireSource(bare);
+			if (builtinRequireSource) return builtinRequireSource;
+		}
+		const builtinBindingExpression = getBuiltinBindingExpression(bare);
+		if (builtinBindingExpression) {
+			return createBuiltinESMWrapper(
+				builtinBindingExpression,
+				getHostBuiltinNamedExports(bare),
+			);
+		}
 		const builtin = getStaticBuiltinWrapperSource(bare);
 		if (builtin) return builtin;
 		// Polyfill-backed builtins (crypto, zlib, etc.)
@@ -3190,13 +3306,22 @@ export function buildModuleLoadingBridgeHandlers(
 				getHostBuiltinNamedExports(bare),
 			);
 		}
-		// Regular files load differently for CommonJS require() vs V8's ESM loader.
-		const source = await loadFile(p, deps.filesystem);
-		if (source === null) return null;
-		if (loadMode === "require") {
-			return transformSourceForRequire(source, p);
+
+		const hostPath = deps.sandboxToHostPath?.(p) ?? p;
+		const syncSource = loadHostModuleSourceSync(hostPath, p, loadMode);
+		if (syncSource !== null) {
+			return syncSource;
 		}
-		return source;
+
+		// Regular files load differently for CommonJS require() vs V8's ESM loader.
+		return (async () => {
+			const source = await loadFile(p, deps.filesystem);
+			if (source === null) return null;
+			if (loadMode === "require") {
+				return transformSourceForRequire(source, p);
+			}
+			return transformSourceForImport(source, p);
+		})();
 	};
 
 	return handlers;

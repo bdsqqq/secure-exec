@@ -290,7 +290,7 @@ declare const _unregisterHandle:
 // Types for fetch API
 interface FetchOptions {
   method?: string;
-  headers?: Record<string, string>;
+  headers?: Headers | Record<string, string> | Array<[string, string]> | readonly string[];
   body?: string | null;
   mode?: string;
   credentials?: string;
@@ -308,11 +308,102 @@ interface FetchResponse {
   url: string;
   redirected: boolean;
   type: string;
+  body: ReadableStream<Uint8Array> | null;
   text(): Promise<string>;
   json(): Promise<unknown>;
   arrayBuffer(): Promise<ArrayBuffer>;
   blob(): Promise<never>;
   clone(): FetchResponse;
+}
+
+let _fetchHandleCounter = 0;
+
+function encodeFetchBody(
+  body: string,
+  bodyEncoding: string | null,
+): Uint8Array {
+  if (bodyEncoding === "base64" && typeof Buffer !== "undefined") {
+    return new Uint8Array(Buffer.from(body, "base64"));
+  }
+  if (typeof TextEncoder !== "undefined") {
+    return new TextEncoder().encode(body);
+  }
+  const bytes = new Uint8Array(body.length);
+  for (let index = 0; index < body.length; index += 1) {
+    bytes[index] = body.charCodeAt(index) & 0xff;
+  }
+  return bytes;
+}
+
+function createFetchBodyStream(
+  body: string,
+  bodyEncoding: string | null,
+): ReadableStream<Uint8Array> | null {
+  const ReadableStreamCtor = globalThis.ReadableStream;
+  if (typeof ReadableStreamCtor !== "function") {
+    return null;
+  }
+  const bytes = encodeFetchBody(body, bodyEncoding);
+  const handleId = typeof _registerHandle === "function"
+    ? `fetch-body:${++_fetchHandleCounter}`
+    : null;
+  let released = false;
+  let delivered = false;
+  const release = () => {
+    if (released || !handleId) {
+      return;
+    }
+    released = true;
+    _unregisterHandle?.(handleId);
+  };
+  if (handleId) {
+    _registerHandle?.(handleId, "fetch response body");
+  }
+  return new ReadableStreamCtor<Uint8Array>({
+    pull(controller) {
+      if (delivered) {
+        release();
+        controller.close();
+        return;
+      }
+      delivered = true;
+      controller.enqueue(bytes);
+      controller.close();
+      release();
+    },
+    cancel() {
+      release();
+    },
+  });
+}
+
+function serializeFetchHeaders(
+  headers: FetchOptions["headers"] | undefined,
+): Record<string, string> {
+  if (!headers) {
+    return {};
+  }
+  if (headers instanceof Headers) {
+    return Object.fromEntries(headers.entries());
+  }
+  if (isFlatHeaderList(headers)) {
+    const normalized: Record<string, string> = {};
+    for (let index = 0; index < headers.length; index += 2) {
+      const key = headers[index];
+      const value = headers[index + 1];
+      if (key !== undefined && value !== undefined) {
+        normalized[key] = value;
+      }
+    }
+    return normalized;
+  }
+  return Object.fromEntries(new Headers(headers).entries());
+}
+
+function createFetchHeaders(
+  headers: FetchOptions["headers"] | Headers | undefined,
+): Headers {
+  return new Headers(serializeFetchHeaders(headers));
 }
 
 // Fetch polyfill
@@ -328,7 +419,7 @@ export async function fetch(input: string | URL | Request, options: FetchOptions
     resolvedUrl = input.url;
     options = {
       method: input.method,
-      headers: Object.fromEntries(input.headers.entries()),
+      headers: serializeFetchHeaders(input.headers),
       body: input.body,
       ...options,
     };
@@ -338,50 +429,80 @@ export async function fetch(input: string | URL | Request, options: FetchOptions
 
   const optionsJson = JSON.stringify({
     method: options.method || "GET",
-    headers: options.headers || {},
+    headers: serializeFetchHeaders(options.headers),
     body: options.body || null,
   });
 
-  const responseJson = await _networkFetchRaw.apply(undefined, [resolvedUrl, optionsJson], {
-    result: { promise: true },
-  });
-  const response = JSON.parse(responseJson) as {
-    ok: boolean;
-    status: number;
-    statusText: string;
-    headers?: Record<string, string>;
-    url?: string;
-    redirected?: boolean;
-    body?: string;
-  };
+  const handleId = typeof _registerHandle === "function"
+    ? `fetch:${++_fetchHandleCounter}`
+    : null;
+  if (handleId) {
+    _registerHandle?.(handleId, `fetch ${resolvedUrl}`);
+  }
 
-  // Create Response-like object
-  return {
-    ok: response.ok,
-    status: response.status,
-    statusText: response.statusText,
-    headers: new Map(Object.entries(response.headers || {})),
-    url: response.url || resolvedUrl,
-    redirected: response.redirected || false,
-    type: "basic",
+  try {
+    const responseJson = await _networkFetchRaw.apply(undefined, [resolvedUrl, optionsJson], {
+      result: { promise: true },
+    });
+    const response = JSON.parse(responseJson) as {
+      ok: boolean;
+      status: number;
+      statusText: string;
+      headers?: Record<string, string>;
+      url?: string;
+      redirected?: boolean;
+      body?: string;
+    };
+    const bodyEncoding = response.headers?.["x-body-encoding"] ?? null;
+    const responseBody = response.body ?? "";
+    let bodyStream: ReadableStream<Uint8Array> | null | undefined;
 
-    async text(): Promise<string> {
-      return response.body || "";
-    },
-    async json(): Promise<unknown> {
-      return JSON.parse(response.body || "{}");
-    },
-    async arrayBuffer(): Promise<ArrayBuffer> {
-      // Not fully supported - return empty buffer
-      return new ArrayBuffer(0);
-    },
-    async blob(): Promise<never> {
-      throw new Error("Blob not supported in sandbox");
-    },
-    clone(): FetchResponse {
-      return { ...this } as FetchResponse;
-    },
-  };
+    // Create Response-like object
+    return {
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      headers: new Map(Object.entries(response.headers || {})),
+      url: response.url || resolvedUrl,
+      redirected: response.redirected || false,
+      type: "basic",
+      get body() {
+        if (bodyStream === undefined) {
+          bodyStream = createFetchBodyStream(responseBody, bodyEncoding);
+        }
+        return bodyStream;
+      },
+
+      async text(): Promise<string> {
+        if (bodyEncoding === "base64" && typeof Buffer !== "undefined") {
+          return Buffer.from(responseBody, "base64").toString("utf8");
+        }
+        return responseBody;
+      },
+      async json(): Promise<unknown> {
+        const textBody =
+          bodyEncoding === "base64" && typeof Buffer !== "undefined"
+            ? Buffer.from(responseBody, "base64").toString("utf8")
+            : responseBody;
+        return JSON.parse(textBody || "{}");
+      },
+      async arrayBuffer(): Promise<ArrayBuffer> {
+        return Uint8Array.from(
+          encodeFetchBody(responseBody, bodyEncoding),
+        ).buffer;
+      },
+      async blob(): Promise<never> {
+        throw new Error("Blob not supported in sandbox");
+      },
+      clone(): FetchResponse {
+        return { ...this } as FetchResponse;
+      },
+    };
+  } finally {
+    if (handleId) {
+      _unregisterHandle?.(handleId);
+    }
+  }
 }
 
 // Headers class
@@ -466,7 +587,9 @@ export class Request {
   constructor(input: string | Request, init: FetchOptions = {}) {
     this.url = typeof input === "string" ? input : input.url;
     this.method = init.method || (typeof input !== "string" ? input.method : undefined) || "GET";
-    this.headers = new Headers(init.headers || (typeof input !== "string" ? input.headers : undefined));
+    this.headers = createFetchHeaders(
+      init.headers || (typeof input !== "string" ? input.headers : undefined),
+    );
     this.body = init.body || null;
     this.mode = init.mode || "cors";
     this.credentials = init.credentials || "same-origin";

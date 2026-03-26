@@ -42,6 +42,7 @@ const STDLIB_BROWSER_MODULES = new Set([
 	"readline",
 	"repl",
 	"stream",
+	"stream/promises",
 	"_stream_duplex",
 	"_stream_passthrough",
 	"_stream_readable",
@@ -117,6 +118,7 @@ const KNOWN_BUILTIN_MODULES = new Set([
 	"path",
 	"querystring",
 	"stream",
+	"stream/promises",
 	"stream/web",
 	"string_decoder",
 	"timers",
@@ -276,6 +278,10 @@ export const BUILTIN_NAMED_EXPORTS: Record<string, string[]> = {
 		"promises",
 		"addAbortSignal",
 		"compose",
+	],
+	"stream/promises": [
+		"finished",
+		"pipeline",
 	],
 	"stream/web": [
 		"ReadableStream",

@@ -320,7 +320,7 @@ function _emit(event: string, ...args: unknown[]): boolean {
 
 // Stdio stream shape shared by stdout and stderr
 interface StdioWriteStream {
-  write(data: unknown): boolean;
+  write(data: unknown, encodingOrCallback?: unknown, callback?: unknown): boolean;
   end(): StdioWriteStream;
   on(): StdioWriteStream;
   once(): StdioWriteStream;
@@ -344,11 +344,28 @@ function _getStderrIsTTY(): boolean {
   return (typeof __runtimeTtyConfig !== "undefined" && __runtimeTtyConfig.stderrIsTTY) || false;
 }
 
+function getWriteCallback(
+  encodingOrCallback?: unknown,
+  callback?: unknown,
+): ((error?: Error | null) => void) | undefined {
+  if (typeof encodingOrCallback === "function") {
+    return encodingOrCallback as (error?: Error | null) => void;
+  }
+  if (typeof callback === "function") {
+    return callback as (error?: Error | null) => void;
+  }
+  return undefined;
+}
+
 // Stdout stream
 const _stdout: StdioWriteStream = {
-  write(data: unknown): boolean {
+  write(data: unknown, encodingOrCallback?: unknown, callback?: unknown): boolean {
     if (typeof _log !== "undefined") {
       _log.applySync(undefined, [String(data).replace(/\n$/, "")]);
+    }
+    const done = getWriteCallback(encodingOrCallback, callback);
+    if (done) {
+      _queueMicrotask(() => done(null));
     }
     return true;
   },
@@ -372,9 +389,13 @@ const _stdout: StdioWriteStream = {
 
 // Stderr stream
 const _stderr: StdioWriteStream = {
-  write(data: unknown): boolean {
+  write(data: unknown, encodingOrCallback?: unknown, callback?: unknown): boolean {
     if (typeof _error !== "undefined") {
       _error.applySync(undefined, [String(data).replace(/\n$/, "")]);
+    }
+    const done = getWriteCallback(encodingOrCallback, callback);
+    if (done) {
+      _queueMicrotask(() => done(null));
     }
     return true;
   },

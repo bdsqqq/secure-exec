@@ -51,40 +51,48 @@ const MODULE_FALLBACK_BINDING =
 	"builtinModules: []" +
 	"}";
 
+const STATIC_BUILTIN_BINDINGS: Readonly<Record<string, string>> = {
+	fs: "globalThis.bridge?.fs || globalThis.bridge?.default || {}",
+	"fs/promises": "(globalThis.bridge?.fs || globalThis.bridge?.default || {}).promises || {}",
+	"stream/promises": 'globalThis._requireFrom("stream/promises", "/")',
+	module: MODULE_FALLBACK_BINDING,
+	os: "globalThis.bridge?.os || {}",
+	http: "globalThis._httpModule || globalThis.bridge?.network?.http || {}",
+	https: "globalThis._httpsModule || globalThis.bridge?.network?.https || {}",
+	http2: "globalThis._http2Module || {}",
+	dns: "globalThis._dnsModule || globalThis.bridge?.network?.dns || {}",
+	child_process: "globalThis._childProcessModule || globalThis.bridge?.childProcess || {}",
+	process: "globalThis.process || {}",
+	v8: "globalThis._moduleCache?.v8 || {}",
+};
+
 const STATIC_BUILTIN_WRAPPER_SOURCES: Readonly<Record<string, string>> = {
-	fs: buildWrapperSource(
-		"globalThis.bridge?.fs || globalThis.bridge?.default || {}",
-		BUILTIN_NAMED_EXPORTS.fs,
-	),
+	fs: buildWrapperSource(STATIC_BUILTIN_BINDINGS.fs, BUILTIN_NAMED_EXPORTS.fs),
 	"fs/promises": buildWrapperSource(
-		"(globalThis.bridge?.fs || globalThis.bridge?.default || {}).promises || {}",
+		STATIC_BUILTIN_BINDINGS["fs/promises"],
 		BUILTIN_NAMED_EXPORTS["fs/promises"],
 	),
-	module: buildWrapperSource(MODULE_FALLBACK_BINDING, BUILTIN_NAMED_EXPORTS.module),
-	os: buildWrapperSource("globalThis.bridge?.os || {}", BUILTIN_NAMED_EXPORTS.os),
-	http: buildWrapperSource(
-		"globalThis._httpModule || globalThis.bridge?.network?.http || {}",
-		BUILTIN_NAMED_EXPORTS.http,
+	"stream/promises": buildWrapperSource(
+		STATIC_BUILTIN_BINDINGS["stream/promises"],
+		BUILTIN_NAMED_EXPORTS["stream/promises"],
 	),
-	https: buildWrapperSource(
-		"globalThis._httpsModule || globalThis.bridge?.network?.https || {}",
-		BUILTIN_NAMED_EXPORTS.https,
-	),
-	http2: buildWrapperSource("globalThis._http2Module || {}", []),
-	dns: buildWrapperSource(
-		"globalThis._dnsModule || globalThis.bridge?.network?.dns || {}",
-		BUILTIN_NAMED_EXPORTS.dns,
-	),
+	module: buildWrapperSource(STATIC_BUILTIN_BINDINGS.module, BUILTIN_NAMED_EXPORTS.module),
+	os: buildWrapperSource(STATIC_BUILTIN_BINDINGS.os, BUILTIN_NAMED_EXPORTS.os),
+	http: buildWrapperSource(STATIC_BUILTIN_BINDINGS.http, BUILTIN_NAMED_EXPORTS.http),
+	https: buildWrapperSource(STATIC_BUILTIN_BINDINGS.https, BUILTIN_NAMED_EXPORTS.https),
+	http2: buildWrapperSource(STATIC_BUILTIN_BINDINGS.http2, []),
+	dns: buildWrapperSource(STATIC_BUILTIN_BINDINGS.dns, BUILTIN_NAMED_EXPORTS.dns),
 	child_process: buildWrapperSource(
-		"globalThis._childProcessModule || globalThis.bridge?.childProcess || {}",
+		STATIC_BUILTIN_BINDINGS.child_process,
 		BUILTIN_NAMED_EXPORTS.child_process,
 	),
-	process: buildWrapperSource(
-		"globalThis.process || {}",
-		BUILTIN_NAMED_EXPORTS.process,
-	),
-	v8: buildWrapperSource("globalThis._moduleCache?.v8 || {}", []),
+	process: buildWrapperSource(STATIC_BUILTIN_BINDINGS.process, BUILTIN_NAMED_EXPORTS.process),
+	v8: buildWrapperSource(STATIC_BUILTIN_BINDINGS.v8, []),
 };
+
+export function getBuiltinBindingExpression(moduleName: string): string | null {
+	return STATIC_BUILTIN_BINDINGS[moduleName] ?? null;
+}
 
 /** Get a pre-built ESM wrapper for a bridge-backed built-in, or null if not bridge-handled. */
 export function getStaticBuiltinWrapperSource(moduleName: string): string | null {

@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
   NodeRuntime,
+  NodeFileSystem,
   allowAll,
   createNodeDriver,
   createNodeRuntimeDriverFactory,
@@ -52,74 +53,82 @@ function getSkipReason(): string | false {
 
 function buildSandboxSource(opts: { workDir: string }): string {
   return [
-    'const path = require("node:path");',
-    '(async () => {',
-    '  try {',
-    `    const pi = await import(${JSON.stringify(PI_SDK_ENTRY)});`,
-    `    const workDir = ${JSON.stringify(opts.workDir)};`,
-    '    const authStorage = pi.AuthStorage.create(path.join(workDir, "auth.json"));',
-    '    const modelRegistry = new pi.ModelRegistry(authStorage);',
-    '    const available = await modelRegistry.getAvailable();',
-    '    const model = available.find((candidate) =>',
-    '      candidate.provider === "anthropic" && candidate.id === "claude-sonnet-4-20250514"',
-    '    ) ?? available.find((candidate) => candidate.provider === "anthropic") ?? available[0];',
-    '    if (!model) throw new Error("No Pi model available from real-provider credentials");',
-    '    const { session } = await pi.createAgentSession({',
-    '      cwd: workDir,',
-    '      authStorage,',
-    '      modelRegistry,',
-    '      model,',
-    '      tools: pi.createCodingTools(workDir),',
-    '      sessionManager: pi.SessionManager.inMemory(),',
-    '    });',
-    '    let output = "";',
-    '    const toolEvents = [];',
-    '    session.subscribe((event) => {',
-    '      if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {',
-    '        output += event.assistantMessageEvent.delta;',
-    '      }',
-    '      if (event.type === "tool_execution_start") {',
-    '        toolEvents.push({ type: event.type, toolName: event.toolName });',
-    '      }',
-    '      if (event.type === "tool_execution_end") {',
-    '        toolEvents.push({ type: event.type, toolName: event.toolName, isError: event.isError });',
-    '      }',
-    '    });',
-    '    await session.prompt("Read note.txt and answer with the exact file contents only.");',
-    '    await session.agent.waitForIdle();',
-    '    console.log(JSON.stringify({',
-    '      ok: true,',
-    '      api: "createAgentSession + SessionManager.inMemory + createCodingTools",',
-    '      model: `${model.provider}/${model.id}`,',
-    '      output,',
-    '      toolEvents,',
-    '    }));',
-    '    session.dispose();',
-    '  } catch (error) {',
-    '    console.log(JSON.stringify({',
-    '      ok: false,',
-    '      error: String(error),',
-    '      stack: error && typeof error === "object" && "stack" in error ? error.stack : undefined,',
-    '    }));',
-    '    process.exitCode = 1;',
-    '  }',
-    '})();',
+    'import path from "node:path";',
+    `const workDir = ${JSON.stringify(opts.workDir)};`,
+    'let session;',
+    'try {',
+    `  const pi = await globalThis.__dynamicImport(${JSON.stringify(PI_SDK_ENTRY)}, "/entry.mjs");`,
+    '  const authStorage = pi.AuthStorage.create(path.join(workDir, "auth.json"));',
+    '  const modelRegistry = new pi.ModelRegistry(authStorage);',
+    '  const available = await modelRegistry.getAvailable();',
+    '  const preferredAnthropicIds = [',
+    '    "claude-haiku-4-5-20251001",',
+    '    "claude-sonnet-4-6",',
+    '    "claude-sonnet-4-20250514",',
+    '  ];',
+    '  const model = preferredAnthropicIds',
+    '    .map((id) => available.find((candidate) => candidate.provider === "anthropic" && candidate.id === id))',
+    '    .find(Boolean) ?? available.find((candidate) => candidate.provider === "anthropic") ?? available[0];',
+    '  if (!model) throw new Error("No Pi model available from real-provider credentials");',
+    '  ({ session } = await pi.createAgentSession({',
+    '    cwd: workDir,',
+    '    authStorage,',
+    '    modelRegistry,',
+    '    model,',
+    '    tools: pi.createCodingTools(workDir),',
+    '    sessionManager: pi.SessionManager.inMemory(),',
+    '  }));',
+    '  const toolEvents = [];',
+    '  session.subscribe((event) => {',
+    '    if (event.type === "tool_execution_start") {',
+    '      toolEvents.push({ type: event.type, toolName: event.toolName });',
+    '    }',
+    '    if (event.type === "tool_execution_end") {',
+    '      toolEvents.push({ type: event.type, toolName: event.toolName, isError: event.isError });',
+    '    }',
+    '  });',
+    '  await pi.runPrintMode(session, {',
+    '    mode: "text",',
+    '    initialMessage: "Read note.txt and answer with the exact file contents only.",',
+    '  });',
+    '  console.log(JSON.stringify({',
+    '    ok: true,',
+    '    api: "runPrintMode + createAgentSession + SessionManager.inMemory + createCodingTools",',
+    '    model: `${model.provider}/${model.id}`,',
+    '    toolEvents,',
+    '  }));',
+    '  session.dispose();',
+    '} catch (error) {',
+    '  const errorMessage = error instanceof Error ? error.message : String(error);',
+    '  console.log(JSON.stringify({',
+    '    ok: false,',
+    '    error: errorMessage.split("\\n")[0].slice(0, 600),',
+    '    stack: error instanceof Error ? error.stack : String(error),',
+    '    lastStopReason: session?.state?.messages?.at(-1)?.stopReason,',
+    '    lastErrorMessage: session?.state?.messages?.at(-1)?.errorMessage,',
+    '    code: error && typeof error === "object" && "code" in error ? error.code : undefined,',
+    '  }));',
+    '  process.exitCode = 1;',
+    '}',
   ].join('\n');
 }
 
 function parseLastJsonLine(stdout: string): Record<string, unknown> {
-  const line = stdout
-    .trim()
-    .split('\n')
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-    .at(-1);
-
-  if (!line) {
+  const trimmed = stdout.trim();
+  if (!trimmed) {
     throw new Error(`sandbox produced no JSON output: ${JSON.stringify(stdout)}`);
   }
 
-  return JSON.parse(line) as Record<string, unknown>;
+  for (let index = trimmed.lastIndexOf('{'); index >= 0; index = trimmed.lastIndexOf('{', index - 1)) {
+    const candidate = trimmed.slice(index);
+    try {
+      return JSON.parse(candidate) as Record<string, unknown>;
+    } catch {
+      // Keep scanning backward until the final complete JSON object is found.
+    }
+  }
+
+  throw new Error(`sandbox produced no trailing JSON object: ${JSON.stringify(stdout)}`);
 }
 
 const skipReason = getSkipReason();
@@ -154,14 +163,17 @@ describe.skipIf(skipReason)('Pi SDK real-provider E2E (sandbox VM)', () => {
           if (event.channel === 'stderr') stderr.push(event.message);
         },
         systemDriver: createNodeDriver({
+          filesystem: new NodeFileSystem(),
           moduleAccess: { cwd: SECURE_EXEC_ROOT },
           permissions: allowAll,
+          useDefaultNetwork: true,
         }),
         runtimeDriverFactory: createNodeRuntimeDriverFactory(),
       });
 
       const result = await runtime.exec(buildSandboxSource({ workDir }), {
         cwd: workDir,
+        filePath: '/entry.mjs',
         env: {
           ...providerEnv.env!,
           HOME: workDir,
@@ -172,33 +184,23 @@ describe.skipIf(skipReason)('Pi SDK real-provider E2E (sandbox VM)', () => {
       expect(result.code, stderr.join('')).toBe(0);
 
       const payload = parseLastJsonLine(stdout.join(''));
-      if (payload.ok === true) {
-        expect(payload.api).toBe(
-          'createAgentSession + SessionManager.inMemory + createCodingTools',
-        );
+      expect(payload.ok, JSON.stringify(payload)).toBe(true);
+      expect(payload.api).toBe(
+        'runPrintMode + createAgentSession + SessionManager.inMemory + createCodingTools',
+      );
 
-        const output = String(payload.output ?? '');
-        expect(output).toContain(canary);
-        expect(output.trim().length).toBeGreaterThan(0);
+      expect(stdout.join('')).toContain(canary);
 
-        const toolEvents = Array.isArray(payload.toolEvents)
-          ? payload.toolEvents as Array<Record<string, unknown>>
-          : [];
-        expect(
-          toolEvents.some((event) => event.toolName === 'read' && event.type === 'tool_execution_start'),
-        ).toBe(true);
-        expect(
-          toolEvents.some((event) => event.toolName === 'read' && event.type === 'tool_execution_end' && event.isError === false),
-        ).toBe(true);
-        return;
-      }
-
-      const error = String(payload.error ?? '');
-      expect(payload.ok).toBe(false);
-      expect(error).toContain('@mariozechner/pi-coding-agent');
-      expect(error).not.toContain("Identifier '__filename' has already been declared");
-      expect(error).not.toContain('/dist/package.json');
+      const toolEvents = Array.isArray(payload.toolEvents)
+        ? payload.toolEvents as Array<Record<string, unknown>>
+        : [];
+      expect(
+        toolEvents.some((event) => event.toolName === 'read' && event.type === 'tool_execution_start'),
+      ).toBe(true);
+      expect(
+        toolEvents.some((event) => event.toolName === 'read' && event.type === 'tool_execution_end' && event.isError === false),
+      ).toBe(true);
     },
-    55_000,
+    90_000,
   );
 });

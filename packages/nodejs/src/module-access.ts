@@ -98,17 +98,42 @@ function isNativeAddonPath(pathValue: string): boolean {
 function collectOverlayAllowedRoots(hostNodeModulesRoot: string): string[] {
 	const roots = new Set<string>([hostNodeModulesRoot]);
 	const symlinkScanRoots = [hostNodeModulesRoot, path.join(hostNodeModulesRoot, ".pnpm", "node_modules")];
+	const scannedSymlinkDirs = new Set<string>();
+
+	const findNearestNodeModulesAncestor = (targetPath: string): string | null => {
+		let current = path.resolve(targetPath);
+		while (true) {
+			if (path.basename(current) === "node_modules") {
+				return current;
+			}
+			const parent = path.dirname(current);
+			if (parent === current) {
+				return null;
+			}
+			current = parent;
+		}
+	};
 
 	const addSymlinkTarget = (entryPath: string): void => {
 		try {
 			const target = fsSync.realpathSync(entryPath);
 			roots.add(target);
+			const packageNodeModulesRoot = findNearestNodeModulesAncestor(target);
+			if (packageNodeModulesRoot) {
+				roots.add(packageNodeModulesRoot);
+				scanDirForSymlinks(packageNodeModulesRoot);
+			}
 		} catch {
 			// Ignore broken symlinks.
 		}
 	};
 
 	const scanDirForSymlinks = (scanRoot: string): void => {
+		if (scannedSymlinkDirs.has(scanRoot)) {
+			return;
+		}
+		scannedSymlinkDirs.add(scanRoot);
+
 		let entries: fsSync.Dirent[] = [];
 		try {
 			entries = fsSync.readdirSync(scanRoot, { withFileTypes: true });

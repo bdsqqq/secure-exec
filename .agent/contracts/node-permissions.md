@@ -89,6 +89,11 @@ When driver-managed node_modules overlay/projection is active (including always-
 - **THEN** those read operations MUST succeed when the canonical path still resolves inside the configured projected `node_modules` closure
 - **AND** the same host-absolute projected paths MUST remain read-only for write, rename, mkdir, unlink, and rmdir operations
 
+#### Scenario: Pnpm virtual-store dependency targets stay inside the projected closure
+- **WHEN** a projected package resolves a transitive dependency through pnpm virtual-store symlinks (for example package-internal `imports` such as Chalk resolving `#ansi-styles` to another package directory under `.pnpm/.../node_modules/...`)
+- **THEN** the module overlay MUST treat those canonical dependency paths as part of the same read-only projected closure
+- **AND** sandboxed reads of those host-absolute dependency files MUST succeed without granting access to unrelated host filesystem paths outside the reachable package closure
+
 #### Scenario: Sandboxed write targets projected module file
 - **WHEN** sandboxed code attempts `writeFile`, `unlink`, or `rename` for a path under projected `/app/node_modules`
 - **THEN** the operation MUST be denied with `EACCES` regardless of broader filesystem allow rules

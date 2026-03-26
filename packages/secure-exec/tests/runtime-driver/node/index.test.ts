@@ -125,6 +125,65 @@ describe("NodeRuntime", () => {
 		expect(result.exports).toEqual({ default: 99, named: "value" });
 	});
 
+	it("imports stream/promises through the ESM builtin wrapper", async () => {
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({ onStdio: capture.onStdio });
+		const result = await proc.exec(
+			`
+	      import { finished, pipeline } from "stream/promises";
+	      console.log(typeof finished + ":" + typeof pipeline);
+	    `,
+			{ filePath: "/entry.mjs" },
+		);
+		expect(result.code).toBe(0);
+		expect(capture.stdout()).toBe("function:function\n");
+	});
+
+	it("imports host builtin fs named exports through the ESM wrapper", async () => {
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({ onStdio: capture.onStdio });
+		const result = await proc.exec(
+			`
+	      import { closeSync, readFileSync } from "fs";
+	      console.log(typeof closeSync + ":" + typeof readFileSync);
+	    `,
+			{ filePath: "/entry.mjs" },
+		);
+		expect(result.code).toBe(0);
+		expect(capture.stdout()).toBe("function:function\n");
+	});
+
+	it("keeps relative ESM module caches scoped to each referrer", async () => {
+		const filesystem = createFs();
+		await filesystem.writeFile("/root/a/common/index.mjs", "export const onlyA = 1;");
+		await filesystem.writeFile(
+			"/root/a/sub/one.mjs",
+			'import { onlyA } from "../common/index.mjs"; export const one = onlyA;',
+		);
+		await filesystem.writeFile("/root/b/common/index.mjs", "export const onlyB = 2;");
+		await filesystem.writeFile(
+			"/root/b/sub/two.mjs",
+			'import { onlyB } from "../common/index.mjs"; export const two = onlyB;',
+		);
+
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({
+			filesystem,
+			permissions: allowAllFs,
+			onStdio: capture.onStdio,
+		});
+		const result = await proc.exec(
+			`
+	      import { one } from "/root/a/sub/one.mjs";
+	      import { two } from "/root/b/sub/two.mjs";
+	      console.log(one + ":" + two);
+	    `,
+			{ filePath: "/entry.mjs" },
+		);
+		expect(result.code).toBe(0);
+		expect(capture.stdout()).toBe("1:2\n");
+	});
+
 	it("drops console output by default without a hook", async () => {
 		proc = createTestNodeRuntime();
 		const result = await proc.exec(`console.log('hello'); console.error('oops');`);
@@ -273,6 +332,25 @@ describe("NodeRuntime", () => {
 	    `);
 		expect(result.code).toBe(0);
 		expect(capture.stdout().trim()).toBe("true 36 16");
+	});
+
+	it("exposes crypto.randomUUID through both CommonJS and ESM module surfaces", async () => {
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({ onStdio: capture.onStdio });
+		const result = await proc.exec(
+			`
+	      import * as cryptoNs from "node:crypto";
+	      const cjs = require("node:crypto");
+	      console.log(
+	        typeof cjs.randomUUID,
+	        typeof cryptoNs.randomUUID,
+	        typeof cryptoNs.default?.randomUUID,
+	      );
+	    `,
+			{ filePath: "/entry.mjs" },
+		);
+		expect(result.code).toBe(0);
+		expect(capture.stdout().trim()).toBe("function function function");
 	});
 
 	it("prevents sandbox override of host entropy bridge hooks", async () => {
@@ -943,6 +1021,62 @@ describe("NodeRuntime", () => {
 		expect(result.code).toBe(0);
 		expect(result).not.toHaveProperty("stdout");
 		expect(capture.stdout()).toBe("before\nside-effect\nafter\n");
+	});
+
+	it("falls back to a compat RegExp for unsupported RGI_Emoji property escapes", async () => {
+		proc = createTestNodeRuntime();
+		const result = await proc.run(`
+	      const emoji = new RegExp("^\\\\p{RGI_Emoji}$", "v");
+	      module.exports = {
+	        emoji: emoji.test("😀"),
+	        ascii: emoji.test("A"),
+	      };
+	    `);
+
+		expect(result.code).toBe(0);
+		expect(result.exports).toEqual({
+			emoji: true,
+			ascii: false,
+		});
+	});
+
+	it("loads imported ESM modules that use unicode-set regex literals", async () => {
+		const fs = createFs();
+		await fs.mkdir("/app");
+		await fs.writeFile(
+			"/app/unicode.mjs",
+			`
+	      const zeroWidthRegex = /^(?:\\p{Default_Ignorable_Code_Point}|\\p{Control}|\\p{Mark}|\\p{Surrogate})+$/v;
+	      const rgiEmojiRegex = /^\\p{RGI_Emoji}$/v;
+
+	      export const probe = {
+	        zeroWidth: zeroWidthRegex.test("\\u200D"),
+	        emoji: rgiEmojiRegex.test("😀"),
+	        ascii: rgiEmojiRegex.test("A"),
+	      };
+	    `,
+		);
+
+		proc = createTestNodeRuntime({
+			filesystem: fs,
+			permissions: allowAllFs,
+		});
+		const result = await proc.run(
+			`
+	      import { probe } from "./unicode.mjs";
+	      export default probe;
+	    `,
+			"/app/entry.mjs",
+		);
+
+		expect(result.code).toBe(0);
+		expect(result.exports).toEqual({
+			default: {
+				zeroWidth: true,
+				emoji: true,
+				ascii: false,
+			},
+		});
 	});
 
 	it("keeps CJS comment and string text from triggering ESM entry classification", async () => {
@@ -1637,6 +1771,67 @@ describe("NodeRuntime", () => {
 			expect(payload.mutableDescriptors[name]?.writable).toBe(true);
 			expect(payload.mutableDescriptors[name]?.configurable).toBe(true);
 		}
+	});
+
+	it("exposes global as a Node-compatible alias of globalThis", async () => {
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({
+			onStdio: capture.onStdio,
+		});
+		const result = await proc.exec(
+			`
+		      console.log(JSON.stringify({
+		        sameObject: global === globalThis,
+		        processAlias: global.process === process,
+		        bufferAlias: global.Buffer === Buffer,
+		      }));
+		    `,
+			{ filePath: "/entry.js" },
+		);
+		expect(result.code).toBe(0);
+		const payload = JSON.parse(capture.stdout().trim()) as {
+			sameObject: boolean;
+			processAlias: boolean;
+			bufferAlias: boolean;
+		};
+		expect(payload.sameObject).toBe(true);
+		expect(payload.processAlias).toBe(true);
+		expect(payload.bufferAlias).toBe(true);
+	});
+
+	it("preserves Promise subclass methods after stream/web installs promise tracking", async () => {
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({ onStdio: capture.onStdio });
+		const result = await proc.exec(`
+	      (async () => {
+	        require("node:stream/web");
+
+	        class ApiPromise extends Promise {
+	          withResponse() {
+	            return "ok";
+	          }
+	        }
+
+	        const request = new ApiPromise((resolve) => resolve(42));
+	        await request;
+	        console.log(JSON.stringify({
+	          constructorName: request.constructor?.name ?? null,
+	          protoName: Object.getPrototypeOf(request)?.constructor?.name ?? null,
+	          hasWithResponse: typeof request.withResponse,
+	          instanceofPromise: request instanceof Promise,
+	        }));
+	      })().catch((error) => {
+	        console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+	        process.exitCode = 1;
+	      });
+	    `);
+		expect(result.code).toBe(0);
+		expect(JSON.parse(capture.stdout().trim())).toEqual({
+			constructorName: "ApiPromise",
+			protoName: "ApiPromise",
+			hasWithResponse: "function",
+			instanceofPromise: true,
+		});
 	});
 
 	it("enforces shared cpuTimeLimitMs deadline during active-handle wait", async () => {
@@ -6097,6 +6292,179 @@ describe("NodeRuntime", () => {
 				});
 			});
 		}
+	});
+
+	it("keeps detached fetch requests alive until the response resolves", async () => {
+		const capture = createConsoleCapture();
+		const server = nodeHttp.createServer((_req, res) => {
+			setTimeout(() => {
+				res.writeHead(200, { "content-type": "text/plain" });
+				res.end("fetch-detached-ok");
+			}, 25);
+		});
+		await new Promise<void>((resolve, reject) => {
+			server.once("error", reject);
+			server.listen(0, "127.0.0.1", () => resolve());
+		});
+
+		const address = server.address();
+		if (!address || typeof address === "string") {
+			throw new Error("expected an inet listener address");
+		}
+
+		try {
+			proc = createTestNodeRuntime({
+				onStdio: capture.onStdio,
+				driver: createNodeDriver({
+					useDefaultNetwork: true,
+					permissions: { ...allowAllNetwork },
+				}),
+			});
+			const result = await proc.exec(`
+		      (async () => {
+		        const response = await fetch("http://127.0.0.1:${address.port}/");
+		        console.log(await response.text());
+		      })().catch((error) => {
+		        console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+		        process.exitCode = 1;
+		      });
+		    `);
+			expect(result.code).toBe(0);
+			expect(capture.stdout().trim()).toBe("fetch-detached-ok");
+		} finally {
+			await new Promise<void>((resolve, reject) => {
+				server.close((error) => {
+					if (error) reject(error);
+					else resolve();
+				});
+			});
+		}
+	});
+
+	it("forwards Headers instances through fetch request init", async () => {
+		const capture = createConsoleCapture();
+		const server = nodeHttp.createServer((req, res) => {
+			res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+			res.end(String(req.headers["x-probe-header"] ?? ""));
+		});
+		await new Promise<void>((resolve, reject) => {
+			server.once("error", reject);
+			server.listen(0, "127.0.0.1", () => resolve());
+		});
+
+		const address = server.address();
+		if (!address || typeof address === "string") {
+			throw new Error("expected an inet listener address");
+		}
+
+		try {
+			proc = createTestNodeRuntime({
+				onStdio: capture.onStdio,
+				driver: createNodeDriver({
+					useDefaultNetwork: true,
+					permissions: { ...allowAllNetwork },
+				}),
+			});
+			const result = await proc.exec(`
+		      (async () => {
+		        const headers = new Headers();
+		        headers.set("x-probe-header", "headers-instance-ok");
+		        const response = await fetch("http://127.0.0.1:${address.port}/", { headers });
+		        console.log(await response.text());
+		      })().catch((error) => {
+		        console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+		        process.exitCode = 1;
+		      });
+		    `);
+			expect(result.code).toBe(0);
+			expect(capture.stdout().trim()).toBe("headers-instance-ok");
+		} finally {
+			await new Promise<void>((resolve, reject) => {
+				server.close((error) => {
+					if (error) reject(error);
+					else resolve();
+				});
+			});
+		}
+	});
+
+	it("exposes buffered fetch response bodies as readable streams", async () => {
+		const capture = createConsoleCapture();
+		const server = nodeHttp.createServer((_req, res) => {
+			res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+			res.end("fetch-stream-body");
+		});
+		await new Promise<void>((resolve, reject) => {
+			server.once("error", reject);
+			server.listen(0, "127.0.0.1", () => resolve());
+		});
+
+		const address = server.address();
+		if (!address || typeof address === "string") {
+			throw new Error("expected an inet listener address");
+		}
+
+		try {
+			proc = createTestNodeRuntime({
+				onStdio: capture.onStdio,
+				driver: createNodeDriver({
+					useDefaultNetwork: true,
+					permissions: { ...allowAllNetwork },
+				}),
+			});
+			const result = await proc.exec(`
+		      (async () => {
+		        const response = await fetch("http://127.0.0.1:${address.port}/");
+		        const reader = response.body?.getReader();
+		        const first = reader ? await reader.read() : null;
+		        const text = first?.value ? new TextDecoder().decode(first.value) : "";
+		        console.log(JSON.stringify({
+		          hasBody: typeof response.body?.getReader === "function",
+		          done: first?.done ?? null,
+		          text,
+		        }));
+		      })().catch((error) => {
+		        console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+		        process.exitCode = 1;
+		      });
+		    `);
+			expect(result.code).toBe(0);
+			expect(JSON.parse(capture.stdout().trim())).toEqual({
+				hasBody: true,
+				done: false,
+				text: "fetch-stream-body",
+			});
+		} finally {
+			await new Promise<void>((resolve, reject) => {
+				server.close((error) => {
+					if (error) reject(error);
+					else resolve();
+				});
+			});
+		}
+	});
+
+	it("invokes process.stdout.write callbacks for empty flush writes", async () => {
+		const capture = createConsoleCapture();
+		proc = createTestNodeRuntime({
+			onStdio: capture.onStdio,
+		});
+		const result = await proc.exec(`
+	      (async () => {
+	        await new Promise((resolve, reject) => {
+	          process.stdout.write("", (error) => {
+	            if (error) reject(error);
+	            else resolve();
+	          });
+	        });
+	        console.log("flush-ok");
+	      })().catch((error) => {
+	        console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+	        process.exitCode = 1;
+	      });
+	    `);
+		expect(result.code).toBe(0);
+		expect(capture.stdout().trim()).toBe("flush-ok");
 	});
 
 	it("does not let http.get or net.connect reach host listeners when the standalone runtime omits the network adapter", async () => {

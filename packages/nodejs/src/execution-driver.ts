@@ -162,7 +162,63 @@ async function getSharedV8Runtime(): Promise<V8Runtime> {
 }
 
 // Minimal polyfills for APIs the bridge IIFE expects but the Rust V8 runtime doesn't provide.
+const REGEXP_COMPAT_POLYFILL = String.raw`
+if (typeof globalThis.RegExp === 'function' && !globalThis.RegExp.__secureExecRgiEmojiCompat) {
+  const NativeRegExp = globalThis.RegExp;
+  const RGI_EMOJI_PATTERN = '^\\p{RGI_Emoji}$';
+  const RGI_EMOJI_BASE_CLASS = '[\\u{00A9}\\u{00AE}\\u{203C}\\u{2049}\\u{2122}\\u{2139}\\u{2194}-\\u{21AA}\\u{231A}-\\u{23FF}\\u{24C2}\\u{25AA}-\\u{27BF}\\u{2934}-\\u{2935}\\u{2B05}-\\u{2B55}\\u{3030}\\u{303D}\\u{3297}\\u{3299}\\u{1F000}-\\u{1FAFF}]';
+  const RGI_EMOJI_KEYCAP = '[#*0-9]\\uFE0F?\\u20E3';
+  const RGI_EMOJI_FALLBACK_SOURCE =
+    '^(?:' +
+    RGI_EMOJI_KEYCAP +
+    '|\\p{Regional_Indicator}{2}|' +
+    RGI_EMOJI_BASE_CLASS +
+    '(?:\\uFE0F|\\u200D(?:' +
+    RGI_EMOJI_KEYCAP +
+    '|' +
+    RGI_EMOJI_BASE_CLASS +
+    ')|[\\u{1F3FB}-\\u{1F3FF}])*)$';
+  try {
+    new NativeRegExp(RGI_EMOJI_PATTERN, 'v');
+  } catch (error) {
+    if (String(error && error.message || error).includes('RGI_Emoji')) {
+      function CompatRegExp(pattern, flags) {
+        const normalizedPattern =
+          pattern instanceof NativeRegExp && flags === undefined
+            ? pattern.source
+            : String(pattern);
+        const normalizedFlags =
+          flags === undefined
+            ? (pattern instanceof NativeRegExp ? pattern.flags : '')
+            : String(flags);
+        try {
+          return new NativeRegExp(pattern, flags);
+        } catch (innerError) {
+          if (normalizedPattern === RGI_EMOJI_PATTERN && normalizedFlags === 'v') {
+            return new NativeRegExp(RGI_EMOJI_FALLBACK_SOURCE, 'u');
+          }
+          throw innerError;
+        }
+      }
+      Object.setPrototypeOf(CompatRegExp, NativeRegExp);
+      CompatRegExp.prototype = NativeRegExp.prototype;
+      Object.defineProperty(CompatRegExp.prototype, 'constructor', {
+        value: CompatRegExp,
+        writable: true,
+        configurable: true,
+      });
+      CompatRegExp.__secureExecRgiEmojiCompat = true;
+      globalThis.RegExp = CompatRegExp;
+    }
+  }
+}
+`;
+
 const V8_POLYFILLS = `
+if (typeof global === 'undefined') {
+  globalThis.global = globalThis;
+}
+${REGEXP_COMPAT_POLYFILL}
 if (typeof SharedArrayBuffer === 'undefined') {
   globalThis.SharedArrayBuffer = class SharedArrayBuffer extends ArrayBuffer {};
   var _abBL = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength');
@@ -563,7 +619,18 @@ export class NodeExecutionDriver implements RuntimeDriver {
 	get unsafeIsolate(): unknown { return null; }
 
 	private hasManagedResources(): boolean {
+		const hasBridgeHandles =
+			this.pid !== undefined &&
+			this.processTable !== undefined &&
+			(() => {
+				try {
+					return this.processTable.getHandles(this.pid!).size > 0;
+				} catch {
+					return false;
+				}
+			})();
 		return (
+			hasBridgeHandles ||
 			this.state.pendingHttpServerStarts.count > 0 ||
 			this.state.activeHttpClientRequests.count > 0 ||
 			this.state.activeHttpServerIds.size > 0 ||

@@ -15,6 +15,10 @@ const PI_CONFIG_ENTRY = path.resolve(
 	SECURE_EXEC_ROOT,
 	"node_modules/@mariozechner/pi-coding-agent/dist/config.js",
 );
+const PI_SDK_ENTRY = path.resolve(
+	SECURE_EXEC_ROOT,
+	"node_modules/@mariozechner/pi-coding-agent/dist/index.js",
+);
 
 function skipUnlessPiInstalled(): string | false {
 	return existsSync(PI_CONFIG_ENTRY)
@@ -82,10 +86,11 @@ describe.skipIf(skipUnlessPiInstalled())("Pi SDK bootstrap in NodeRuntime", () =
             themesDirExists: fs.existsSync(themesDir),
           }));
         } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
           console.log(JSON.stringify({
             ok: false,
-            error: String(error),
-            stack: error && typeof error === "object" && "stack" in error ? error.stack : undefined,
+            error: errorMessage.split("\\n")[0].slice(0, 600),
+            code: error && typeof error === "object" && "code" in error ? error.code : undefined,
           }));
           process.exitCode = 1;
         }
@@ -113,5 +118,53 @@ describe.skipIf(skipUnlessPiInstalled())("Pi SDK bootstrap in NodeRuntime", () =
 		expect(String(payload.themesDir)).toMatch(
 			/node_modules\/@mariozechner\/pi-coding-agent\/dist\/modes\/interactive\/theme$/,
 		);
+	});
+
+	it("imports the Pi SDK after loader and unicode-regex compatibility fixes", async () => {
+		const stdout: string[] = [];
+		const stderr: string[] = [];
+
+		runtime = new NodeRuntime({
+			onStdio: (event) => {
+				if (event.channel === "stdout") stdout.push(event.message);
+				if (event.channel === "stderr") stderr.push(event.message);
+			},
+			systemDriver: createNodeDriver({
+				moduleAccess: { cwd: SECURE_EXEC_ROOT },
+				permissions: allowAll,
+			}),
+			runtimeDriverFactory: createNodeRuntimeDriverFactory(),
+		});
+
+		const result = await runtime.exec(
+			`
+      (async () => {
+        try {
+          const pi = await import(${JSON.stringify(PI_SDK_ENTRY)});
+          console.log(JSON.stringify({
+            ok: true,
+            createAgentSessionType: typeof pi.createAgentSession,
+            runPrintModeType: typeof pi.runPrintMode,
+          }));
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          console.log(JSON.stringify({
+            ok: false,
+            error: errorMessage.split("\\n")[0].slice(0, 600),
+            code: error && typeof error === "object" && "code" in error ? error.code : undefined,
+          }));
+          process.exitCode = 1;
+        }
+      })();
+    `,
+			{ cwd: SECURE_EXEC_ROOT },
+		);
+
+		expect(result.code, stderr.join("")).toBe(0);
+
+		const payload = parseLastJsonLine(stdout.join(""));
+		expect(payload.ok).toBe(true);
+		expect(payload.createAgentSessionType).toBe("function");
+		expect(payload.runPrintModeType).toBe("function");
 	});
 });
