@@ -864,7 +864,7 @@
         "Typecheck passes"
       ],
       "priority": 39,
-      "passes": false,
+      "passes": true,
       "notes": "Current runner logic only special-cases category=vacuous-skip, but several pass entries already admit they only pass via self-skip."
     },
     {

@@ -5378,7 +5378,7 @@
     },
     "test-whatwg-events-add-event-listener-options-passive.js": {
       "reason": "vendored file self-skips its remaining passive-listener assertions with common.skip('TODO: passive listeners is still broken')",
-      "category": "vacuous-skip",
+      "category": "implementation-gap",
       "expected": "skip"
     },
     "test-zlib-brotli-16GB.js": {

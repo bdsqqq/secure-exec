@@ -24,13 +24,13 @@ icon: "chart-bar"
 
 | Category | Tests |
 | --- | --- |
-| implementation-gap | 913 |
+| implementation-gap | 914 |
 | unsupported-module | 755 |
 | requires-v8-flags | 236 |
 | requires-exec-path | 200 |
 | unsupported-api | 154 |
 | test-infra | 97 |
-| vacuous-skip | 51 |
+| vacuous-skip | 50 |
 | native-addon | 3 |
 | security-constraint | 2 |
 
@@ -250,7 +250,7 @@ icon: "chart-bar"
 
 ## Expectations Detail
 
-### implementation-gap (651 entries)
+### implementation-gap (652 entries)
 
 **Glob patterns:**
 
@@ -258,7 +258,7 @@ icon: "chart-bar"
 - `test-http2-!(allow-http1|client-request-options-errors|client-setLocalWindowSize|error-order|goaway-delayed-request|goaway-opaquedata|misbehaving-flow-control|misbehaving-flow-control-paused|request-response-proto|respond-file-filehandle|server-push-stream|server-push-stream-errors-args|server-push-stream-head|server-setLocalWindowSize|session-settings|status-code-invalid|update-settings|window-size).js` — outside the landed allowHTTP1, push/settings, request-response, and window-size slices, the remaining http2 suite still fails on compatibility wrappers, secure-session bootstrap, multiplexing/teardown, and file-response helper gaps
 - `test-https-*.js` — https conformance still hangs on most TLS-backed client/server lifecycle and certificate-handling paths, so the remaining broad slice is skipped pending exact inventory
 
-*648 individual tests — see expectations.json for full list.*
+*649 individual tests — see expectations.json for full list.*
 
 ### unsupported-module (208 entries)
 
@@ -876,13 +876,12 @@ icon: "chart-bar"
 
 </details>
 
-### vacuous-skip (51 entries)
+### vacuous-skip (50 entries)
 
-<details><summary>51 individual tests</summary>
+<details><summary>50 individual tests</summary>
 
 | Test | Reason |
 | --- | --- |
-| `test-whatwg-events-add-event-listener-options-passive.js` | vendored file self-skips its remaining passive-listener assertions with common.skip('TODO: passive listeners is still broken') |
 | `test-crypto-aes-wrap.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
 | `test-crypto-des3-wrap.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |
 | `test-crypto-dh-shared.js` | vacuous pass — test self-skips via common.skip() because common.hasCrypto is false |

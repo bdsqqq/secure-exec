@@ -29,6 +29,17 @@ Changes affecting bridged or polyfilled Node APIs MUST keep `docs/nodejs-compati
 - **WHEN** `docs/nodejs-compatibility.mdx` is updated
 - **THEN** the page MUST retain an explicit target Node version statement at the top
 
+### Requirement: Node Conformance Vacuous Self-Skips Must Not Inflate Genuine Pass Counts
+Node conformance expectation and reporting flows SHALL reserve `category: "vacuous-skip"` for expected-pass vendored tests that exit `0` only because the test self-skipped without exercising functionality.
+
+#### Scenario: Self-skipping vendored file is treated as vacuous pass
+- **WHEN** an expectation is marked `expected: "pass"` only because the vendored test self-skips
+- **THEN** it MUST use `category: "vacuous-skip"` and reporting MUST exclude it from the genuine-pass count
+
+#### Scenario: Intentionally skipped file is still a skip
+- **WHEN** secure-exec keeps a vendored file under `expected: "skip"` because functionality remains broken or intentionally unsupported
+- **THEN** that entry MUST stay under its real failure category rather than `vacuous-skip`
+
 ### Requirement: Node Compatibility Target Version Tracks Test Type Baseline
 The runtime compatibility target MUST align with the `@types/node` package major version used to validate secure-exec tests and type checks. Compatibility documentation and spec references MUST describe the same target major Node line.
 

@@ -1472,7 +1472,7 @@
     }
   },
   "categories": {
-    "implementation-gap": 913,
+    "implementation-gap": 914,
     "native-addon": 3,
     "requires-exec-path": 200,
     "requires-v8-flags": 236,
@@ -1480,6 +1480,6 @@
     "test-infra": 97,
     "unsupported-api": 154,
     "unsupported-module": 755,
-    "vacuous-skip": 51
+    "vacuous-skip": 50
   }
 }

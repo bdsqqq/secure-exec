@@ -1,15 +1,16 @@
+import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { minimatch } from "minimatch";
 import { describe, expect, it } from "vitest";
-import {
-	allowAll,
-	createInMemoryFileSystem,
-	createNodeDriver,
-	NodeRuntime,
-} from "../../src/index.js";
+import { allowAll, createInMemoryFileSystem } from "../../src/index.js";
 import { createTestNodeRuntime } from "../test-utils.js";
+import {
+	type ExpectationsFile,
+	isVacuousPassExpectation,
+	resolveExpectation,
+	validateExpectations,
+} from "./expectation-utils.ts";
 
 const TEST_TIMEOUT_MS = 30_000;
 
@@ -17,40 +18,6 @@ const CONFORMANCE_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PARALLEL_DIR = path.join(CONFORMANCE_ROOT, "parallel");
 const COMMON_DIR = path.join(CONFORMANCE_ROOT, "common");
 const FIXTURES_DIR = path.join(CONFORMANCE_ROOT, "fixtures");
-
-// Valid expectation categories
-const VALID_CATEGORIES = new Set([
-	"unsupported-module",
-	"unsupported-api",
-	"implementation-gap",
-	"security-constraint",
-	"requires-v8-flags",
-	"requires-exec-path",
-	"native-addon",
-	"platform-specific",
-	"test-infra",
-	"vacuous-skip",
-]);
-
-// Expectation entry shape
-// "pass" overrides a glob pattern for tests that actually pass
-type ExpectationEntry = {
-	expected: "skip" | "fail" | "pass";
-	reason: string;
-	category: string;
-	glob?: boolean;
-	issue?: string;
-};
-
-type ExpectationsFile = {
-	nodeVersion: string;
-	sourceCommit: string;
-	lastUpdated: string;
-	expectations: Record<string, ExpectationEntry>;
-};
-
-// Resolved expectation with the matched key for reporting
-type ResolvedExpectation = ExpectationEntry & { matchedKey: string };
 
 // Extract module name from test filename for grouping
 // e.g. test-buffer-alloc.js -> buffer, test-path-resolve.js -> path
@@ -78,7 +45,7 @@ async function loadFixtureFiles(): Promise<Map<string, Uint8Array>> {
 	const files = new Map<string, Uint8Array>();
 
 	async function walk(dir: string, vfsBase: string): Promise<void> {
-		let entries;
+		let entries: Dirent[];
 		try {
 			entries = await readdir(dir, { withFileTypes: true });
 		} catch {
@@ -102,7 +69,7 @@ async function loadFixtureFiles(): Promise<Map<string, Uint8Array>> {
 
 // Discover all test-*.js files in the parallel directory
 async function discoverTests(): Promise<string[]> {
-	let entries;
+	let entries: string[];
 	try {
 		entries = await readdir(PARALLEL_DIR);
 	} catch {
@@ -113,33 +80,15 @@ async function discoverTests(): Promise<string[]> {
 		.sort();
 }
 
-// Resolve expectation for a given test filename
-function resolveExpectation(
-	filename: string,
-	expectations: Record<string, ExpectationEntry>,
-): ResolvedExpectation | null {
-	// Direct match first
-	if (expectations[filename]) {
-		return { ...expectations[filename], matchedKey: filename };
-	}
-
-	// Glob patterns
-	for (const [key, entry] of Object.entries(expectations)) {
-		if (entry.glob && minimatch(filename, key)) {
-			return { ...entry, matchedKey: key };
-		}
-	}
-
-	return null;
-}
-
 // Load expectations
 async function loadExpectations(): Promise<ExpectationsFile> {
 	const content = await readFile(
 		path.join(CONFORMANCE_ROOT, "expectations.json"),
 		"utf8",
 	);
-	return JSON.parse(content) as ExpectationsFile;
+	const expectationsData = JSON.parse(content) as ExpectationsFile;
+	validateExpectations(expectationsData.expectations);
+	return expectationsData;
 }
 
 // Run a single test file in the secure-exec sandbox
@@ -194,8 +143,10 @@ async function runTestInSandbox(
 			env: {},
 		});
 
-		const stdout = capturedStdout.join("\n") + (capturedStdout.length > 0 ? "\n" : "");
-		const stderr = capturedStderr.join("\n") + (capturedStderr.length > 0 ? "\n" : "");
+		const stdout =
+			capturedStdout.join("\n") + (capturedStdout.length > 0 ? "\n" : "");
+		const stderr =
+			capturedStderr.join("\n") + (capturedStderr.length > 0 ? "\n" : "");
 
 		return {
 			code: result.code,
@@ -208,9 +159,7 @@ async function runTestInSandbox(
 }
 
 // Group tests by module name for readable output
-function groupByModule(
-	testFiles: string[],
-): Map<string, string[]> {
+function groupByModule(testFiles: string[]): Map<string, string[]> {
 	const groups = new Map<string, string[]>();
 	for (const file of testFiles) {
 		const module = extractModuleName(file);
@@ -219,7 +168,9 @@ function groupByModule(
 		groups.set(module, list);
 	}
 	// Sort groups by module name
-	return new Map([...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])));
+	return new Map(
+		[...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])),
+	);
 }
 
 // Main test suite
@@ -278,10 +229,6 @@ describe("node.js conformance tests", () => {
 		return;
 	}
 
-	// Track vacuous passes for summary
-	let vacuousPassCount = 0;
-	let genuinePassCount = 0;
-
 	for (const [moduleName, files] of grouped) {
 		describe(`node/${moduleName}`, () => {
 			for (const testFile of files) {
@@ -315,7 +262,7 @@ describe("node.js conformance tests", () => {
 							if (result.code === 0) {
 								throw new Error(
 									`Test ${testFile} now passes! Remove its expectation ` +
-									`(matched key: "${expectation.matchedKey}") from expectations.json`,
+										`(matched key: "${expectation.matchedKey}") from expectations.json`,
 								);
 							}
 							// Expected to fail — test passes (the failure is expected)
@@ -326,8 +273,7 @@ describe("node.js conformance tests", () => {
 				}
 
 				// Vacuous pass: test self-skips without exercising functionality
-				if (expectation?.expected === "pass" && expectation.category === "vacuous-skip") {
-					vacuousPassCount++;
+				if (isVacuousPassExpectation(expectation)) {
 					it(
 						`${testFile} [vacuous self-skip]`,
 						async () => {
@@ -346,8 +292,8 @@ describe("node.js conformance tests", () => {
 							expect(
 								result.code,
 								`Vacuous test ${testFile} failed with exit code ${result.code}.\n` +
-								`stdout: ${result.stdout.slice(0, 500)}\n` +
-								`stderr: ${result.stderr.slice(0, 500)}`,
+									`stdout: ${result.stdout.slice(0, 500)}\n` +
+									`stderr: ${result.stderr.slice(0, 500)}`,
 							).toBe(0);
 						},
 						TEST_TIMEOUT_MS,
@@ -356,7 +302,6 @@ describe("node.js conformance tests", () => {
 				}
 
 				// No expectation or pass override: genuine pass — must pass
-				genuinePassCount++;
 				it(
 					testFile,
 					async () => {
@@ -375,8 +320,8 @@ describe("node.js conformance tests", () => {
 						expect(
 							result.code,
 							`Test ${testFile} failed with exit code ${result.code}.\n` +
-							`stdout: ${result.stdout.slice(0, 500)}\n` +
-							`stderr: ${result.stderr.slice(0, 500)}`,
+								`stdout: ${result.stdout.slice(0, 500)}\n` +
+								`stderr: ${result.stderr.slice(0, 500)}`,
 						).toBe(0);
 					},
 					TEST_TIMEOUT_MS,

@@ -18,7 +18,13 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { minimatch } from "minimatch";
+import {
+	isVacuousPassExpectation,
+	resolveExpectation,
+	type ExpectationEntry,
+	type ExpectationsFile,
+	validateExpectations,
+} from "../packages/secure-exec/tests/node-conformance/expectation-utils.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -62,21 +68,6 @@ const docsOutputPath = resolve(values["docs-output"]!);
 
 // ── Types ───────────────────────────────────────────────────────────────
 
-interface ExpectationEntry {
-	expected: "skip" | "fail" | "pass";
-	reason: string;
-	category: string;
-	glob?: boolean;
-	issue?: string;
-}
-
-interface ExpectationsFile {
-	nodeVersion: string;
-	sourceCommit: string;
-	lastUpdated: string;
-	expectations: Record<string, ExpectationEntry>;
-}
-
 interface ModuleStats {
 	total: number;
 	pass: number;
@@ -111,26 +102,12 @@ function extractModuleName(filename: string): string {
 	return base.split("-")[0] ?? "other";
 }
 
-function resolveExpectation(
-	filename: string,
-	expectations: Record<string, ExpectationEntry>,
-): (ExpectationEntry & { matchedKey: string }) | null {
-	if (expectations[filename]) {
-		return { ...expectations[filename], matchedKey: filename };
-	}
-	for (const [key, entry] of Object.entries(expectations)) {
-		if (entry.glob && minimatch(filename, key)) {
-			return { ...entry, matchedKey: key };
-		}
-	}
-	return null;
-}
-
 // ── Load data ───────────────────────────────────────────────────────────
 
 const expectationsData: ExpectationsFile = JSON.parse(
 	readFileSync(expectationsPath, "utf-8"),
 );
+validateExpectations(expectationsData.expectations);
 
 let testFiles: string[];
 try {
@@ -176,10 +153,7 @@ for (const file of testFiles) {
 			exp.category,
 			(categories.get(exp.category) ?? 0) + 1,
 		);
-	} else if (
-		exp?.expected === "pass" &&
-		exp.category === "vacuous-skip"
-	) {
+	} else if (isVacuousPassExpectation(exp)) {
 		stats.pass++;
 		stats.vacuousPass++;
 		totalPass++;

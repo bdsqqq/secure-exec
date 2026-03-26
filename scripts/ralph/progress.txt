@@ -1,4 +1,5 @@
 ## Codebase Patterns
+- Reserve `category: "vacuous-skip"` for `expected: "pass"` self-skips only; if a vendored file remains `expected: "skip"` because behavior is still broken, keep a real failure category like `implementation-gap` so conformance category totals stay honest.
 - Kernel-owned `SocketTable` instances must validate socket owner PIDs against the shared process table; only standalone/internal tables should omit that validation and stay opt-in.
 - `packages/wasmvm/src/driver.ts` resolves the worker entry to `packages/wasmvm/dist/kernel-worker.js` unless a sibling `src/kernel-worker.js` exists, so `packages/wasmvm/src/kernel-worker.ts` changes are not live until `pnpm --filter @secure-exec/wasmvm build` refreshes the worker bundle.
 - Replace active Node loader rewrites with parser-backed transforms: use `es-module-lexer` for `.js` module-syntax detection and `esbuild` CJS transforms with `supported: { "dynamic-import": false }` plus `define: { "import.meta.url": "__filename" }` so `require()` keeps module-relative `import()` behavior without touching strings/comments.
@@ -42,6 +43,17 @@
 - Vendored Node conformance helpers in `packages/secure-exec/tests/node-conformance/common/` must include sibling support files like `countdown.js`; missing common shims can masquerade as runtime regressions across many unrelated tests
 - Raw loopback `net.connect()` traffic into sandbox `http.createServer()` is parsed in `packages/nodejs/src/bridge/network.ts`; ignore leading `\r\n` between pipelined requests and only restart parsing on new socket writes, or leftover CRLF bytes can spin the parser forever
 - `http.Agent` pool progress under `maxTotalSockets` depends on evicting idle free sockets from other origins when the total socket budget is exhausted; otherwise cross-origin queues can deadlock even if per-origin logic looks correct
+
+## [2026-03-26 10:53 PDT] - US-039
+- Corrected Node conformance vacuous-pass accounting by centralizing expectation classification in a shared helper that both `runner.test.ts` and `scripts/generate-node-conformance-report.ts` use.
+- Reclassified `test-whatwg-events-add-event-listener-options-passive.js` from `vacuous-skip` to `implementation-gap` because it is intentionally `expected: "skip"` rather than a self-skipping pass, then regenerated the JSON/docs conformance report outputs.
+- Added regression coverage for vacuous-pass detection, stale self-skip reasons, invalid `vacuous-skip` usage on non-pass expectations, and direct-vs-glob expectation precedence; updated governance guidance and root agent guidance to preserve the classification rule.
+- Files changed: `.agent/contracts/compatibility-governance.md`, `AGENTS.md`, `CLAUDE.md`, `packages/secure-exec/tests/node-conformance/expectation-utils.ts`, `packages/secure-exec/tests/node-conformance/expectation-utils.test.ts`, `packages/secure-exec/tests/node-conformance/runner.test.ts`, `packages/secure-exec/tests/node-conformance/expectations.json`, `packages/secure-exec/tests/node-conformance/conformance-report.json`, `docs/nodejs-conformance-report.mdx`, `scripts/generate-node-conformance-report.ts`, `scripts/ralph/prd.json`, `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+  - The Node conformance runner and the static report generator can drift if they each reimplement expectation classification; keep vacuous-pass logic in one shared helper.
+  - `category: "vacuous-skip"` is only valid for `expected: "pass"` self-skips; an intentionally skipped vendored file still needs a real failure category or the vacuous bucket and docs totals become misleading.
+  - A narrow Vitest run against `runner.test.ts` with `--testNamePattern` is enough to validate top-level expectation loading/validation without paying for the full vendored suite.
+---
 
 ## [2026-03-26 09:30 PDT] - US-035
 - Implemented standalone network-capability gating by keeping the internal `SocketTable` for loopback routing while only provisioning `createNodeHostNetworkAdapter()` when `SystemDriver.network` is explicitly configured.
