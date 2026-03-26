@@ -518,22 +518,45 @@ class FileHandle {
   }
 
   async read(
-    buffer: NodeJS.ArrayBufferView | null,
+    buffer:
+      | NodeJS.ArrayBufferView
+      | {
+          buffer?: NodeJS.ArrayBufferView | null;
+          offset?: number;
+          length?: number;
+          position?: number | null;
+        }
+      | null,
     offset?: number,
     length?: number,
     position?: number | null
   ): Promise<{ bytesRead: number; buffer: NodeJS.ArrayBufferView }> {
     const handle = FileHandle._assertHandle(this);
     let target = buffer;
+    let readOffset = offset;
+    let readLength = length;
+    let readPosition = position;
+    if (target !== null && typeof target === "object" && !ArrayBuffer.isView(target)) {
+      readOffset = target.offset;
+      readLength = target.length;
+      readPosition = target.position;
+      target = target.buffer ?? null;
+    }
     if (target === null) {
       target = Buffer.alloc(FILE_HANDLE_READ_BUFFER_BYTES);
     }
     if (!ArrayBuffer.isView(target)) {
       throw createInvalidArgTypeError("buffer", "an instance of ArrayBufferView", target);
     }
-    const readOffset = offset ?? 0;
-    const readLength = length ?? (target.byteLength - readOffset);
-    const bytesRead = fs.readSync(handle.fd, target, readOffset, readLength, position ?? null);
+    const normalizedOffset = readOffset ?? 0;
+    const normalizedLength = readLength ?? (target.byteLength - normalizedOffset);
+    const bytesRead = fs.readSync(
+      handle.fd,
+      target,
+      normalizedOffset,
+      normalizedLength,
+      readPosition ?? null,
+    );
     return { bytesRead, buffer: target };
   }
 

@@ -108,6 +108,18 @@ Bridge/runtime WHATWG globals for text encoding and DOM-style events SHALL prese
 - **WHEN** sandboxed code uses global `Event`, `CustomEvent`, and `EventTarget` with function listeners, object listeners, constructor option bags, or `AbortSignal` listener removal
 - **THEN** listener `this` binding, constructor option access order, dispatch return values, and abort-driven listener teardown MUST remain Node-compatible for the exercised WHATWG event cases
 
+### Requirement: Web Streams And MIME Polyfills Preserve Shared Node-Compatible Surfaces
+Bridge/runtime Web Streams and MIME polyfills SHALL preserve the Node-observable constructor identity, CommonJS loading, and helper-module behavior that vendored WHATWG conformance tests assert.
+
+#### Scenario: `stream/web` and internal Web Streams helpers load through CJS-compatible custom polyfills
+- **WHEN** sandboxed code calls `require('stream/web')` or vendored helpers such as `require('internal/webstreams/readablestream')`, `require('internal/webstreams/adapters')`, or `require('internal/worker/js_transferable')`
+- **THEN** the runtime MUST resolve those modules through custom polyfill entry points that can be evaluated by the CommonJS loader without raw ESM `export` syntax failures
+- **AND** global constructors like `ReadableStream`, `WritableStream`, `TransformStream`, `CompressionStream`, and `DecompressionStream` MUST share identity with the exports returned from `require('stream/web')`
+
+#### Scenario: `util.MIMEType` and `util.MIMEParams` share the internal MIME helper behavior
+- **WHEN** sandboxed code reads `require('util').MIMEType` or `require('util').MIMEParams`
+- **THEN** the runtime MUST source those constructors from the shared `internal/mime` helper so parsing, serialization, and parameter mutation preserve Node-compatible behavior
+
 ### Requirement: Cryptographic Randomness Bridge Uses Host CSPRNG
 Bridge-provided randomness for global `crypto` APIs MUST delegate to host `node:crypto` primitives and MUST NOT use isolate-local pseudo-random fallbacks such as `Math.random()`.
 

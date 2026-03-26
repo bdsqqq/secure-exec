@@ -753,6 +753,47 @@
         globalThis.EventTarget = EventTarget;
       })();
 
+      (function installWebStreamsGlobals() {
+        if (typeof globalThis.ReadableStream !== 'undefined') {
+          return;
+        }
+        if (typeof _loadPolyfill === 'undefined') {
+          return;
+        }
+
+        const polyfillCode = _loadPolyfill.applySyncPromise(undefined, ['stream/web']);
+        if (polyfillCode === null) {
+          return;
+        }
+
+        const webStreams = Function('"use strict"; return (' + polyfillCode + ');')();
+        const names = [
+          'ReadableStream',
+          'ReadableStreamDefaultReader',
+          'ReadableStreamBYOBReader',
+          'ReadableStreamBYOBRequest',
+          'ReadableByteStreamController',
+          'ReadableStreamDefaultController',
+          'TransformStream',
+          'TransformStreamDefaultController',
+          'WritableStream',
+          'WritableStreamDefaultWriter',
+          'WritableStreamDefaultController',
+          'ByteLengthQueuingStrategy',
+          'CountQueuingStrategy',
+          'TextEncoderStream',
+          'TextDecoderStream',
+          'CompressionStream',
+          'DecompressionStream',
+        ];
+
+        for (const name of names) {
+          if (typeof webStreams?.[name] !== 'undefined') {
+            globalThis[name] = webStreams[name];
+          }
+        }
+      })();
+
       // Patch known polyfill gaps in one place after evaluation.
       function _patchPolyfill(name, result) {
         if ((typeof result !== 'object' && typeof result !== 'function') || result === null) {
@@ -785,11 +826,23 @@
             result.kStringMaxLength = maxStringLength;
           }
 
-          const BufferCtor = result.Buffer;
+          var BufferCtor = result.Buffer;
+          if (
+            typeof globalThis.Buffer === 'function' &&
+            globalThis.Buffer !== BufferCtor
+          ) {
+            BufferCtor = globalThis.Buffer;
+            result.Buffer = BufferCtor;
+          } else if (typeof globalThis.Buffer !== 'function' && typeof BufferCtor === 'function') {
+            globalThis.Buffer = BufferCtor;
+          }
           if (
             (typeof BufferCtor === 'function' || typeof BufferCtor === 'object') &&
             BufferCtor !== null
           ) {
+            if (typeof result.SlowBuffer !== 'function') {
+              result.SlowBuffer = BufferCtor;
+            }
             if (typeof BufferCtor.kMaxLength !== 'number') {
               BufferCtor.kMaxLength = maxLength;
             }
@@ -861,6 +914,29 @@
         }
 
         if (name === 'util') {
+          if (typeof result.types === 'undefined' && typeof _requireFrom === 'function') {
+            try {
+              result.types = _requireFrom('util/types', '/');
+            } catch {
+              // Keep the util polyfill usable even if the util/types helper fails to load.
+            }
+          }
+          if (
+            (typeof result.MIMEType === 'undefined' || typeof result.MIMEParams === 'undefined') &&
+            typeof _requireFrom === 'function'
+          ) {
+            try {
+              const mimeModule = _requireFrom('internal/mime', '/');
+              if (typeof result.MIMEType === 'undefined') {
+                result.MIMEType = mimeModule.MIMEType;
+              }
+              if (typeof result.MIMEParams === 'undefined') {
+                result.MIMEParams = mimeModule.MIMEParams;
+              }
+            } catch {
+              // Keep the util polyfill usable even if the MIME helper fails to load.
+            }
+          }
           if (
             typeof result.inspect === 'function' &&
             typeof result.inspect.custom === 'undefined'
@@ -983,7 +1059,29 @@
         }
 
         if (name === 'stream') {
+          const getWebStreamsState = function() {
+            return globalThis.__secureExecWebStreams || null;
+          };
+          if (typeof result.isReadable !== 'function') {
+            result.isReadable = function(stream) {
+              const stateKey = getWebStreamsState() && getWebStreamsState().kState;
+              return Boolean(stateKey && stream && stream[stateKey] && stream[stateKey].state === 'readable');
+            };
+          }
+          if (typeof result.isErrored !== 'function') {
+            result.isErrored = function(stream) {
+              const stateKey = getWebStreamsState() && getWebStreamsState().kState;
+              return Boolean(stateKey && stream && stream[stateKey] && stream[stateKey].state === 'errored');
+            };
+          }
+          if (typeof result.isDisturbed !== 'function') {
+            result.isDisturbed = function(stream) {
+              const stateKey = getWebStreamsState() && getWebStreamsState().kState;
+              return Boolean(stateKey && stream && stream[stateKey] && stream[stateKey].disturbed === true);
+            };
+          }
           const ReadableCtor = result.Readable;
+          const WritableCtor = result.Writable;
           const readableFrom =
             typeof ReadableCtor === 'function' ? ReadableCtor.from : undefined;
           const readableFromSource =
@@ -1031,6 +1129,30 @@
               });
               return readable;
             };
+          }
+          if (
+            typeof ReadableCtor === 'function' &&
+            !Object.getOwnPropertyDescriptor(ReadableCtor.prototype, 'readableObjectMode')
+          ) {
+            Object.defineProperty(ReadableCtor.prototype, 'readableObjectMode', {
+              configurable: true,
+              enumerable: false,
+              get() {
+                return Boolean(this?._readableState?.objectMode);
+              },
+            });
+          }
+          if (
+            typeof WritableCtor === 'function' &&
+            !Object.getOwnPropertyDescriptor(WritableCtor.prototype, 'writableObjectMode')
+          ) {
+            Object.defineProperty(WritableCtor.prototype, 'writableObjectMode', {
+              configurable: true,
+              enumerable: false,
+              get() {
+                return Boolean(this?._writableState?.objectMode);
+              },
+            });
           }
           return result;
         }
@@ -3142,6 +3264,27 @@
         // directly instead of Stream. Insert Stream.prototype into the chain so
         // `passThrough instanceof Stream` works (node-fetch, undici, etc. depend on this).
         if (name === 'stream') {
+          var getWebStreamsState = function() {
+            return globalThis.__secureExecWebStreams || null;
+          };
+          if (typeof result.isReadable !== 'function') {
+            result.isReadable = function(stream) {
+              var stateKey = getWebStreamsState() && getWebStreamsState().kState;
+              return Boolean(stateKey && stream && stream[stateKey] && stream[stateKey].state === 'readable');
+            };
+          }
+          if (typeof result.isErrored !== 'function') {
+            result.isErrored = function(stream) {
+              var stateKey = getWebStreamsState() && getWebStreamsState().kState;
+              return Boolean(stateKey && stream && stream[stateKey] && stream[stateKey].state === 'errored');
+            };
+          }
+          if (typeof result.isDisturbed !== 'function') {
+            result.isDisturbed = function(stream) {
+              var stateKey = getWebStreamsState() && getWebStreamsState().kState;
+              return Boolean(stateKey && stream && stream[stateKey] && stream[stateKey].disturbed === true);
+            };
+          }
           if (
             typeof result === 'function' &&
             result.prototype &&
@@ -3160,6 +3303,30 @@
               Object.setPrototypeOf(streamProto, currentParent);
               Object.setPrototypeOf(readableProto, streamProto);
             }
+          }
+          if (
+            typeof result.Readable === 'function' &&
+            !Object.getOwnPropertyDescriptor(result.Readable.prototype, 'readableObjectMode')
+          ) {
+            Object.defineProperty(result.Readable.prototype, 'readableObjectMode', {
+              configurable: true,
+              enumerable: false,
+              get: function() {
+                return Boolean(this && this._readableState && this._readableState.objectMode);
+              },
+            });
+          }
+          if (
+            typeof result.Writable === 'function' &&
+            !Object.getOwnPropertyDescriptor(result.Writable.prototype, 'writableObjectMode')
+          ) {
+            Object.defineProperty(result.Writable.prototype, 'writableObjectMode', {
+              configurable: true,
+              enumerable: false,
+              get: function() {
+                return Boolean(this && this._writableState && this._writableState.objectMode);
+              },
+            });
           }
           return result;
         }

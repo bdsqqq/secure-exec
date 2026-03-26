@@ -55,6 +55,7 @@ import {
 	buildKernelHandleDispatchHandlers,
 	buildKernelTimerDispatchHandlers,
 	buildModuleLoadingBridgeHandlers,
+	buildMimeBridgeHandlers,
 	buildTimerBridgeHandlers,
 	buildFsBridgeHandlers,
 	buildKernelFdBridgeHandlers,
@@ -818,6 +819,7 @@ export class NodeExecutionDriver implements RuntimeDriver {
 						onPtySetRawMode: s.onPtySetRawMode,
 						stdinIsTTY: s.processConfig.stdinIsTTY,
 					}),
+					...buildMimeBridgeHandlers(),
 					// Kernel FD table handlers
 					...kernelFdResult.handlers,
 					...kernelTimerDispatchHandlers,

@@ -7,6 +7,7 @@ import * as net from "node:net";
 import * as http from "node:http";
 import * as http2 from "node:http2";
 import * as tls from "node:tls";
+import * as hostUtil from "node:util";
 import { Duplex, PassThrough } from "node:stream";
 import { readFileSync, realpathSync, existsSync } from "node:fs";
 import { dirname as pathDirname, join as pathJoin, resolve as pathResolve } from "node:path";
@@ -3354,6 +3355,42 @@ export function buildTimerBridgeHandlers(deps: TimerBridgeDeps): BridgeHandlers 
 	};
 
 	return handlers;
+}
+
+function serializeMimeTypeState(value: InstanceType<typeof hostUtil.MIMEType>) {
+	return {
+		value: String(value),
+		essence: value.essence,
+		type: value.type,
+		subtype: value.subtype,
+		params: Array.from(value.params.entries()),
+	};
+}
+
+export function buildMimeBridgeHandlers(): BridgeHandlers {
+	return {
+		mimeBridge: (operation: unknown, input: unknown, ...args: unknown[]) => {
+			const mime = new hostUtil.MIMEType(String(input));
+			switch (String(operation)) {
+				case "parse":
+					return serializeMimeTypeState(mime);
+				case "setType":
+					mime.type = String(args[0]);
+					return serializeMimeTypeState(mime);
+				case "setSubtype":
+					mime.subtype = String(args[0]);
+					return serializeMimeTypeState(mime);
+				case "setParam":
+					mime.params.set(String(args[0]), String(args[1]));
+					return serializeMimeTypeState(mime);
+				case "deleteParam":
+					mime.params.delete(String(args[0]));
+					return serializeMimeTypeState(mime);
+				default:
+					throw new Error(`Unsupported MIME bridge operation: ${String(operation)}`);
+			}
+		},
+	};
 }
 
 export interface KernelTimerDispatchDeps {

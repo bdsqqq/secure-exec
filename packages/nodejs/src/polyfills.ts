@@ -1,8 +1,33 @@
 import * as esbuild from "esbuild";
 import stdLibBrowser from "node-stdlib-browser";
+import { fileURLToPath } from "node:url";
 
 // Cache bundled polyfills
 const polyfillCache: Map<string, string> = new Map();
+
+function resolveCustomPolyfillSource(fileName: string): string {
+	return fileURLToPath(new URL(`../src/polyfills/${fileName}`, import.meta.url));
+}
+
+const WEB_STREAMS_PONYFILL_PATH = fileURLToPath(
+	new URL(
+		"../../../node_modules/.pnpm/node_modules/web-streams-polyfill/dist/ponyfill.js",
+		import.meta.url,
+	),
+);
+
+const CUSTOM_POLYFILL_ENTRY_POINTS = new Map([
+	["stream/web", resolveCustomPolyfillSource("stream-web.js")],
+	["util/types", resolveCustomPolyfillSource("util-types.js")],
+	["internal/webstreams/util", resolveCustomPolyfillSource("internal-webstreams-util.js")],
+	["internal/webstreams/adapters", resolveCustomPolyfillSource("internal-webstreams-adapters.js")],
+	["internal/webstreams/readablestream", resolveCustomPolyfillSource("internal-webstreams-readablestream.js")],
+	["internal/webstreams/writablestream", resolveCustomPolyfillSource("internal-webstreams-writablestream.js")],
+	["internal/webstreams/transformstream", resolveCustomPolyfillSource("internal-webstreams-transformstream.js")],
+	["internal/worker/js_transferable", resolveCustomPolyfillSource("internal-worker-js-transferable.js")],
+	["internal/test/binding", resolveCustomPolyfillSource("internal-test-binding.js")],
+	["internal/mime", resolveCustomPolyfillSource("internal-mime.js")],
+]);
 
 // node-stdlib-browser provides the mapping from Node.js stdlib to polyfill paths
 // e.g., { path: "/path/to/path-browserify/index.js", fs: null, ... }
@@ -16,7 +41,9 @@ export async function bundlePolyfill(moduleName: string): Promise<string> {
 	if (cached) return cached;
 
 	// Get the polyfill entry point from node-stdlib-browser
-	const entryPoint = stdLibBrowser[moduleName as keyof typeof stdLibBrowser];
+	const entryPoint =
+		CUSTOM_POLYFILL_ENTRY_POINTS.get(moduleName) ??
+		stdLibBrowser[moduleName as keyof typeof stdLibBrowser];
 	if (!entryPoint) {
 		throw new Error(`No polyfill available for module: ${moduleName}`);
 	}
@@ -30,6 +57,7 @@ export async function bundlePolyfill(moduleName: string): Promise<string> {
 			alias[`node:${name}`] = path;
 		}
 	}
+	alias["web-streams-polyfill/dist/ponyfill.js"] = WEB_STREAMS_PONYFILL_PATH;
 
 	// Bundle using esbuild with CommonJS format
 	// This ensures proper module.exports handling for all module types including JSON
@@ -96,6 +124,9 @@ export function getAvailableStdlib(): string[] {
 export function hasPolyfill(moduleName: string): boolean {
 	// Strip node: prefix
 	const name = moduleName.replace(/^node:/, "");
+	if (CUSTOM_POLYFILL_ENTRY_POINTS.has(name)) {
+		return true;
+	}
 	const polyfill = stdLibBrowser[name as keyof typeof stdLibBrowser];
 	return polyfill !== undefined && polyfill !== null;
 }

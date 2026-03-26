@@ -715,7 +715,7 @@
         "Typecheck passes"
       ],
       "priority": 31.7,
-      "passes": false,
+      "passes": true,
       "notes": "Current exact red vendored files for this bucket include test-whatwg-readablebytestream.js, test-whatwg-readablebytestream-bad-buffers-and-views.js, test-whatwg-readablestream.js, test-whatwg-transformstream.js, test-whatwg-writablestream.js, test-whatwg-webstreams-adapters-streambase.js, test-whatwg-webstreams-adapters-to-readablestream.js, test-whatwg-webstreams-adapters-to-readablewritablepair.js, test-whatwg-webstreams-adapters-to-streamduplex.js, test-whatwg-webstreams-adapters-to-streamreadable.js, test-whatwg-webstreams-adapters-to-streamwritable.js, test-whatwg-webstreams-adapters-to-writablestream.js, test-whatwg-webstreams-coverage.js, test-whatwg-webstreams-transfer.js, test-whatwg-readablebytestreambyob.js, test-whatwg-webstreams-compression.js, test-whatwg-webstreams-encoding.js, and test-mime-whatwg.js."
     },
     {
@@ -1093,6 +1093,118 @@
       "priority": 52,
       "passes": false,
       "notes": "This story is the planning/cleanup boundary after the current pending implementation work. 'implementable' means achievable within the SecureExec sandbox model and current product direction; 'will not implement' means intentionally out of product scope or rejected by policy/contract; 'cannot implement' means blocked by fundamental sandbox/runtime constraints unless the architecture itself changes."
+    },
+    {
+      "id": "US-061",
+      "title": "Investigate Pi programmatic SDK path with real-provider tokens",
+      "description": "As a developer, I need Pi's highest-level programmatic integration surface to run end-to-end through SecureExec using real provider credentials so we know whether a true SDK path is viable before investing further in CLI-only coverage.",
+      "acceptanceCriteria": [
+        "Identify Pi's actual supported programmatic surface in this repo version (for example package import entrypoints such as createAgentSession) and document the exact API exercised",
+        "Add an opt-in end-to-end test or harness that runs Pi through the secure-exec sandbox using provider tokens loaded at runtime from ~/misc/env.txt or equivalent exported env vars, without committing secrets",
+        "The coverage uses real provider traffic rather than the mock LLM server, fetch-intercept.cjs, or a fake base URL redirect",
+        "Verify one prompt completes end-to-end and produces non-empty assistant output through the chosen Pi programmatic surface",
+        "Verify at least one real file/tool action works through the sandbox if the programmatic surface supports tools; otherwise document the exact limitation",
+        "If Pi does not expose a stable SDK/programmatic surface or sandbox execution fails because of an upstream/runtime/library issue, append a new blocked follow-up story to prd.json with exact package, version, repro, and proposed unblock path before marking this story complete",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 53,
+      "passes": false,
+      "notes": "Use ~/misc/env.txt as the local source of provider credentials at runtime only; never copy token values into the repo. Existing Pi coverage is mostly CLI/mock-server based, and archived notes mention package import/load issues plus baseURL hardcoding that may need dedicated follow-up stories once revalidated."
+    },
+    {
+      "id": "US-062",
+      "title": "Make Pi headless mode pass end-to-end with real-provider tokens",
+      "description": "As a developer, I need Pi's non-interactive/headless path to run through the sandbox with real credentials so the CLI/tooling path is verified without mocks.",
+      "acceptanceCriteria": [
+        "Run Pi headless mode through the secure-exec sandbox path, not a host-only spawn workaround",
+        "Load provider credentials at runtime from ~/misc/env.txt or exported env vars, without committing secrets",
+        "Do not use the mock LLM server or fetch-intercept.cjs for the success path; the test must exercise real outbound provider requests",
+        "Verify Pi can boot, answer a prompt, and exit cleanly in headless/print mode",
+        "Verify at least one filesystem action and one command/tool action work end-to-end through the sandboxed headless flow",
+        "Any existing host-spawn or mock-only Pi headless test that was previously treated as proof of end-to-end support is replaced, narrowed, or clearly relabeled so it is no longer mistaken for real-token sandbox coverage",
+        "If a Pi library/runtime/provider issue blocks completion, append a new blocked follow-up story to prd.json with exact repro details before marking this story complete",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 54,
+      "passes": false,
+      "notes": "Current Pi headless coverage in packages/secure-exec/tests/cli-tools/pi-headless.test.ts uses a mock Anthropic server plus NODE_OPTIONS preload interception. This story is specifically to prove the real-token path."
+    },
+    {
+      "id": "US-063",
+      "title": "Make Pi PTY mode pass end-to-end with real-provider tokens",
+      "description": "As a developer, I need Pi's interactive terminal UI to work through SecureExec's PTY stack using real credentials so the full TUI path is validated.",
+      "acceptanceCriteria": [
+        "Run Pi interactive mode through kernel.openShell() and @xterm/headless, not host PTY wrappers like script -qefc",
+        "Load provider credentials at runtime from ~/misc/env.txt or exported env vars, without committing secrets",
+        "Do not use the mock LLM server or a fake base URL redirect for the primary success path",
+        "Verify Pi reaches a visible boot-ready screen state in the sandbox PTY",
+        "Verify prompt submission from the PTY yields a real provider response visible in the terminal transcript",
+        "Verify at least one interactive control path works correctly end-to-end, such as interrupt, clear, resize, or clean exit",
+        "If Pi cannot load or render in the sandbox PTY because of a runtime/library issue (for example module syntax/regex support, TTY semantics, stdin streaming, or signal handling), append a new blocked follow-up story to prd.json with exact repro details before marking this story complete",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 55,
+      "passes": false,
+      "notes": "Current Pi PTY coverage already probes kernel.openShell(), but it still relies on a mock server and archived work notes prior import/runtime blockers. This story is the real-token interactive proof point."
+    },
+    {
+      "id": "US-064",
+      "title": "Investigate OpenCode SDK/server path with real-provider tokens",
+      "description": "As a developer, I need OpenCode's SDK/server integration layer to work end-to-end through SecureExec using real provider credentials so we know whether the supported automation surface is viable beyond the CLI.",
+      "acceptanceCriteria": [
+        "Exercise @opencode-ai/sdk against an OpenCode server/process launched through the supported SecureExec path",
+        "Load provider credentials at runtime from ~/misc/env.txt or exported env vars, without committing secrets",
+        "The coverage uses real provider traffic rather than the mock LLM server",
+        "Verify the SDK can connect, create or access a working session/run context, submit a prompt, and receive non-empty assistant output",
+        "Verify at least one filesystem/tool action succeeds through the SDK/server path if the surface supports tools; otherwise document the exact limitation",
+        "If OpenCode's SDK/server flow requires an unsupported bridge capability or fails because of an upstream/runtime/library issue, append a new blocked follow-up story to prd.json with exact package, version, repro, and proposed unblock path before marking this story complete",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 56,
+      "passes": false,
+      "notes": "packages/secure-exec already depends on @opencode-ai/sdk, and archived notes mention prior opencode serve experiments. This story is about proving the real-token SDK/server path, not the existing mock-server validation."
+    },
+    {
+      "id": "US-065",
+      "title": "Make OpenCode headless mode pass end-to-end with real-provider tokens",
+      "description": "As a developer, I need OpenCode's non-interactive/headless mode to run through SecureExec with real credentials so the CLI automation path is verified end-to-end.",
+      "acceptanceCriteria": [
+        "Run OpenCode headless mode through the secure-exec sandbox path, not a host-only direct spawn used as a substitute for sandbox execution",
+        "Load provider credentials at runtime from ~/misc/env.txt or exported env vars, without committing secrets",
+        "Do not use the mock LLM server for the primary success path",
+        "Verify OpenCode can boot, answer a prompt, and exit cleanly in headless mode",
+        "Verify at least one filesystem action and one command/tool action work end-to-end through the sandboxed headless flow",
+        "Verify whichever output format is treated as canonical for automation (default or json/NDJSON) is parsed and asserted with real-token traffic",
+        "If a Bun/OpenCode/runtime/library issue blocks completion, append a new blocked follow-up story to prd.json with exact repro details before marking this story complete",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 57,
+      "passes": false,
+      "notes": "Current OpenCode headless coverage is explicitly binary-spawn based and mock-server driven. This story must distinguish true sandbox E2E from host-side substitution."
+    },
+    {
+      "id": "US-066",
+      "title": "Make OpenCode PTY mode pass end-to-end with real-provider tokens",
+      "description": "As a developer, I need OpenCode's interactive terminal UI to work through SecureExec's PTY stack using real credentials so the full TUI path is validated.",
+      "acceptanceCriteria": [
+        "Run OpenCode interactive mode through kernel.openShell() and @xterm/headless, not host PTY wrappers like script -qefc",
+        "Load provider credentials at runtime from ~/misc/env.txt or exported env vars, without committing secrets",
+        "Do not use the mock LLM server for the primary success path",
+        "Verify OpenCode reaches a visible boot-ready screen state in the sandbox PTY",
+        "Verify prompt submission from the PTY yields a real provider response visible in the terminal transcript",
+        "Verify at least one interactive control path works correctly end-to-end, such as kitty-keyboard submit, interrupt, resize, or clean exit",
+        "If OpenCode PTY support is blocked by Bun/runtime/bridge issues such as streaming stdin, child_process spawning, terminal protocol handling, or signal delivery, append a new blocked follow-up story to prd.json with exact repro details before marking this story complete",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 58,
+      "passes": false,
+      "notes": "Current OpenCode PTY coverage uses a custom host-binary driver plus script wrapper. This story is specifically to prove the policy-compliant sandbox PTY path with real credentials."
     }
   ]
 }

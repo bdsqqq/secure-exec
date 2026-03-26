@@ -1206,22 +1206,7 @@
       "category": "requires-v8-flags",
       "expected": "fail"
     },
-    "test-whatwg-readablebytestream.js": {
-      "reason": "requires --expose-internals — Node.js internal modules not available in sandbox",
-      "category": "requires-v8-flags",
-      "expected": "fail"
-    },
-    "test-whatwg-readablebytestreambyob.js": {
-      "reason": "global ReadableStream is not exposed in the sandbox, so BYOB readable byte stream coverage fails at startup",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
     "test-whatwg-readablestream.js": {
-      "reason": "requires --expose-internals — Node.js internal modules not available in sandbox",
-      "category": "requires-v8-flags",
-      "expected": "fail"
-    },
-    "test-whatwg-transformstream.js": {
       "reason": "requires --expose-internals — Node.js internal modules not available in sandbox",
       "category": "requires-v8-flags",
       "expected": "fail"
@@ -1236,52 +1221,7 @@
       "category": "requires-v8-flags",
       "expected": "fail"
     },
-    "test-whatwg-webstreams-adapters-streambase.js": {
-      "reason": "requires --expose-internals — Node.js internal modules not available in sandbox",
-      "category": "requires-v8-flags",
-      "expected": "fail"
-    },
-    "test-whatwg-webstreams-adapters-to-readablestream.js": {
-      "reason": "requires --expose-internals — Node.js internal modules not available in sandbox",
-      "category": "requires-v8-flags",
-      "expected": "fail"
-    },
-    "test-whatwg-webstreams-adapters-to-readablewritablepair.js": {
-      "reason": "requires --expose-internals — Node.js internal modules not available in sandbox",
-      "category": "requires-v8-flags",
-      "expected": "fail"
-    },
-    "test-whatwg-webstreams-adapters-to-streamduplex.js": {
-      "reason": "requires --expose-internals — Node.js internal modules not available in sandbox",
-      "category": "requires-v8-flags",
-      "expected": "fail"
-    },
-    "test-whatwg-webstreams-adapters-to-streamreadable.js": {
-      "reason": "requires --expose-internals — Node.js internal modules not available in sandbox",
-      "category": "requires-v8-flags",
-      "expected": "fail"
-    },
-    "test-whatwg-webstreams-adapters-to-streamwritable.js": {
-      "reason": "requires --expose-internals — Node.js internal modules not available in sandbox",
-      "category": "requires-v8-flags",
-      "expected": "fail"
-    },
-    "test-whatwg-webstreams-adapters-to-writablestream.js": {
-      "reason": "requires --expose-internals — Node.js internal modules not available in sandbox",
-      "category": "requires-v8-flags",
-      "expected": "fail"
-    },
-    "test-whatwg-webstreams-coverage.js": {
-      "reason": "requires --expose-internals — Node.js internal modules not available in sandbox",
-      "category": "requires-v8-flags",
-      "expected": "fail"
-    },
     "test-whatwg-webstreams-transfer.js": {
-      "reason": "requires --expose-internals — Node.js internal modules not available in sandbox",
-      "category": "requires-v8-flags",
-      "expected": "fail"
-    },
-    "test-whatwg-writablestream.js": {
       "reason": "requires --expose-internals — Node.js internal modules not available in sandbox",
       "category": "requires-v8-flags",
       "expected": "fail"
@@ -4083,11 +4023,6 @@
       "category": "implementation-gap",
       "expected": "fail"
     },
-    "test-global-webstreams.js": {
-      "reason": "require('stream/web') fails — stream/web ESM wrapper contains 'export' syntax that the CJS compilation path cannot parse (SyntaxError: Unexpected token 'export')",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
     "test-global.js": {
       "reason": "timer behavior gap — setImmediate/timer ordering differs in sandbox",
       "category": "implementation-gap",
@@ -4321,11 +4256,6 @@
     "test-messageevent-brandcheck.js": {
       "reason": "EventTarget/DOM event API gap in sandbox",
       "category": "implementation-gap",
-      "expected": "fail"
-    },
-    "test-mime-whatwg.js": {
-      "reason": "TypeError: MIMEType is not a constructor — util.MIMEType class not implemented in sandbox util polyfill",
-      "category": "unsupported-api",
       "expected": "fail"
     },
     "test-module-builtin.js": {
@@ -5451,11 +5381,6 @@
       "category": "vacuous-skip",
       "expected": "skip"
     },
-    "test-whatwg-readablebytestream-bad-buffers-and-views.js": {
-      "reason": "sandbox WebStreams ReadableByteStreamController.respondWithNewView() does not throw RangeError with ERR_INVALID_ARG_VALUE code for bad buffer sizes or detached views",
-      "category": "implementation-gap",
-      "expected": "fail"
-    },
     "test-zlib-brotli-16GB.js": {
       "reason": "getDefaultHighWaterMark() not exported from readable-stream v3 polyfill — test also relies on native zlib BrotliDecompress buffering behavior with _readableState internals",
       "category": "unsupported-api",
@@ -6279,16 +6204,6 @@
       "expected": "fail",
       "reason": "stream/consumers submodule not available in stream polyfill",
       "category": "unsupported-module"
-    },
-    "test-whatwg-webstreams-compression.js": {
-      "expected": "fail",
-      "reason": "stream/web module fails to compile — SyntaxError: Unexpected token 'export'",
-      "category": "implementation-gap"
-    },
-    "test-whatwg-webstreams-encoding.js": {
-      "expected": "fail",
-      "reason": "stream/web module fails to compile — SyntaxError: Unexpected token 'export'",
-      "category": "implementation-gap"
     },
     "test-buffer-compare.js": {
       "expected": "fail",

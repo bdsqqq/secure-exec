@@ -13,10 +13,10 @@ icon: "chart-bar"
 | Node.js version | 22.14.0 |
 | Source | v22.14.0 (test/parallel/) |
 | Total tests | 3532 |
-| Passing (genuine) | 1094 (31.0%) |
+| Passing (genuine) | 1111 (31.5%) |
 | Passing (vacuous self-skip) | 50 |
-| Passing (total) | 1144 (32.4%) |
-| Expected fail | 2275 |
+| Passing (total) | 1161 (32.9%) |
+| Expected fail | 2258 |
 | Skip | 113 |
 | Last updated | 2026-03-26 |
 
@@ -24,11 +24,11 @@ icon: "chart-bar"
 
 | Category | Tests |
 | --- | --- |
-| implementation-gap | 928 |
+| implementation-gap | 923 |
 | unsupported-module | 755 |
-| requires-v8-flags | 247 |
+| requires-v8-flags | 236 |
 | requires-exec-path | 200 |
-| unsupported-api | 155 |
+| unsupported-api | 154 |
 | test-infra | 97 |
 | vacuous-skip | 51 |
 | native-addon | 3 |
@@ -117,7 +117,7 @@ icon: "chart-bar"
 | freeze | 1 | 0 | 1 | 0 | 0.0% |
 | fs | 232 | 104 (8 vacuous) | 114 | 14 | 47.7% |
 | gc | 3 | 0 | 3 | 0 | 0.0% |
-| global | 11 | 3 | 8 | 0 | 27.3% |
+| global | 11 | 4 | 7 | 0 | 36.4% |
 | h2 | 1 | 1 | 0 | 0 | 100.0% |
 | h2leak | 1 | 0 | 1 | 0 | 0.0% |
 | handle | 2 | 1 | 1 | 0 | 50.0% |
@@ -144,7 +144,7 @@ icon: "chart-bar"
 | messageport | 1 | 0 | 1 | 0 | 0.0% |
 | messaging | 1 | 0 | 1 | 0 | 0.0% |
 | microtask | 3 | 3 | 0 | 0 | 100.0% |
-| mime | 2 | 0 | 2 | 0 | 0.0% |
+| mime | 2 | 1 | 1 | 0 | 50.0% |
 | module | 30 | 5 (2 vacuous) | 24 | 1 | 17.2% |
 | navigator | 1 | 0 | 1 | 0 | 0.0% |
 | net | 149 | 98 | 50 | 1 | 66.2% |
@@ -240,17 +240,17 @@ icon: "chart-bar"
 | webstorage | 1 | 0 | 1 | 0 | 0.0% |
 | webstream | 4 | 0 | 4 | 0 | 0.0% |
 | webstreams | 5 | 0 | 5 | 0 | 0.0% |
-| whatwg | 60 | 37 | 22 | 1 | 62.7% |
+| whatwg | 60 | 52 | 7 | 1 | 88.1% |
 | windows | 2 | 1 (1 vacuous) | 1 | 0 | 50.0% |
 | worker | 133 | 11 | 122 | 0 | 8.3% |
 | wrap | 4 | 0 | 4 | 0 | 0.0% |
 | x509 | 1 | 0 | 1 | 0 | 0.0% |
 | zlib | 53 | 17 | 33 | 3 | 34.0% |
-| **Total** | **3532** | **1144** | **2275** | **113** | **33.5%** |
+| **Total** | **3532** | **1161** | **2258** | **113** | **34.0%** |
 
 ## Expectations Detail
 
-### implementation-gap (646 entries)
+### implementation-gap (641 entries)
 
 **Glob patterns:**
 
@@ -258,7 +258,7 @@ icon: "chart-bar"
 - `test-http2-!(allow-http1|client-request-options-errors|client-setLocalWindowSize|error-order|goaway-delayed-request|goaway-opaquedata|misbehaving-flow-control|misbehaving-flow-control-paused|request-response-proto|respond-file-filehandle|server-push-stream|server-push-stream-errors-args|server-push-stream-head|server-setLocalWindowSize|session-settings|status-code-invalid|update-settings|window-size).js` — outside the landed allowHTTP1, push/settings, request-response, and window-size slices, the remaining http2 suite still fails on compatibility wrappers, secure-session bootstrap, multiplexing/teardown, and file-response helper gaps
 - `test-https-*.js` — https conformance still hangs on most TLS-backed client/server lifecycle and certificate-handling paths, so the remaining broad slice is skipped pending exact inventory
 
-*643 individual tests — see expectations.json for full list.*
+*638 individual tests — see expectations.json for full list.*
 
 ### unsupported-module (208 entries)
 
@@ -480,7 +480,7 @@ icon: "chart-bar"
 
 </details>
 
-### unsupported-api (110 entries)
+### unsupported-api (109 entries)
 
 **Glob patterns:**
 
@@ -488,7 +488,7 @@ icon: "chart-bar"
 - `test-shadow-*.js` — ShadowRealm is experimental and not supported in sandbox
 - `test-compile-*.js` — V8 compile cache/code cache features not available in sandbox
 
-<details><summary>107 individual tests</summary>
+<details><summary>106 individual tests</summary>
 
 | Test | Reason |
 | --- | --- |
@@ -525,7 +525,6 @@ icon: "chart-bar"
 | `test-http-incoming-matchKnownFields.js` | TypeError: incomingMessage._addHeaderLine is not a function — http.IncomingMessage._addHeaderLine() internal method not implemented in http polyfill |
 | `test-http-outgoing-destroy.js` | Error: The _implicitHeader() method is not implemented — http.OutgoingMessage._implicitHeader() not implemented; required by write() after destroy() path |
 | `test-http-sync-write-error-during-continue.js` | TypeError: duplexPair is not a function — stream.duplexPair() utility not implemented in sandbox stream polyfill |
-| `test-mime-whatwg.js` | TypeError: MIMEType is not a constructor — util.MIMEType class not implemented in sandbox util polyfill |
 | `test-promise-hook-create-hook.js` | TypeError: Cannot read properties of undefined (reading 'createHook') — v8.promiseHooks.createHook() not implemented; v8 module does not expose promiseHooks in sandbox |
 | `test-promise-hook-exceptions.js` | TypeError: Cannot read properties of undefined (reading 'onInit') — v8.promiseHooks not implemented in sandbox; v8 module does not expose promiseHooks object |
 | `test-promise-hook-on-after.js` | TypeError: Cannot read properties of undefined (reading 'onAfter') — v8.promiseHooks.onAfter() not implemented; v8 module does not expose promiseHooks in sandbox |
@@ -602,9 +601,9 @@ icon: "chart-bar"
 
 </details>
 
-### requires-v8-flags (247 entries)
+### requires-v8-flags (236 entries)
 
-*247 individual tests — see expectations.json for full list.*
+*236 individual tests — see expectations.json for full list.*
 
 ### requires-exec-path (173 entries)
 

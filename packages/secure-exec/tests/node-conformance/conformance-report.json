@@ -5,13 +5,13 @@
   "generatedAt": "2026-03-26",
   "summary": {
     "total": 3532,
-    "pass": 1144,
-    "genuinePass": 1094,
+    "pass": 1161,
+    "genuinePass": 1111,
     "vacuousPass": 50,
-    "fail": 2275,
+    "fail": 2258,
     "skip": 113,
-    "passRate": "32.4%",
-    "genuinePassRate": "31.0%"
+    "passRate": "32.9%",
+    "genuinePassRate": "31.5%"
   },
   "modules": {
     "abortcontroller": {
@@ -569,9 +569,9 @@
     },
     "global": {
       "total": 11,
-      "pass": 3,
+      "pass": 4,
       "vacuousPass": 0,
-      "fail": 8,
+      "fail": 7,
       "skip": 0
     },
     "h2": {
@@ -758,9 +758,9 @@
     },
     "mime": {
       "total": 2,
-      "pass": 0,
+      "pass": 1,
       "vacuousPass": 0,
-      "fail": 2,
+      "fail": 1,
       "skip": 0
     },
     "module": {
@@ -1430,9 +1430,9 @@
     },
     "whatwg": {
       "total": 60,
-      "pass": 37,
+      "pass": 52,
       "vacuousPass": 0,
-      "fail": 22,
+      "fail": 7,
       "skip": 1
     },
     "windows": {
@@ -1472,13 +1472,13 @@
     }
   },
   "categories": {
-    "implementation-gap": 928,
+    "implementation-gap": 923,
     "native-addon": 3,
     "requires-exec-path": 200,
-    "requires-v8-flags": 247,
+    "requires-v8-flags": 236,
     "security-constraint": 2,
     "test-infra": 97,
-    "unsupported-api": 155,
+    "unsupported-api": 154,
     "unsupported-module": 755,
     "vacuous-skip": 51
   }
