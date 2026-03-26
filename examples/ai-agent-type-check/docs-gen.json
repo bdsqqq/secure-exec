@@ -1,0 +1,14 @@
+{
+  "kind": "titledBlocks",
+  "docsPath": "../../docs/use-cases/ai-agent-code-exec.mdx",
+  "entries": [
+    {
+      "title": "JavaScript Execution",
+      "examplePath": "../ai-sdk/src/index.ts"
+    },
+    {
+      "title": "Type-Checked Execution",
+      "examplePath": "src/index.ts"
+    }
+  ]
+}

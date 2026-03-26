@@ -13,6 +13,8 @@ Sandboxed code can `require()` and `import` modules through secure-exec's module
 
 ## Runnable example
 
+Source file: `examples/features/src/module-loading.ts`
+
 ```ts
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,7 +23,7 @@ import {
 	allowAllFs,
 	createNodeDriver,
 	createNodeRuntimeDriverFactory,
-} from "../../../packages/secure-exec/src/index.ts";
+} from "secure-exec";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -57,8 +59,6 @@ try {
 	runtime.dispose();
 }
 ```
-
-Source: [examples/features/src/module-loading.ts](https://github.com/rivet-dev/secure-exec/blob/main/examples/features/src/module-loading.ts)
 
 ## node_modules overlay
 

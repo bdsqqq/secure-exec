@@ -5,19 +5,19 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const examplesRoot = path.resolve(__dirname, "..");
 
-const featureFiles = [
-  "src/child-processes.ts",
-  "src/filesystem.ts",
-  "src/module-loading.ts",
-  "src/networking.ts",
-  "src/output-capture.ts",
-  "src/permissions.ts",
-  "src/resource-limits.ts",
-  "src/typescript.ts",
-  "src/virtual-filesystem.ts",
+const exampleChecks = [
+  { path: "src/create-runtime.ts", contains: [] },
+  { path: "src/run-get-exports.ts", contains: ["hello from secure-exec"] },
+  {
+    path: "src/execute-capture-output.ts",
+    contains: ["hello from secure-exec", "exit code: 0"],
+  },
+  { path: "src/filesystem.ts", contains: ["hello from the sandbox"] },
+  { path: "src/network-access.ts", contains: ["200"] },
+  { path: "src/esm-modules.ts", contains: ["42"] },
 ];
 
-function runExample(relativePath) {
+function runExample({ path: relativePath, contains }) {
   return new Promise((resolve, reject) => {
     const child = spawn("pnpm", ["exec", "tsx", relativePath], {
       cwd: examplesRoot,
@@ -28,6 +28,7 @@ function runExample(relativePath) {
     let stdout = "";
     let stderr = "";
     let settled = false;
+
     const timeout = setTimeout(() => {
       if (settled) return;
       settled = true;
@@ -35,36 +36,21 @@ function runExample(relativePath) {
       reject(new Error(`${relativePath} timed out\nstdout:\n${stdout}\nstderr:\n${stderr}`));
     }, 30_000);
 
-    function tryGetPayload() {
-      const jsonLine = stdout
-        .trim()
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .at(-1);
-
-      if (!jsonLine) {
-        return null;
-      }
-
-      try {
-        return JSON.parse(jsonLine);
-      } catch {
-        return null;
-      }
+    function hasExpectedOutput() {
+      return contains.every((value) => stdout.includes(value));
     }
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
 
-      const payload = tryGetPayload();
-      if (!settled && payload?.ok) {
+      if (!settled && hasExpectedOutput()) {
         settled = true;
         clearTimeout(timeout);
         child.kill("SIGKILL");
-        resolve(payload);
+        resolve({ stdout, stderr });
       }
     });
+
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
@@ -75,13 +61,12 @@ function runExample(relativePath) {
       clearTimeout(timeout);
       reject(error);
     });
+
     child.on("close", (code) => {
       clearTimeout(timeout);
-      if (settled) {
-        return;
-      }
-
+      if (settled) return;
       settled = true;
+
       if (code !== 0) {
         reject(
           new Error(
@@ -91,29 +76,23 @@ function runExample(relativePath) {
         return;
       }
 
-      const payload = tryGetPayload();
-      if (!payload) {
-        reject(new Error(`${relativePath} produced no JSON result`));
-        return;
-      }
-
-      if (!payload?.ok) {
+      if (!hasExpectedOutput()) {
         reject(
           new Error(
-            `${relativePath} reported failure\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+            `${relativePath} completed without expected output\nstdout:\n${stdout}\nstderr:\n${stderr}`,
           ),
         );
         return;
       }
 
-      resolve(payload);
+      resolve({ stdout, stderr });
     });
   });
 }
 
-for (const featureFile of featureFiles) {
-  const result = await runExample(featureFile);
-  console.log(`${featureFile}: ${result.summary ?? "ok"}`);
+for (const example of exampleChecks) {
+  await runExample(example);
+  console.log(`${example.path}: ok`);
 }
 
-console.log("Feature examples passed end-to-end.");
+console.log("Quickstart examples passed end-to-end.");

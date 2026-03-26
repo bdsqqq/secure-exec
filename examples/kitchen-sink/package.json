@@ -1,10 +1,12 @@
 {
-  "name": "@secure-exec/example-quickstart",
+  "name": "@secure-exec/example-kitchen-sink",
   "private": true,
   "type": "module",
   "scripts": {
     "check-types": "tsc --noEmit -p tsconfig.json",
-    "verify-docs": "node scripts/verify-docs.mjs"
+    "verify-docs": "docs-gen verify --config docs-gen.json",
+    "verify-e2e": "node scripts/verify-e2e.mjs",
+    "test": "pnpm run verify-docs && pnpm run verify-e2e"
   },
   "dependencies": {
     "@secure-exec/typescript": "workspace:*",
@@ -13,6 +15,7 @@
     "secure-exec": "workspace:*"
   },
   "devDependencies": {
+    "@secure-exec/docs-gen": "workspace:*",
     "@types/node": "^22.10.2",
     "typescript": "^5.7.2"
   }

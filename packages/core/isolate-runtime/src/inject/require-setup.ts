@@ -507,6 +507,8 @@
               this._algorithm = algorithm;
               if (typeof key === 'string') {
                 this._key = Buffer.from(key, 'utf8');
+              } else if (key && typeof key === 'object' && key._raw !== undefined) {
+                this._key = Buffer.from(key._raw, 'base64');
               } else if (key && typeof key === 'object' && key._pem !== undefined) {
                 // SandboxKeyObject — extract underlying key material
                 this._key = Buffer.from(key._pem, 'utf8');
@@ -1593,9 +1595,18 @@
             }
 
             function scheduleCryptoCallback(callback, args) {
-              setTimeout(function() {
+              var invoke = function() {
                 callback.apply(undefined, args);
-              }, 0);
+              };
+              if (typeof process !== 'undefined' && process && typeof process.nextTick === 'function') {
+                process.nextTick(invoke);
+                return;
+              }
+              if (typeof queueMicrotask === 'function') {
+                queueMicrotask(invoke);
+                return;
+              }
+              Promise.resolve().then(invoke);
             }
 
             function shouldThrowCryptoValidationError(error) {

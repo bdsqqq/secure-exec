@@ -36,23 +36,19 @@ const runtime = new NodeRuntime({
 try {
 	const result = await runtime.exec(
 		`
-			(async () => {
-				const response = await fetch("http://127.0.0.1:${address.port}/");
-				const body = await response.text();
+			const response = await fetch("http://127.0.0.1:${address.port}/");
+			const body = await response.text();
 
-				if (!response.ok || response.status !== 200 || body !== "network-ok") {
-					throw new Error(
-						"unexpected response: " + response.status + " " + body,
-					);
-				}
+			if (!response.ok || response.status !== 200 || body !== "network-ok") {
+				throw new Error(
+					"unexpected response: " + response.status + " " + body,
+				);
+			}
 
-				console.log(JSON.stringify({ status: response.status, body }));
-			})().catch((error) => {
-				console.error(error instanceof Error ? error.message : String(error));
-				process.exitCode = 1;
-			});
+			console.log(JSON.stringify({ status: response.status, body }));
 		`,
 		{
+			filePath: "/entry.mjs",
 			onStdio: (event) => {
 				logs.push(`[${event.channel}] ${event.message}`);
 			},

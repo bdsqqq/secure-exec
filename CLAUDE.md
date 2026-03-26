@@ -201,6 +201,9 @@ Follow the style in `packages/secure-exec/src/index.ts`.
 
 - all public-facing docs (quickstart, guides, API reference, landing page, README) must focus on the **Node.js runtime** as the primary and default experience — do not lead with WasmVM, kernel internals, or multi-runtime concepts
 - code examples in docs should use the `NodeRuntime` API (`runtime.run()`, `runtime.exec()`) as the default path; the kernel API (`createKernel`, `kernel.spawn()`) is for advanced multi-process use cases and should be presented as secondary
+- keep documentation pages and their runnable example sources in sync: `docs/quickstart.mdx` must match `examples/kitchen-sink/src/`, and `docs/features/*.mdx` must match `examples/features/src/`
+- when updating a doc snippet, update the corresponding example file and the docs/example verification scripts in the same change
+- when converting runnable example code into documentation snippets, use public package imports like `from "secure-exec"` and `from "@secure-exec/typescript"` instead of repo-local source paths
 - WasmVM and Python docs are experimental docs and must stay grouped under the `Experimental` section in `docs/docs.json`
 - docs pages that must stay current with API changes:
   - `docs/quickstart.mdx` — update when core setup flow changes

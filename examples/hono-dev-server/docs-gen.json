@@ -1,0 +1,6 @@
+{
+  "kind": "namedTsBlock",
+  "docsPath": "../../docs/use-cases/dev-servers.mdx",
+  "title": "Hono Dev Server",
+  "examplePath": "src/index.ts"
+}
