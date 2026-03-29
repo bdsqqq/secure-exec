@@ -1365,6 +1365,39 @@ class TimerHandle {
 }
 
 const _timerEntries = new Map<number, TimerEntry>();
+let _timerDrainResolvers: Array<() => void> = [];
+
+/**
+ * Check if all timers have been drained and resolve any waiters.
+ * Called after a timer fires or is cleared.
+ */
+function checkTimerDrain(): void {
+  if (_timerEntries.size === 0 && _timerDrainResolvers.length > 0) {
+    const resolvers = _timerDrainResolvers;
+    _timerDrainResolvers = [];
+    resolvers.forEach((r) => r());
+  }
+}
+
+/**
+ * Returns the number of pending timer entries (setTimeout + setInterval).
+ * Used by _waitForActiveHandles to detect pending async work.
+ */
+function _getPendingTimerCount(): number {
+  return _timerEntries.size;
+}
+
+/**
+ * Returns a Promise that resolves when all timer entries have been drained.
+ * If no timers are pending, resolves immediately.
+ */
+function _waitForTimerDrain(): Promise<void> {
+  if (_timerEntries.size === 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    _timerDrainResolvers.push(resolve);
+  });
+}
+
 const _nextTickQueue: NextTickEntry[] = [];
 let _nextTickScheduled = false;
 
@@ -1426,6 +1459,8 @@ function timerDispatch(_eventType: string, payload: unknown): void {
   if (entry.repeat && _timerEntries.has(timerId)) {
     armKernelTimer(timerId);
   }
+
+  checkTimerDrain();
 }
 
 export function setTimeout(
@@ -1456,6 +1491,7 @@ export function clearTimeout(timer: TimerHandle | number | undefined): void {
     _timerEntries.delete(id);
   }
   bridgeDispatchSync<void>(TIMER_DISPATCH.clear, id);
+  checkTimerDrain();
 }
 
 export function setInterval(
@@ -1482,6 +1518,8 @@ export function clearInterval(timer: TimerHandle | number | undefined): void {
 }
 
 exposeCustomGlobal("_timerDispatch", timerDispatch);
+exposeCustomGlobal("_getPendingTimerCount", _getPendingTimerCount);
+exposeCustomGlobal("_waitForTimerDrain", _waitForTimerDrain);
 
 export function setImmediate(
   callback: (...args: unknown[]) => void,

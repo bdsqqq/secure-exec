@@ -686,4 +686,84 @@ describe('Node RuntimeDriver', () => {
       expect(uniquePids.size).toBe(12);
     });
   });
+
+  describe('CJS event loop pumping', () => {
+    let kernel: Kernel;
+
+    afterEach(async () => {
+      await kernel?.dispose();
+    });
+
+    it('setTimeout callback fires before CJS script exits', async () => {
+      const vfs = new SimpleVFS();
+      kernel = createKernel({ filesystem: vfs as any });
+      await kernel.mount(createNodeRuntime());
+
+      const chunks: Uint8Array[] = [];
+      const proc = kernel.spawn('node', ['-e', `
+        setTimeout(() => {
+          console.log("TIMER_FIRED");
+          process.exit(0);
+        }, 100);
+      `], {
+        onStdout: (data) => chunks.push(data),
+      });
+
+      const code = await proc.wait();
+      const output = chunks.map(c => new TextDecoder().decode(c)).join('');
+      expect(code).toBe(0);
+      expect(output).toContain('TIMER_FIRED');
+    });
+
+    it('async main with console.log produces output', async () => {
+      const vfs = new SimpleVFS();
+      kernel = createKernel({ filesystem: vfs as any });
+      await kernel.mount(createNodeRuntime());
+
+      const chunks: Uint8Array[] = [];
+      const proc = kernel.spawn('node', ['-e', `
+        async function main() {
+          console.log("ASYNC_HELLO");
+        }
+        main();
+      `], {
+        onStdout: (data) => chunks.push(data),
+      });
+
+      const code = await proc.wait();
+      const output = chunks.map(c => new TextDecoder().decode(c)).join('');
+      expect(code).toBe(0);
+      expect(output).toContain('ASYNC_HELLO');
+    });
+
+    it('chained setTimeout callbacks all execute', async () => {
+      const vfs = new SimpleVFS();
+      kernel = createKernel({ filesystem: vfs as any });
+      await kernel.mount(createNodeRuntime());
+
+      const chunks: Uint8Array[] = [];
+      const proc = kernel.spawn('node', ['-e', `
+        let count = 0;
+        function step() {
+          count++;
+          console.log("STEP:" + count);
+          if (count < 3) {
+            setTimeout(step, 50);
+          } else {
+            process.exit(0);
+          }
+        }
+        setTimeout(step, 50);
+      `], {
+        onStdout: (data) => chunks.push(data),
+      });
+
+      const code = await proc.wait();
+      const output = chunks.map(c => new TextDecoder().decode(c)).join('');
+      expect(code).toBe(0);
+      expect(output).toContain('STEP:1');
+      expect(output).toContain('STEP:2');
+      expect(output).toContain('STEP:3');
+    });
+  });
 });

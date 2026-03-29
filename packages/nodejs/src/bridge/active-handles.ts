@@ -75,35 +75,61 @@ export function _unregisterHandle(id: string): void {
 }
 
 /**
- * Wait for all active handles to complete.
- * Returns immediately if no handles are active.
+ * Wait for all active handles and pending timers to complete.
+ * Returns immediately if no handles are active and no timers are pending.
+ *
+ * Timers (setTimeout/setInterval) are tracked separately via _getPendingTimerCount
+ * and _waitForTimerDrain exposed from the process bridge module. This ensures CJS
+ * scripts that create timers don't exit before the timers fire.
  */
 export function _waitForActiveHandles(): Promise<void> {
-	if (_getActiveHandles().length === 0) {
+	const getPendingTimerCount = (globalThis as Record<string, unknown>)
+		._getPendingTimerCount as (() => number) | undefined;
+	const waitForTimerDrain = (globalThis as Record<string, unknown>)
+		._waitForTimerDrain as (() => Promise<void>) | undefined;
+
+	const hasHandles = _getActiveHandles().length > 0;
+	const hasTimers =
+		typeof getPendingTimerCount === "function" && getPendingTimerCount() > 0;
+
+	if (!hasHandles && !hasTimers) {
 		return Promise.resolve();
 	}
-	return new Promise((resolve) => {
-		let settled = false;
-		const complete = () => {
-			if (settled) {
-				return;
-			}
-			settled = true;
-			resolve();
-		};
-		_waitResolvers.push(complete);
-		const poll = () => {
-			if (settled) {
-				return;
-			}
-			if (_getActiveHandles().length === 0) {
-				complete();
-				return;
-			}
-			setTimeout(poll, 10);
-		};
-		setTimeout(poll, 10);
-	});
+
+	const promises: Promise<void>[] = [];
+
+	if (hasHandles) {
+		promises.push(
+			new Promise((resolve) => {
+				let settled = false;
+				const complete = () => {
+					if (settled) {
+						return;
+					}
+					settled = true;
+					resolve();
+				};
+				_waitResolvers.push(complete);
+				const poll = () => {
+					if (settled) {
+						return;
+					}
+					if (_getActiveHandles().length === 0) {
+						complete();
+						return;
+					}
+					setTimeout(poll, 10);
+				};
+				setTimeout(poll, 10);
+			}),
+		);
+	}
+
+	if (hasTimers && typeof waitForTimerDrain === "function") {
+		promises.push(waitForTimerDrain());
+	}
+
+	return Promise.all(promises).then(() => {});
 }
 
 /**
