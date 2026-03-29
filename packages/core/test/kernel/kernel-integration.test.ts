@@ -163,6 +163,89 @@ describe("kernel + MockRuntimeDriver integration", () => {
 	});
 
 	// -----------------------------------------------------------------------
+	// stdout/stderr: no doubling — each chunk delivered exactly once
+	// -----------------------------------------------------------------------
+
+	it("spawn onStdout fires exactly N times (no doubling)", async () => {
+		const N = 3;
+		const received: string[] = [];
+
+		// Driver emits N stdout chunks via BOTH ctx.onStdout and proc.onStdout
+		// (mimicking real runtime driver behaviour).  Before the fix, the host
+		// callback would fire 2*N times because both ctx and proc pointed at
+		// the same function.
+		const driver = new MockRuntimeDriver(["sh"]);
+		driver.spawn = (_command, _args, ctx) => {
+			let exitResolve: (code: number) => void;
+			const proc: DriverProcess = {
+				writeStdin() {},
+				closeStdin() {},
+				kill() {},
+				wait: () => new Promise<number>((r) => { exitResolve = r; }),
+				onStdout: null,
+				onStderr: null,
+				onExit: null,
+			};
+			queueMicrotask(() => {
+				const enc = new TextEncoder();
+				for (let i = 0; i < N; i++) {
+					const data = enc.encode(`line${i + 1}\n`);
+					ctx.onStdout?.(data);
+					proc.onStdout?.(data);
+				}
+				exitResolve!(0);
+				proc.onExit?.(0);
+			});
+			return proc;
+		};
+
+		({ kernel } = await createTestKernel({ drivers: [driver] }));
+		const proc = kernel.spawn("sh", [], {
+			onStdout: (data) => received.push(new TextDecoder().decode(data)),
+		});
+
+		await proc.wait();
+
+		expect(received).toHaveLength(N);
+		expect(received).toEqual(["line1\n", "line2\n", "line3\n"]);
+	});
+
+	it("exec stdout is not doubled when driver emits via ctx and proc", async () => {
+		const N = 3;
+
+		// Same dual-callback driver as above, tested through exec().
+		const driver = new MockRuntimeDriver(["sh"]);
+		driver.spawn = (_command, _args, ctx) => {
+			let exitResolve: (code: number) => void;
+			const proc: DriverProcess = {
+				writeStdin() {},
+				closeStdin() {},
+				kill() {},
+				wait: () => new Promise<number>((r) => { exitResolve = r; }),
+				onStdout: null,
+				onStderr: null,
+				onExit: null,
+			};
+			queueMicrotask(() => {
+				const enc = new TextEncoder();
+				for (let i = 0; i < N; i++) {
+					const data = enc.encode(`line${i + 1}\n`);
+					ctx.onStdout?.(data);
+					proc.onStdout?.(data);
+				}
+				exitResolve!(0);
+				proc.onExit?.(0);
+			});
+			return proc;
+		};
+
+		({ kernel } = await createTestKernel({ drivers: [driver] }));
+		const result = await kernel.exec("test");
+
+		expect(result.stdout).toBe("line1\nline2\nline3\n");
+	});
+
+	// -----------------------------------------------------------------------
 	// exec() timeout — kill process, clear timer, detach callbacks
 	// -----------------------------------------------------------------------
 

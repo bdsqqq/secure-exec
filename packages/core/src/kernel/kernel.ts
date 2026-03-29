@@ -644,38 +644,32 @@ class KernelImpl implements Kernel {
 		const stdoutBuf: Uint8Array[] = [];
 		const stderrBuf: Uint8Array[] = [];
 
-		// Resolve output callbacks: when a child inherits non-piped stdio from
-		// a parent, forward output to the parent's DriverProcess callbacks so
-		// cross-runtime child output reaches the top-level collector.
-		// When piped, wire a callback that forwards through the pipe/PTY so
-		// drivers that emit output via callbacks (Node) reach the PTY/pipe.
-		let stdoutCb: ((data: Uint8Array) => void) | undefined;
-		let stderrCb: ((data: Uint8Array) => void) | undefined;
+		// Resolve output callbacks.  Drivers invoke BOTH ctx.onStdout and
+		// proc.onStdout per message, so the two must never point at the same
+		// callback — otherwise the host sees every chunk twice.
+		//
+		//   ctx callbacks  — kernel-internal routing (pipes, parent forwarding)
+		//                    + temporary buffer during spawn() to catch any
+		//                    synchronous output (disabled right after spawn).
+		//   proc callbacks — user / host callback (options.onStdout) or buffer
+		//                    for later replay.  Set AFTER spawn returns.
+		let ctxStdoutCb: ((data: Uint8Array) => void) | undefined;
+		let ctxStderrCb: ((data: Uint8Array) => void) | undefined;
 		if (stdoutPiped) {
-			stdoutCb = this.createPipedOutputCallback(table, 1, pid);
-		} else {
-			if (options?.onStdout) {
-				stdoutCb = options.onStdout;
-			} else if (callerPid !== undefined) {
-				const parent = this.processTable.get(callerPid);
-				if (parent?.driverProcess.onStdout) {
-					stdoutCb = parent.driverProcess.onStdout;
-				}
+			ctxStdoutCb = this.createPipedOutputCallback(table, 1, pid);
+		} else if (!options?.onStdout && callerPid !== undefined) {
+			const parent = this.processTable.get(callerPid);
+			if (parent?.driverProcess.onStdout) {
+				ctxStdoutCb = parent.driverProcess.onStdout;
 			}
-			if (!stdoutCb) stdoutCb = (data) => stdoutBuf.push(data);
 		}
 		if (stderrPiped) {
-			stderrCb = this.createPipedOutputCallback(table, 2, pid);
-		} else {
-			if (options?.onStderr) {
-				stderrCb = options.onStderr;
-			} else if (callerPid !== undefined) {
-				const parent = this.processTable.get(callerPid);
-				if (parent?.driverProcess.onStderr) {
-					stderrCb = parent.driverProcess.onStderr;
-				}
+			ctxStderrCb = this.createPipedOutputCallback(table, 2, pid);
+		} else if (!options?.onStderr && callerPid !== undefined) {
+			const parent = this.processTable.get(callerPid);
+			if (parent?.driverProcess.onStderr) {
+				ctxStderrCb = parent.driverProcess.onStderr;
 			}
-			if (!stderrCb) stderrCb = (data) => stderrBuf.push(data);
 		}
 
 		// Inherit env from parent process if spawned by another process, else use kernel defaults
@@ -687,7 +681,9 @@ class KernelImpl implements Kernel {
 		const stdoutIsTTY = this.isFdPtySlave(table, 1);
 		const stderrIsTTY = this.isFdPtySlave(table, 2);
 
-		// Build process context with pre-wired callbacks
+		// Build process context with pre-wired callbacks.
+		// When not piped/forwarded, ctx gets a temporary buffer so that any
+		// data emitted synchronously during driver.spawn() is captured.
 		const resolvedCwd = options?.cwd ?? this.cwd;
 		const ctx: ProcessContext = {
 			pid,
@@ -699,8 +695,8 @@ class KernelImpl implements Kernel {
 			stdoutIsTTY,
 			stderrIsTTY,
 			streamStdin: options?.streamStdin,
-			onStdout: stdoutCb,
-			onStderr: stderrCb,
+			onStdout: ctxStdoutCb ?? (stdoutPiped ? undefined : (data) => stdoutBuf.push(data)),
+			onStderr: ctxStderrCb ?? (stderrPiped ? undefined : (data) => stderrBuf.push(data)),
 		};
 
 		// Spawn via driver
@@ -710,12 +706,23 @@ class KernelImpl implements Kernel {
 			stdinIsTTY, stdoutIsTTY, stderrIsTTY,
 		}, "process spawned");
 
-		// Capture data emitted via DriverProcess callbacks after spawn returns.
+		// After spawn, disable the temporary ctx buffer so that async output
+		// flows only through proc.onStdout — prevents double-delivery.
+		// Pipe/parent-forwarding callbacks stay active (they live in ctxStdoutCb).
 		if (!stdoutPiped) {
-			driverProcess.onStdout = stdoutCb ?? ((data) => stdoutBuf.push(data));
+			ctx.onStdout = ctxStdoutCb;
 		}
 		if (!stderrPiped) {
-			driverProcess.onStderr = stderrCb ?? ((data) => stderrBuf.push(data));
+			ctx.onStderr = ctxStderrCb;
+		}
+
+		// User/host callback goes ONLY on driverProcess (never on ctx) to
+		// avoid double-delivery — drivers invoke both ctx and proc callbacks.
+		if (!stdoutPiped) {
+			driverProcess.onStdout = options?.onStdout ?? ((data) => stdoutBuf.push(data));
+		}
+		if (!stderrPiped) {
+			driverProcess.onStderr = options?.onStderr ?? ((data) => stderrBuf.push(data));
 		}
 
 		// Register in process table
