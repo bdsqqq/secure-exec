@@ -3122,6 +3122,7 @@ export function buildModuleResolutionBridgeHandlers(
 	// CJS transforms when require() needs ESM or import() support.
 	handlers[K.loadFileSync] = (filePath: unknown) => {
 		const sandboxPath = String(filePath);
+		if (sandboxPath.includes("balanced")) console.error(`[loadFileSync] path=${sandboxPath}`);
 		const hostPath = deps.sandboxToHostPath(sandboxPath) ?? sandboxPath;
 		return loadHostModuleSourceSync(hostPath, sandboxPath, "require");
 	};
@@ -3253,10 +3254,16 @@ function loadHostModuleSourceSync(
 ): string | null {
 	try {
 		const source = readFileSync(readPath, "utf-8");
+		if (readPath.includes("balanced")) {
+			console.error(`[loadHostModuleSourceSync] readPath=${readPath} logicalPath=${logicalPath} loadMode=${loadMode} sourceLen=${source.length}`);
+		}
 		return loadMode === "require"
 			? transformSourceForRequireSync(source, logicalPath)
 			: transformSourceForImportSync(source, logicalPath, readPath);
-	} catch {
+	} catch (e) {
+		if (readPath.includes("balanced")) {
+			console.error(`[loadHostModuleSourceSync] FAILED readPath=${readPath}: ${(e as Error).message}`);
+		}
 		return null;
 	}
 }
@@ -3385,6 +3392,7 @@ export function buildModuleLoadingBridgeHandlers(
 		requestedMode?: unknown,
 	): string | null | Promise<string | null> => {
 		const p = String(path);
+		console.error(`[loadFile] path=${p.slice(-60)} mode=${requestedMode}`);
 		const loadMode =
 			requestedMode === "require" || requestedMode === "import"
 				? requestedMode

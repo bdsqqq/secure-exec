@@ -137,6 +137,9 @@ function isCommonJsModuleForImportSync(source: string, formatPath: string): bool
 	}
 	if (formatPath.endsWith(".js")) {
 		const packageType = getNearestPackageTypeSync(formatPath);
+		if (formatPath.includes("balanced")) {
+			console.error(`[isCommonJsModuleForImportSync] path=${formatPath} packageType=${packageType}`);
+		}
 		if (packageType === "module") {
 			return false;
 		}
@@ -145,17 +148,21 @@ function isCommonJsModuleForImportSync(source: string, formatPath: string): bool
 		}
 
 		initSync();
-		return !parseSourceSyntax(source, formatPath).hasModuleSyntax;
+		const syntax = parseSourceSyntax(source, formatPath);
+		if (formatPath.includes("balanced")) {
+			console.error(`[isCommonJsModuleForImportSync] hasModuleSyntax=${syntax.hasModuleSyntax}`);
+		}
+		return !syntax.hasModuleSyntax;
 	}
 	return false;
 }
 
 function buildCommonJsImportWrapper(source: string, filePath: string): string {
 	initCjsLexerSync();
-	const { exports } = parseCjsExports(source);
-	const namedExports = Array.from(
+	const { exports: cjsExports } = parseCjsExports(source);
+	let namedExports = Array.from(
 		new Set(
-			exports.filter(
+			cjsExports.filter(
 				(name) =>
 					name !== "default" &&
 					name !== "__esModule" &&
@@ -163,6 +170,19 @@ function buildCommonJsImportWrapper(source: string, filePath: string): string {
 			),
 		),
 	);
+
+	// Node.js CJS interop: when module.exports = identifier, the identifier
+	// becomes a named export. Detect `module.exports = <name>` and add it.
+	if (namedExports.length === 0) {
+		const match = source.match(/module\.exports\s*=\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*;?\s*$/m);
+		if (match && match[1] !== "undefined" && match[1] !== "null") {
+			namedExports = [match[1]];
+		}
+	}
+
+	// Also extract all enumerable property names from the module at load time.
+	// This handles cases where module.exports is an object with properties
+	// that cjs-module-lexer doesn't detect.
 	const lines = [
 		`const ${CJS_IMPORT_DEFAULT_HELPER} = globalThis._requireFrom(${JSON.stringify(filePath)}, "/");`,
 		`export default ${CJS_IMPORT_DEFAULT_HELPER};`,

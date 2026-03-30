@@ -1116,6 +1116,29 @@ fn prefetch_module_imports(
                     continue;
                 }
 
+                // Detect CJS and wrap in ESM shim if needed
+                let is_cjs = is_likely_cjs(source_code);
+                if resolved_path.contains("balanced") {
+                    eprintln!("[v8-runtime] balanced-match check: is_cjs={} source_len={} first_100={}", is_cjs, source_code.len(), &source_code[..std::cmp::min(source_code.len(), 100)]);
+                }
+                let effective_source = if is_cjs {
+                    eprintln!("[v8-runtime] CJS→ESM shim (prefetch): {}", resolved_path);
+                    let exports = extract_cjs_export_names(source_code);
+                    let mut shim = format!(
+                        "const _cjsModule = globalThis._requireFrom(\"{}\", \"/\");\nexport default _cjsModule;\n",
+                        resolved_path.replace('\\', "\\\\").replace('"', "\\\"")
+                    );
+                    for name in &exports {
+                        shim.push_str(&format!(
+                            "export const {} = _cjsModule[\"{}\"];\n",
+                            name, name
+                        ));
+                    }
+                    shim
+                } else {
+                    source_code.clone()
+                };
+
                 // Compile the module
                 let resource = match v8::String::new(scope, resolved_path) {
                     Some(s) => s,
@@ -1134,7 +1157,7 @@ fn prefetch_module_imports(
                     true, // is_module
                     None,
                 );
-                let v8_source = match v8::String::new(scope, source_code) {
+                let v8_source = match v8::String::new(scope, &effective_source) {
                     Some(s) => s,
                     None => continue,
                 };
@@ -1211,7 +1234,36 @@ fn resolve_or_compile_module<'s>(
     }
 
     // Phase 5: Load and compile the module source.
-    let source_code = load_module_via_ipc(scope, ctx, &resolved_path)?;
+    eprintln!("[v8-runtime] loading module: {} (specifier={} referrer={})", &resolved_path, specifier_str, referrer_name);
+    let raw_source = load_module_via_ipc(scope, ctx, &resolved_path)?;
+    eprintln!("[v8-runtime] loaded {} bytes, is_cjs={}", raw_source.len(), is_likely_cjs(&raw_source));
+
+    // Phase 5b: Detect CJS modules and wrap in ESM shim.
+    // CJS modules use module.exports/exports which isn't valid ESM syntax.
+    // Real Node.js wraps CJS in a default+named export shim. We do the same
+    // by generating: `const _m = globalThis._requireFrom(path, "/"); export default _m; export const {named1, named2, ...} = _m;`
+    let source_code = if is_likely_cjs(&raw_source) {
+        eprintln!("[v8-runtime] CJS→ESM shim for: {}", &resolved_path);
+        // Extract potential named exports by scanning for common patterns
+        let exports = extract_cjs_export_names(&raw_source);
+        let mut shim = format!(
+            "const _cjsModule = globalThis._requireFrom({}, \"/\");\nexport default _cjsModule;\n",
+            format!("\"{}\"", resolved_path.replace('\\', "\\\\").replace('"', "\\\""))
+        );
+        if !exports.is_empty() {
+            // Re-export each named export from the CJS module
+            for name in &exports {
+                shim.push_str(&format!(
+                    "export const {} = _cjsModule[\"{}\"];\n",
+                    name, name
+                ));
+            }
+        }
+        shim
+    } else {
+        raw_source
+    };
+
     let resource = v8::String::new(scope, &resolved_path)?;
     let origin = v8::ScriptOrigin::new(
         scope,
@@ -1569,7 +1621,9 @@ fn load_module_via_ipc(
         }
     };
 
-    match ctx.sync_call("_loadFile", args) {
+    let ipc_result = ctx.sync_call("_loadFile", args);
+    eprintln!("[v8-runtime] _loadFile result: is_ok={} has_bytes={}", ipc_result.is_ok(), ipc_result.as_ref().ok().map(|r| r.is_some()).unwrap_or(false));
+    match ipc_result {
         Ok(Some(bytes)) => match deserialize_v8_value(scope, &bytes) {
             Ok(val) => {
                 if val.is_string() {
@@ -5067,4 +5121,77 @@ mod tests {
             assert!(final_cap >= bufs.ser_buf.len(), "capacity >= len");
         }
     }
+}
+
+/// Detect if source code is likely CommonJS (not ESM).
+/// Checks for module.exports, exports.X, or require() patterns without ESM import/export.
+fn is_likely_cjs(source: &str) -> bool {
+    // If it has ESM syntax, it's not CJS
+    if source.contains("export ") || source.contains("import ") {
+        // Check for actual ESM: `export default`, `export {`, `export const`, `import {`, `import "`, `import(`
+        let has_esm_export = source.contains("export default")
+            || source.contains("export {")
+            || source.contains("export const")
+            || source.contains("export function")
+            || source.contains("export class")
+            || source.contains("export var")
+            || source.contains("export let");
+        let has_esm_import = source.contains("import {")
+            || source.contains("import \"")
+            || source.contains("import '")
+            || source.contains("import *");
+        if has_esm_export || has_esm_import {
+            return false;
+        }
+    }
+    // CJS indicators
+    source.contains("module.exports") || source.contains("exports.") || source.contains("require(")
+}
+
+/// Extract named export names from CJS source by scanning for `exports.X =` and
+/// `module.exports = { X: ... }` patterns. Returns a list of valid JS identifiers.
+fn extract_cjs_export_names(source: &str) -> Vec<String> {
+    use std::collections::HashSet;
+    let mut names = HashSet::new();
+
+    // Pattern 1: exports.NAME = ...
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("exports.") {
+            if let Some(eq_pos) = rest.find('=') {
+                let name = rest[..eq_pos].trim();
+                if is_valid_js_ident(name) && name != "default" {
+                    names.insert(name.to_string());
+                }
+            }
+        }
+        // Pattern 2: Object.defineProperty(exports, "NAME", ...)
+        if trimmed.contains("Object.defineProperty(exports") {
+            if let Some(start) = trimmed.find('"').or_else(|| trimmed.find('\'')) {
+                let rest = &trimmed[start + 1..];
+                if let Some(end) = rest.find('"').or_else(|| rest.find('\'')) {
+                    let name = &rest[..end];
+                    if is_valid_js_ident(name) && name != "default" && name != "__esModule" {
+                        names.insert(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut result: Vec<String> = names.into_iter().collect();
+    result.sort();
+    result
+}
+
+fn is_valid_js_ident(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let mut chars = s.chars();
+    let first = chars.next().unwrap();
+    if !first.is_alphabetic() && first != '_' && first != '$' {
+        return false;
+    }
+    chars.all(|c| c.is_alphanumeric() || c == '_' || c == '$')
 }
