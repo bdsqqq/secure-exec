@@ -118,9 +118,9 @@ export function _waitForActiveHandles(): Promise<void> {
 						complete();
 						return;
 					}
-					setTimeout(poll, 100);
+					setTimeout(poll, 1000);
 				};
-				setTimeout(poll, 100);
+				setTimeout(poll, 1000);
 			}),
 		);
 	}

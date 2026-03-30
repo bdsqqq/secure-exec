@@ -879,23 +879,46 @@ pub(crate) fn run_event_loop(
             break;
         }
 
-        // Receive next command, with optional abort monitoring
-        let cmd = if let Some(abort) = abort_rx {
-            crossbeam_channel::select! {
-                recv(rx) -> result => match result {
-                    Ok(cmd) => cmd,
-                    Err(_) => return EventLoopStatus::Terminated,
-                },
-                recv(abort) -> _ => {
-                    // Timeout fired — abort channel closed
-                    scope.terminate_execution();
-                    return EventLoopStatus::Terminated;
-                },
+        // Receive next command with interleaved microtask processing.
+        // Instead of blocking indefinitely, use a short timeout so we can
+        // periodically flush microtasks (like Node.js's libuv + DrainTasks pattern).
+        let cmd = loop {
+            let recv_result = if let Some(abort) = abort_rx {
+                crossbeam_channel::select! {
+                    recv(rx) -> result => result.ok(),
+                    recv(abort) -> _ => {
+                        scope.terminate_execution();
+                        return EventLoopStatus::Terminated;
+                    },
+                    default(std::time::Duration::from_millis(1)) => None,
+                }
+            } else {
+                rx.recv_timeout(std::time::Duration::from_millis(1)).ok()
+            };
+            if let Some(cmd) = recv_result {
+                break cmd;
             }
-        } else {
-            match rx.recv() {
-                Ok(cmd) => cmd,
-                Err(_) => return EventLoopStatus::Terminated,
+            // No command received — flush microtasks and check deferred queue
+            scope.perform_microtask_checkpoint();
+            if let Some(dq) = deferred {
+                if !dq.lock().unwrap().is_empty() {
+                    // New deferred work appeared — drain it in the outer loop
+                    let frames: Vec<BinaryFrame> = dq.lock().unwrap().drain(..).collect();
+                    for frame in frames {
+                        let status = dispatch_event_loop_frame(scope, frame, pending);
+                        if !matches!(status, EventLoopStatus::Completed) {
+                            return status;
+                        }
+                    }
+                }
+            }
+            // Check if we should exit
+            if pending.len() == 0
+                && !execution::pending_module_evaluation_needs_wait(scope)
+                && !execution::pending_script_evaluation_needs_wait(scope)
+                && deferred.map(|dq| dq.lock().unwrap().is_empty()).unwrap_or(true)
+            {
+                return EventLoopStatus::Completed;
             }
         };
 
