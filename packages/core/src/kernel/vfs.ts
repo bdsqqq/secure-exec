@@ -2,8 +2,25 @@
  * Virtual Filesystem interface.
  *
  * POSIX-complete interface that all filesystem backends must implement.
- * Extends the original secure-exec VirtualFileSystem with symlinks,
- * links, permissions, and metadata operations needed by WasmVM's WASI polyfill.
+ * The primary implementation is ChunkedVFS, which composes an FsMetadataStore
+ * (directory tree, inodes, chunk mapping) with an FsBlockStore (key-value blob
+ * store) to provide tiered storage with optional write buffering and versioning.
+ *
+ * Error behavior (KernelError codes):
+ * - ENOENT: path does not exist (readFile, stat, pread, pwrite, truncate, readlink, etc.)
+ * - EISDIR: operation targets a directory when a file is expected (readFile, pread, pwrite)
+ * - ENOTDIR: intermediate path component is not a directory
+ * - EEXIST: target already exists (createDir without recursive, link to existing)
+ * - ELOOP: symlink resolution exceeds 40 levels
+ * - ENOTEMPTY: removeDir on non-empty directory
+ * - EPERM: link to directory
+ * - EXDEV: cross-mount copy (raised by MountTable, not VFS directly)
+ *
+ * Optional methods (fsync, copy, readDirStat) may be absent. The kernel and
+ * MountTable use optional chaining and provide fallbacks where needed.
+ *
+ * Usage: create via `createChunkedVfs()` from `./vfs/chunked-vfs.ts`, or use
+ * `createInMemoryFileSystem()` from the package root for the default in-memory VFS.
  */
 
 export interface VirtualDirEntry {

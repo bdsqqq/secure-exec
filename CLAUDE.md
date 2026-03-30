@@ -181,14 +181,49 @@
 - `AF_UNIX` sockets are local IPC, not host networking: `SocketTable` bind/listen/connect for path sockets must stay fully in-kernel, bypass `permissions.network`, and only use the VFS/listener registry for reachability and socket-file state
 - kernel-owned `SocketTable` instances must validate owner PIDs against the shared process table at allocation time; only standalone/internal socket tables should omit that validator
 - when kernel `bind()` assigns an internal ephemeral port for `port: 0`, preserve that original ephemeral intent on the socket so external host-backed listeners can still call the host adapter with `port: 0` and then rewrite `localAddr` to the real host-assigned port
-- **the VFS is not the host file system** — files written by sandbox code live in the VFS (in-memory by default); host filesystem is accessible only through explicit read-only overlays (e.g., `node_modules`) configured by the embedder
-- when the kernel uses `InMemoryFileSystem`, rebind it to the shared `kernel.inodeTable` before wrapping it with devices/permissions; deferred-unlink FD I/O must use inode-based helpers on the raw in-memory FS, not pathname lookups
-- `InMemoryFileSystem` directory metadata must stay POSIX-shaped: directory `nlink` is `2 + immediate child directory count`, `readDir*()` must synthesize `.`/`..`, and symlink `lstat()` / typed readdir entries should expose the symlink's own stable inode instead of `ino: 0`
+- **the VFS is not the host file system** — files written by sandbox code live in the VFS (ChunkedVFS by default); host filesystem is accessible only through explicit read-only overlays (e.g., `node_modules`) configured by the embedder
+- the default in-memory VFS is `ChunkedVFS(InMemoryMetadataStore + InMemoryBlockStore)` created via `createInMemoryFileSystem()` from `@secure-exec/core`. The old monolithic `InMemoryFileSystem` class was removed.
 - deferred unlink must stay inode-backed: once a pathname is removed, new path lookups must fail immediately, but existing FDs must keep working through `FileDescription.inode` until the last reference closes
 - `KernelInterface.fdOpen()` is synchronous, so open-time file semantics (`O_CREAT`, `O_EXCL`, `O_TRUNC`) must go through sync-capable VFS hooks threaded through the device and permission wrappers — do not move those checks into async read/write paths
 - **embedders provide host adapters** that implement actual I/O — a Node.js embedder provides real `fs` and `net`; a browser embedder provides `fetch`-based networking and no file system; sandbox code doesn't know which adapter backs the kernel
 - when implementing new I/O features (e.g., UDP, TCP servers, fs.watch), they MUST route through the kernel — never bypass it to hit the host directly
 - see `docs/nodejs-compatibility.mdx` for the architecture diagram
+
+## Virtual Filesystem (VFS) Architecture
+
+The VFS uses a layered chunked architecture: `VirtualFileSystem` (kernel interface) is implemented by `ChunkedVFS`, which composes `FsMetadataStore` (directory tree, inodes, chunk mapping) + `FsBlockStore` (dumb key-value blob store).
+
+- **ChunkedVFS** (`packages/core/src/vfs/chunked-vfs.ts`): composes a metadata store and block store into a full `VirtualFileSystem`. Created via `createChunkedVfs(options)`.
+- **Tiered storage**: files <= `inlineThreshold` (default 64 KB) are stored inline in the metadata store. Larger files are split into fixed-size chunks (default 4 MB) in the block store. Automatic promotion/demotion when files cross the threshold.
+- **Per-inode async mutex**: prevents interleaved read-modify-write corruption on concurrent async operations (pwrite, writeFile, truncate, removeFile, rename). Read-only ops (pread, readFile, stat) do not acquire the mutex.
+- **Optional write buffering**: when `writeBuffering: true`, pwrite buffers dirty chunks in memory and flushes on fsync or auto-flush interval. Reads always see buffered data.
+- **Optional versioning**: when `versioning: true`, block keys include a random ID to avoid overwrites. Exposes `createVersion`, `listVersions`, `restoreVersion`, `pruneVersions` API.
+- **Block key format**: `{ino}/{chunkIndex}` (or `{ino}/{chunkIndex}/{randomId}` with versioning).
+
+### Available implementations
+
+- **InMemoryMetadataStore** (`packages/core/src/vfs/memory-metadata.ts`): pure JS Map-based. For ephemeral VMs and tests.
+- **SqliteMetadataStore** (`packages/core/src/vfs/sqlite-metadata.ts`): SQLite-backed via `better-sqlite3`. Supports versioning. Constructor accepts `{ dbPath }` where `:memory:` creates an in-memory database.
+- **InMemoryBlockStore** (`packages/core/src/vfs/memory-block-store.ts`): pure JS Map-based.
+- **HostBlockStore** (`packages/core/src/vfs/host-block-store.ts`): persists blocks as files on the host filesystem. For local dev environments.
+- **S3BlockStore** (in agent-os `packages/fs-s3/`): S3-compatible object storage. Server-side copy support.
+
+### Kernel VFS integration
+
+- The kernel delegates `pwrite` to the VFS interface instead of doing read-modify-write internally.
+- The kernel calls `vfs.fsync?.(path)` fire-and-forget in `releaseDescriptionInode` when the last FD for a file is closed.
+- All kernel I/O goes through the `VirtualFileSystem` interface only. The old `InMemoryFileSystem`-specific fast paths (`readFileByInode`, `preadByInode`, `writeFileByInode`, `statByInode`) and `rawInMemoryFs` field were removed.
+- `fdOpen` is synchronous. Open-time semantics (`O_CREAT`, `O_EXCL`, `O_TRUNC`) use `prepareOpenSync` on the VFS for sync-capable handling.
+
+## VFS Conformance Test Suites
+
+Three conformance test suites are exported from `@secure-exec/core` for external VFS implementations to validate against:
+
+- **VFS conformance** (`packages/core/src/test/vfs-conformance.ts`): tests the full `VirtualFileSystem` contract. Register with `defineVfsConformanceTests({ name, createFs, cleanup, capabilities })`. Capability flags gate optional test groups: `symlinks`, `hardLinks`, `permissions`, `utimes`, `truncate`, `pread`, `pwrite`, `mkdir`, `removeDir`, `fsync`, `copy`, `readDirStat`.
+- **Block store conformance** (`packages/core/src/test/block-store-conformance.ts`): tests the `FsBlockStore` contract. Register with `defineBlockStoreTests({ name, createStore, capabilities })`. Capability flag: `copy`.
+- **Metadata store conformance** (`packages/core/src/test/metadata-store-conformance.ts`): tests the `FsMetadataStore` contract. Register with `defineMetadataStoreTests({ name, createStore, capabilities })`. Capability flag: `versioning`.
+
+Test registration files go in `packages/core/test/vfs/`. Use small thresholds (e.g., 256 bytes inline, 1024 bytes chunk) for fast edge case tests.
 
 ## Code Transformation Policy
 

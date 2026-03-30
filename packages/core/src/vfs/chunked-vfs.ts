@@ -26,6 +26,13 @@ import type {
 // Options
 // ---------------------------------------------------------------------------
 
+/**
+ * Configuration for creating a ChunkedVFS instance via `createChunkedVfs()`.
+ *
+ * Requires a metadata store (directory tree, inodes) and a block store
+ * (key-value blob storage). Optional settings control tiered storage
+ * thresholds, write buffering, and versioning behavior.
+ */
 export interface ChunkedVfsOptions {
 	metadata: FsMetadataStore;
 	blocks: FsBlockStore;
