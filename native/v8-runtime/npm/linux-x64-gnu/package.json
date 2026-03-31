@@ -1,6 +1,6 @@
 {
   "name": "@secure-exec/v8-linux-x64-gnu",
-  "version": "0.2.0-rc.2",
+  "version": "0.2.0",
   "license": "Apache-2.0",
   "os": [
     "linux"
