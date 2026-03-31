@@ -1,4 +1,6 @@
-FROM rust:1.85.0-bookworm AS builder
+# Build base pinned to Ubuntu 22.04 (glibc 2.35) for portability.
+# See docs-internal/arch/glibc-portability.md
+FROM rust:1.85.0-jammy AS builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs

@@ -52,13 +52,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux builds pinned to ubuntu-22.04 (glibc 2.35) for portability.
+          # See docs-internal/arch/glibc-portability.md
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
             npm-dir: linux-x64-gnu
             binary: secure-exec-v8
             test: true
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
             npm-dir: linux-arm64-gnu
             binary: secure-exec-v8
             cross: true
