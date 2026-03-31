@@ -20,22 +20,9 @@ const HANDLE_DISPATCH = {
 
 // Resolvers waiting for all handles to complete
 let _waitResolvers: Array<() => void> = [];
-let _handlePollTimer: ReturnType<typeof setInterval> | null = null;
 
-function ensureHandlePollTimer(): void {
-	if (_handlePollTimer !== null) {
-		return;
-	}
-	_handlePollTimer = setInterval(() => {
-		if (_getActiveHandles().length > 0) {
-			return;
-		}
-		if (_handlePollTimer !== null) {
-			clearInterval(_handlePollTimer);
-			_handlePollTimer = null;
-		}
-	}, 25);
-}
+// No polling timer needed. Handle drain is detected event-driven via
+// _unregisterHandle which resolves all waiters when remaining === 0.
 
 /**
  * Register an active handle that keeps the sandbox alive.
@@ -46,7 +33,6 @@ function ensureHandlePollTimer(): void {
 export function _registerHandle(id: string, description: string): void {
 	try {
 		bridgeDispatchSync<void>(HANDLE_DISPATCH.register, id, description);
-		ensureHandlePollTimer();
 	} catch (error) {
 		if (error instanceof Error && error.message.includes("EAGAIN")) {
 			throw new Error(
@@ -63,10 +49,6 @@ export function _registerHandle(id: string, description: string): void {
  */
 export function _unregisterHandle(id: string): void {
 	const remaining = bridgeDispatchSync<number>(HANDLE_DISPATCH.unregister, id);
-	if (remaining === 0 && _handlePollTimer !== null) {
-		clearInterval(_handlePollTimer);
-		_handlePollTimer = null;
-	}
 	if (remaining === 0 && _waitResolvers.length > 0) {
 		const resolvers = _waitResolvers;
 		_waitResolvers = [];

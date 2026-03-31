@@ -394,6 +394,38 @@ describe('Node RuntimeDriver', () => {
       expect(code).toBe(0);
       expect(output).toContain('spy-echo-output');
     });
+
+    it('child_process stdout works with readline consumers', async () => {
+      const vfs = new SimpleVFS();
+      kernel = createKernel({ filesystem: vfs as any });
+      await kernel.mount(createNodeRuntime());
+
+      const chunks: Uint8Array[] = [];
+      const proc = kernel.spawn('node', ['-e', `
+        const { spawn } = require('child_process');
+        const readline = require('readline');
+
+        const child = spawn('node', ['-e', 'console.log("child-line")']);
+        const rl = readline.createInterface({ input: child.stdout });
+
+        rl.on('line', (line) => {
+          console.log('line:' + line);
+        });
+
+        child.on('exit', (code) => {
+          console.log('exit:' + code);
+        });
+      `], {
+        onStdout: (data) => chunks.push(data),
+      });
+
+      const code = await proc.wait();
+      const output = chunks.map(c => new TextDecoder().decode(c)).join('');
+
+      expect(code).toBe(0);
+      expect(output).toContain('line:child-line');
+      expect(output).toContain('exit:0');
+    });
   });
 
   describe('stdin streaming', () => {

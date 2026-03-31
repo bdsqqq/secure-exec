@@ -930,9 +930,7 @@ pub fn execute_module(
         prefetch_module_imports(tc, bridge_ctx, module, resource_name_str);
 
         // Instantiate (calls resolve callback for each import — mostly cache hits now)
-        eprintln!("[v8-runtime] instantiating module...");
         let inst_result = module.instantiate_module(tc, module_resolve_callback);
-        eprintln!("[v8-runtime] instantiate result: {:?}", inst_result.is_some());
         if inst_result.is_none()
         {
             clear_module_state();
@@ -946,10 +944,7 @@ pub fn execute_module(
         }
 
         // Evaluate
-        let eval_start = std::time::Instant::now();
-        eprintln!("[v8-runtime] evaluating module (resource={})...", resource_name_str);
         let eval_result = module.evaluate(tc);
-        eprintln!("[v8-runtime] evaluate done: result={} elapsed={}ms", eval_result.is_some(), eval_start.elapsed().as_millis());
         if eval_result.is_none() {
             clear_module_state();
             return match tc.exception() {
@@ -1028,7 +1023,8 @@ pub fn execute_module(
             }
         };
 
-        clear_module_state();
+        // Keep module resolve state available after the initial module finishes.
+        // Dynamic imports can still fire later on the same session event loop.
         (0, Some(exports_bytes), None)
     }
 }
@@ -1122,11 +1118,7 @@ fn prefetch_module_imports(
 
                 // Detect CJS and wrap in ESM shim if needed
                 let is_cjs = is_likely_cjs(source_code);
-                if resolved_path.contains("balanced") {
-                    eprintln!("[v8-runtime] balanced-match check: is_cjs={} source_len={} first_100={}", is_cjs, source_code.len(), &source_code[..std::cmp::min(source_code.len(), 100)]);
-                }
                 let effective_source = if is_cjs {
-                    eprintln!("[v8-runtime] CJS→ESM shim (prefetch): {}", resolved_path);
                     let exports = extract_cjs_export_names(source_code);
                     let mut shim = format!(
                         "const _cjsModule = globalThis._requireFrom(\"{}\", \"/\");\nexport default _cjsModule;\n",
@@ -1219,9 +1211,9 @@ fn resolve_or_compile_module<'s>(
     // Phase 2: Get bridge context.
     let bridge_ctx_ptr = MODULE_RESOLVE_STATE.with(|cell| {
         let borrow = cell.borrow();
-        let state = borrow.as_ref().expect("module resolve state not set");
-        state.bridge_ctx
+        borrow.as_ref().map(|state| state.bridge_ctx)
     });
+    let bridge_ctx_ptr = bridge_ctx_ptr?;
     let ctx = unsafe { &*bridge_ctx_ptr };
 
     // Phase 3: Resolve module path.
@@ -1238,16 +1230,13 @@ fn resolve_or_compile_module<'s>(
     }
 
     // Phase 5: Load and compile the module source.
-    eprintln!("[v8-runtime] loading module: {} (specifier={} referrer={})", &resolved_path, specifier_str, referrer_name);
     let raw_source = load_module_via_ipc(scope, ctx, &resolved_path)?;
-    eprintln!("[v8-runtime] loaded {} bytes, is_cjs={}", raw_source.len(), is_likely_cjs(&raw_source));
 
     // Phase 5b: Detect CJS modules and wrap in ESM shim.
     // CJS modules use module.exports/exports which isn't valid ESM syntax.
     // Real Node.js wraps CJS in a default+named export shim. We do the same
     // by generating: `const _m = globalThis._requireFrom(path, "/"); export default _m; export const {named1, named2, ...} = _m;`
     let source_code = if is_likely_cjs(&raw_source) {
-        eprintln!("[v8-runtime] CJS→ESM shim for: {}", &resolved_path);
         // Extract potential named exports by scanning for common patterns
         let exports = extract_cjs_export_names(&raw_source);
         let mut shim = format!(
@@ -1291,8 +1280,6 @@ fn resolve_or_compile_module<'s>(
     };
     let mut compiled = v8::script_compiler::Source::new(v8_source, Some(&origin));
     let module = v8::script_compiler::compile_module(scope, &mut compiled)?;
-    eprintln!("[v8-runtime] compiled OK: {}", &resolved_path);
-
     MODULE_RESOLVE_STATE.with(|cell| {
         if let Some(state) = cell.borrow_mut().as_mut() {
             state
@@ -1548,13 +1535,10 @@ fn module_resolve_callback<'a>(
 
     let referrer_name = MODULE_RESOLVE_STATE.with(|cell| {
         let borrow = cell.borrow();
-        let state = borrow.as_ref().expect("module resolve state not set");
-        state
-            .module_names
-            .get(&referrer_hash)
-            .cloned()
-            .unwrap_or_default()
+        let state = borrow.as_ref()?;
+        state.module_names.get(&referrer_hash).cloned()
     });
+    let referrer_name = referrer_name?;
     resolve_or_compile_module(scope, &specifier_str, &referrer_name)
 }
 
@@ -1627,7 +1611,6 @@ fn load_module_via_ipc(
     };
 
     let ipc_result = ctx.sync_call("_loadFile", args);
-    eprintln!("[v8-runtime] _loadFile result: is_ok={} has_bytes={}", ipc_result.is_ok(), ipc_result.as_ref().ok().map(|r| r.is_some()).unwrap_or(false));
     match ipc_result {
         Ok(Some(bytes)) => match deserialize_v8_value(scope, &bytes) {
             Ok(val) => {
@@ -5019,6 +5002,87 @@ mod tests {
                 written.is_empty(),
                 "no IPC calls expected for module with no imports"
             );
+        }
+
+        // Part 69: Dynamic import works after execute_module returns
+        {
+            let mut iso = isolate::create_isolate(None);
+            iso.set_host_import_module_dynamically_callback(dynamic_import_callback);
+            iso.set_host_initialize_import_meta_object_callback(import_meta_object_callback);
+            let ctx = isolate::create_context(&mut iso);
+
+            let mut response_buf = Vec::new();
+
+            let resolve_result = v8_serialize_str(&mut iso, &ctx, "/dep.mjs");
+            crate::ipc_binary::write_frame(
+                &mut response_buf,
+                &crate::ipc_binary::BinaryFrame::BridgeResponse {
+                    session_id: String::new(),
+                    call_id: 1,
+                    status: 0,
+                    payload: resolve_result,
+                },
+            )
+            .unwrap();
+
+            let load_result = v8_serialize_str(&mut iso, &ctx, "export const value = 42;");
+            crate::ipc_binary::write_frame(
+                &mut response_buf,
+                &crate::ipc_binary::BinaryFrame::BridgeResponse {
+                    session_id: String::new(),
+                    call_id: 2,
+                    status: 0,
+                    payload: load_result,
+                },
+            )
+            .unwrap();
+
+            let bridge_ctx = BridgeCallContext::new(
+                Box::new(Vec::new()),
+                Box::new(Cursor::new(response_buf)),
+                "test-session".into(),
+            );
+
+            let user_code = r#"
+                globalThis.loadDep = async () => (await import("./dep.mjs")).value;
+                export const ready = true;
+            "#;
+            let (code, exports, error) = {
+                let scope = &mut v8::HandleScope::new(&mut iso);
+                let local = v8::Local::new(scope, &ctx);
+                let scope = &mut v8::ContextScope::new(scope, local);
+                execute_module(
+                    scope,
+                    &bridge_ctx,
+                    "",
+                    user_code,
+                    Some("/app/main.mjs"),
+                    &mut None,
+                )
+            };
+
+            assert_eq!(code, 0, "error: {:?}", error);
+            assert!(error.is_none());
+            assert!(exports.is_some());
+
+            {
+                let scope = &mut v8::HandleScope::new(&mut iso);
+                let local = v8::Local::new(scope, &ctx);
+                let scope = &mut v8::ContextScope::new(scope, local);
+                let tc = &mut v8::TryCatch::new(scope);
+                let source = v8::String::new(
+                    tc,
+                    "globalThis.__depPromise = globalThis.loadDep().then((value) => { globalThis.__depValue = value; return value; });",
+                )
+                .unwrap();
+                let script = v8::Script::compile(tc, source, None).unwrap();
+                assert!(script.run(tc).is_some());
+                tc.perform_microtask_checkpoint();
+                assert!(tc.exception().is_none());
+            }
+
+            assert_eq!(eval(&mut iso, &ctx, "String(globalThis.__depValue)"), "42");
+            clear_module_state();
         }
 
         // --- Part 57: serialize_v8_value_into reuses buffer capacity ---

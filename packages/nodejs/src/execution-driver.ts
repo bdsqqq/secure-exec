@@ -19,7 +19,7 @@ import type {
 	RunResult,
 	TimingMitigation,
 } from "@secure-exec/core/internal/shared/api-types";
-import type { V8Runtime, V8Session, V8SessionOptions } from "@secure-exec/v8";
+import type { V8ExecutionOptions, V8Runtime, V8Session, V8SessionOptions } from "@secure-exec/v8";
 import { createV8Runtime } from "@secure-exec/v8";
 import { getRawBridgeCode, getBridgeAttachCode } from "./bridge-loader.js";
 import {
@@ -145,6 +145,7 @@ interface DriverState {
 // Shared V8 runtime process — one per Node.js process, lazy-initialized
 let sharedV8Runtime: V8Runtime | null = null;
 let sharedV8RuntimePromise: Promise<V8Runtime> | null = null;
+let sharedV8RuntimeUsers = 0;
 
 async function getSharedV8Runtime(): Promise<V8Runtime> {
 	if (sharedV8Runtime?.isAlive) return sharedV8Runtime;
@@ -161,6 +162,36 @@ async function getSharedV8Runtime(): Promise<V8Runtime> {
 		return rt;
 	});
 	return sharedV8RuntimePromise;
+}
+
+async function releaseSharedV8Runtime(): Promise<void> {
+	if (sharedV8RuntimeUsers > 0) {
+		sharedV8RuntimeUsers -= 1;
+	}
+	if (sharedV8RuntimeUsers !== 0) {
+		return;
+	}
+
+	if (sharedV8RuntimePromise) {
+		void sharedV8RuntimePromise
+			.then(async (runtime) => {
+				if (sharedV8RuntimeUsers !== 0 || sharedV8Runtime !== runtime) {
+					return;
+				}
+				sharedV8Runtime = null;
+				await runtime.dispose().catch(() => {});
+			})
+			.catch(() => {});
+		return;
+	}
+
+	if (!sharedV8Runtime) {
+		return;
+	}
+
+	const runtime = sharedV8Runtime;
+	sharedV8Runtime = null;
+	await runtime.dispose().catch(() => {});
 }
 
 // Minimal polyfills for APIs the bridge IIFE expects but the Rust V8 runtime doesn't provide.
@@ -776,6 +807,7 @@ export class NodeExecutionDriver implements RuntimeDriver {
 	private _currentSession: V8Session | null = null;
 
 	constructor(options: NodeExecutionDriverOptions) {
+		sharedV8RuntimeUsers += 1;
 		this.memoryLimit = options.memoryLimit ?? 128;
 		const budgets = options.resourceBudgets;
 		this.socketTable = options.socketTable;
@@ -1281,20 +1313,31 @@ export class NodeExecutionDriver implements RuntimeDriver {
 			// Track session so terminate/dispose can destroy it
 			this._currentSession = session;
 
+			const sessionProcessConfig = {
+				platform: execProcessConfig.platform,
+				arch: execProcessConfig.arch,
+				version: execProcessConfig.version,
+				cwd: execProcessConfig.cwd ?? "/",
+				env: execProcessConfig.env ?? {},
+				argv: execProcessConfig.argv,
+				execPath: execProcessConfig.execPath,
+				pid: execProcessConfig.pid,
+				ppid: execProcessConfig.ppid,
+				uid: execProcessConfig.uid,
+				gid: execProcessConfig.gid,
+				stdin: execProcessConfig.stdin,
+				timing_mitigation: timingMitigation,
+				frozen_time_ms: timingMitigation === "freeze" ? frozenTimeMs : null,
+			} as V8ExecutionOptions["processConfig"];
+
 			// Execute in V8 session
-			console.error(`[exec] mode=${sessionMode} entryIsEsm=${entryIsEsm} filePath=${options.filePath} codeLen=${userCode.length}`);
 			const result = await session.execute({
 				bridgeCode,
 				postRestoreScript,
 				userCode,
 				mode: sessionMode,
 				filePath: options.filePath,
-				processConfig: {
-					cwd: execProcessConfig.cwd ?? "/",
-					env: execProcessConfig.env ?? {},
-					timing_mitigation: timingMitigation,
-					frozen_time_ms: timingMitigation === "freeze" ? frozenTimeMs : null,
-				},
+				processConfig: sessionProcessConfig,
 				osConfig: {
 					homedir: s.osConfig.homedir ?? DEFAULT_SANDBOX_HOME,
 					tmpdir: s.osConfig.tmpdir ?? DEFAULT_SANDBOX_TMPDIR,
@@ -1432,6 +1475,7 @@ export class NodeExecutionDriver implements RuntimeDriver {
 		if (this.pid !== undefined) {
 			this.clearKernelTimersForProcess(this.pid);
 		}
+		void releaseSharedV8Runtime();
 	}
 
 	async terminate(): Promise<void> {
@@ -1451,6 +1495,7 @@ export class NodeExecutionDriver implements RuntimeDriver {
 			this.clearKernelTimersForProcess(this.pid);
 		}
 		this.disposed = true;
+		await releaseSharedV8Runtime();
 	}
 }
 
@@ -1500,6 +1545,7 @@ function buildPostRestoreScript(
 	// Inject process and OS config
 	parts.push(`globalThis.${getProcessConfigGlobalKey()} = ${JSON.stringify(processConfig)};`);
 	parts.push(`globalThis.${getOsConfigGlobalKey()} = ${JSON.stringify(osConfig)};`);
+	parts.push(`if (typeof globalThis.__runtimeRefreshProcessConfig === "function") globalThis.__runtimeRefreshProcessConfig();`);
 
 	// Inject TTY config separately — InjectGlobals overwrites _processConfig,
 	// so TTY flags need their own global that persists
@@ -1515,7 +1561,6 @@ function buildPostRestoreScript(
 	}
 
 	// Enable streaming stdin for non-TTY processes that need live stdin delivery
-	console.error(`[postRestore] streamStdin=${bridgeConfig.streamStdin} mode=${mode}`);
 	if (bridgeConfig.streamStdin) {
 		parts.push(`globalThis.__runtimeStreamStdin = true;`);
 	}

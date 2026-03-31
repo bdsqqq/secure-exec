@@ -405,6 +405,7 @@ class NodeRuntimeDriver implements RuntimeDriver {
   private _permissions: Partial<Permissions>;
   private _bindings?: BindingTree;
   private _activeDrivers = new Map<number, NodeExecutionDriver>();
+  private _terminatingDrivers = new Map<number, Promise<void>>();
   private _loopbackExemptPorts?: number[];
   private _moduleAccessCwd?: string;
   private _packageRoots?: Array<{ hostPath: string; vmPath: string }>;
@@ -428,6 +429,27 @@ class NodeRuntimeDriver implements RuntimeDriver {
     // Handle bare commands resolvable via node_modules/.bin
     if (this._resolveBinCommand(command) !== null) return true;
     return false;
+  }
+
+  private _terminateDriver(pid: number, driver: NodeExecutionDriver): Promise<void> {
+    const existing = this._terminatingDrivers.get(pid);
+    if (existing) {
+      return existing;
+    }
+
+    const termination = (async () => {
+      try {
+        await driver.terminate();
+      } catch {
+        driver.dispose();
+      } finally {
+        this._activeDrivers.delete(pid);
+        this._terminatingDrivers.delete(pid);
+      }
+    })();
+
+    this._terminatingDrivers.set(pid, termination);
+    return termination;
   }
 
   /**
@@ -506,7 +528,6 @@ class NodeRuntimeDriver implements RuntimeDriver {
     let batchStdinResolve: ((data: string | undefined) => void) | null = null;
     let batchStdinPromise: Promise<string | undefined> | undefined;
 
-    console.error(`[kernel-runtime] pid=${ctx.pid} streamStdin=${ctx.streamStdin} command=${command}`);
     if (ctx.streamStdin) {
       // Streaming mode: writeStdin delivers data to the running process immediately
       const stdinQueue: Uint8Array[] = [];
@@ -593,16 +614,18 @@ class NodeRuntimeDriver implements RuntimeDriver {
         }
         const driver = this._activeDrivers.get(ctx.pid);
         if (!driver) {
+          const terminating = this._terminatingDrivers.get(ctx.pid);
+          if (terminating) {
+            void terminating.finally(() => {
+              reportKilledExit(normalizedSignal);
+            });
+            return;
+          }
           reportKilledExit(normalizedSignal);
           return;
         }
-        this._activeDrivers.delete(ctx.pid);
-        void driver
-          .terminate()
-          .catch(() => {
-            // Best effort: disposal still clears local resource tracking.
-            driver.dispose();
-          })
+        void this
+          ._terminateDriver(ctx.pid, driver)
           .finally(() => {
             reportKilledExit(normalizedSignal);
           });
@@ -617,10 +640,16 @@ class NodeRuntimeDriver implements RuntimeDriver {
   }
 
   async dispose(): Promise<void> {
-    for (const driver of this._activeDrivers.values()) {
-      try { driver.dispose(); } catch { /* best effort */ }
+    const terminations = new Set<Promise<void>>();
+    for (const [pid, driver] of this._activeDrivers.entries()) {
+      terminations.add(this._terminateDriver(pid, driver));
     }
+    for (const termination of this._terminatingDrivers.values()) {
+      terminations.add(termination);
+    }
+    await Promise.allSettled([...terminations]);
     this._activeDrivers.clear();
+    this._terminatingDrivers.clear();
     this._kernel = null;
   }
 
@@ -747,12 +776,7 @@ class NodeRuntimeDriver implements RuntimeDriver {
       this._activeDrivers.set(ctx.pid, executionDriver);
       const killedSignal = getKilledSignal();
       if (killedSignal !== null) {
-        this._activeDrivers.delete(ctx.pid);
-        try {
-          await executionDriver.terminate();
-        } catch {
-          executionDriver.dispose();
-        }
+        await this._terminateDriver(ctx.pid, executionDriver);
         return;
       }
 
@@ -781,9 +805,8 @@ class NodeRuntimeDriver implements RuntimeDriver {
         proc.onStderr?.(errBytes);
       }
 
-      // Cleanup isolate
-      executionDriver.dispose();
-      this._activeDrivers.delete(ctx.pid);
+      // Cleanup isolate and release the shared V8 runtime if this was the last user.
+      await this._terminateDriver(ctx.pid, executionDriver);
 
       resolveExit(result.code);
       proc.onExit?.(result.code);
@@ -796,8 +819,7 @@ class NodeRuntimeDriver implements RuntimeDriver {
       // Cleanup on error
       const driver = this._activeDrivers.get(ctx.pid);
       if (driver) {
-        try { driver.dispose(); } catch { /* best effort */ }
-        this._activeDrivers.delete(ctx.pid);
+        await this._terminateDriver(ctx.pid, driver);
       }
 
       resolveExit(1);

@@ -204,7 +204,6 @@ impl BridgeCallContext {
     /// blocks on read() for the BridgeResponse, and returns the result.
     /// Error responses from the host are returned as Err.
     pub fn sync_call(&self, method: &str, args: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
-        eprintln!("[v8-ipc] sync_call: {} session={}", method, self.session_id);
         let call_id = self.next_call_id.fetch_add(1, Ordering::Relaxed);
 
         // Register call_id in pending set (reject duplicates)

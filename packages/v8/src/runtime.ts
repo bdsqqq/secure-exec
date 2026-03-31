@@ -119,6 +119,17 @@ export async function createV8Runtime(
 	// Track whether the process is alive
 	let processAlive = true;
 	let exitError: Error | null = null;
+	const handleParentExit = () => {
+		if (!processAlive) {
+			return;
+		}
+		try {
+			child.kill("SIGTERM");
+		} catch {
+			// Best effort during process shutdown.
+		}
+	};
+	process.once("exit", handleParentExit);
 
 	function formatRuntimeCloseError(baseMessage: string): Error {
 		const details: string[] = [baseMessage];
@@ -133,6 +144,7 @@ export async function createV8Runtime(
 
 	child.on("exit", (code, signal) => {
 		processAlive = false;
+		process.removeListener("exit", handleParentExit);
 		if (code !== 0 && code !== null) {
 			exitError = new Error(
 				`V8 runtime process exited with code ${code}`,
@@ -482,6 +494,7 @@ export async function createV8Runtime(
 		async dispose(): Promise<void> {
 			if (disposed) return;
 			disposed = true;
+			process.removeListener("exit", handleParentExit);
 
 			// Close IPC connection
 			ipcClient?.close();

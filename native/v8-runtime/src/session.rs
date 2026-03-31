@@ -556,12 +556,6 @@ fn session_thread(
                             || execution::has_pending_script_evaluation()
                             || !deferred_queue.lock().unwrap().is_empty();
                         let event_loop_status = if should_enter_event_loop {
-                                eprintln!("[v8-runtime] entering event loop: pending={} module_eval={} script_eval={} deferred={} esm={}",
-                                    pending.len(),
-                                    execution::has_pending_module_evaluation(),
-                                    execution::has_pending_script_evaluation(),
-                                    !deferred_queue.lock().unwrap().is_empty(),
-                                    mode != 0);
                                 let scope = &mut v8::HandleScope::new(iso);
                                 let ctx = v8::Local::new(scope, &exec_context);
                                 let scope = &mut v8::ContextScope::new(scope, ctx);
@@ -601,10 +595,6 @@ fn session_thread(
                         // the session alive while handles (timers, child processes,
                         // stdin listeners) are active. This creates a pending promise
                         // that the event loop pumps until all handles resolve.
-                        eprintln!("[v8-runtime] post-eval: terminated={} mode={} error={} code={}", terminated, mode, error.is_some(), code);
-                        if let Some(ref err) = error {
-                            eprintln!("[v8-runtime] error: type={} message={}", err.error_type, &err.message[..std::cmp::min(err.message.len(), 200)]);
-                        }
                         if !terminated && mode != 0 && error.is_none() {
                             // Phase 1: call _waitForActiveHandles() to register a pending promise
                             {
@@ -620,7 +610,6 @@ fn session_thread(
                                         if let Some(result) = func.call(scope, recv, &[]) {
                                             if result.is_promise() {
                                                 let promise = v8::Local::<v8::Promise>::try_from(result).unwrap();
-                                                eprintln!("[v8-runtime] _waitForActiveHandles promise state: {:?}", promise.state());
                                                 if promise.state() == v8::PromiseState::Pending {
                                                     execution::set_pending_script_evaluation(scope, promise);
                                                 }
@@ -635,7 +624,6 @@ fn session_thread(
                                 || execution::has_pending_script_evaluation()
                                 || !deferred_queue.lock().unwrap().is_empty()
                             {
-                                eprintln!("[v8-runtime] pumping event loop for ESM active handles");
                                 let scope = &mut v8::HandleScope::new(iso);
                                 let ctx = v8::Local::new(scope, &exec_context);
                                 let scope = &mut v8::ContextScope::new(scope, ctx);
@@ -752,7 +740,7 @@ fn session_thread(
 ///
 /// Sync functions block V8 while the host processes the call (applySync/applySyncPromise).
 /// Async functions return a Promise to V8, resolved when the host responds (apply).
-pub(crate) const SYNC_BRIDGE_FNS: [&str; 32] = [
+pub(crate) const SYNC_BRIDGE_FNS: [&str; 34] = [
     // Console
     "_log",
     "_error",
@@ -760,6 +748,9 @@ pub(crate) const SYNC_BRIDGE_FNS: [&str; 32] = [
     "_resolveModule",
     "_loadFile",
     "_loadPolyfill",
+    // Sync module loading (bypass _loadPolyfill dispatch, used by CJS require)
+    "_resolveModuleSync",
+    "_loadFileSync",
     // Crypto
     "_cryptoRandomFill",
     "_cryptoRandomUUID",

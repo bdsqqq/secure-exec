@@ -4184,7 +4184,6 @@
         _debugRequire('start', moduleName, fromDir);
         // Strip node: prefix
         const name = moduleName.replace(/^node:/, '');
-
         // For absolute paths (resolved paths), use as cache key
         // For relative/bare imports, resolve first
         let cacheKey = name;

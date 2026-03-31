@@ -176,18 +176,54 @@ interface StdinStream {
 // Stream stub for stdout/stderr
 interface OutputStreamStub {
   readable: boolean;
+  isTTY?: boolean;
   _listeners: Record<string, EventListener[]>;
   _onceListeners: Record<string, EventListener[]>;
+  _bufferedChunks: unknown[];
+  _ended: boolean;
+  _flushScheduled: boolean;
   _maxListeners: number;
   _maxListenersWarned: Set<string>;
   on(event: string, listener: EventListener): OutputStreamStub;
   once(event: string, listener: EventListener): OutputStreamStub;
+  off(event: string, listener: EventListener): OutputStreamStub;
+  removeListener(event: string, listener: EventListener): OutputStreamStub;
   emit(event: string, ...args: unknown[]): boolean;
   read(): null;
   setEncoding(): OutputStreamStub;
   setMaxListeners(n: number): OutputStreamStub;
   getMaxListeners(): number;
   pipe<T extends NodeJS.WritableStream>(dest: T): T;
+  pause(): OutputStreamStub;
+  resume(): OutputStreamStub;
+}
+
+function hasOutputListeners(stream: OutputStreamStub, event: string): boolean {
+  return (
+    (stream._listeners[event]?.length ?? 0) > 0 ||
+    (stream._onceListeners[event]?.length ?? 0) > 0
+  );
+}
+
+function scheduleOutputFlush(stream: OutputStreamStub): void {
+  if (stream._flushScheduled) {
+    return;
+  }
+  stream._flushScheduled = true;
+  queueMicrotask(() => {
+    stream._flushScheduled = false;
+
+    if (stream._bufferedChunks.length > 0 && hasOutputListeners(stream, "data")) {
+      const chunks = stream._bufferedChunks.splice(0, stream._bufferedChunks.length);
+      for (const chunk of chunks) {
+        stream.emit("data", chunk);
+      }
+    }
+
+    if (stream._ended && stream._bufferedChunks.length === 0 && hasOutputListeners(stream, "end")) {
+      stream.emit("end");
+    }
+  });
 }
 
 /** Warn when listener count exceeds max (Node.js: warn, don't crash) */
@@ -255,23 +291,57 @@ class ChildProcess {
     // Create stdout stream stub
     this.stdout = {
       readable: true,
+      isTTY: false,
       _listeners: {},
       _onceListeners: {},
+      _bufferedChunks: [],
+      _ended: false,
+      _flushScheduled: false,
       _maxListeners: 10,
       _maxListenersWarned: new Set(),
       on(event: string, listener: EventListener): OutputStreamStub {
         if (!this._listeners[event]) this._listeners[event] = [];
         this._listeners[event].push(listener);
         checkStreamMaxListeners(this, event);
+        if (event === "data" || event === "end") {
+          scheduleOutputFlush(this);
+        }
         return this;
       },
       once(event: string, listener: EventListener): OutputStreamStub {
         if (!this._onceListeners[event]) this._onceListeners[event] = [];
         this._onceListeners[event].push(listener);
         checkStreamMaxListeners(this, event);
+        if (event === "data" || event === "end") {
+          scheduleOutputFlush(this);
+        }
         return this;
       },
+      off(event: string, listener: EventListener): OutputStreamStub {
+        if (this._listeners[event]) {
+          const idx = this._listeners[event].indexOf(listener);
+          if (idx !== -1) this._listeners[event].splice(idx, 1);
+        }
+        if (this._onceListeners[event]) {
+          const idx = this._onceListeners[event].indexOf(listener);
+          if (idx !== -1) this._onceListeners[event].splice(idx, 1);
+        }
+        return this;
+      },
+      removeListener(event: string, listener: EventListener): OutputStreamStub {
+        return this.off(event, listener);
+      },
       emit(event: string, ...args: unknown[]): boolean {
+        if (event === "data" && !hasOutputListeners(this, "data")) {
+          this._bufferedChunks.push(args[0]);
+          return false;
+        }
+        if (event === "end") {
+          this._ended = true;
+          if (!hasOutputListeners(this, "end")) {
+            return false;
+          }
+        }
         if (this._listeners[event]) {
           this._listeners[event].forEach((fn) => fn(...args));
         }
@@ -296,29 +366,69 @@ class ChildProcess {
       },
       pipe<T extends NodeJS.WritableStream>(dest: T): T {
         return dest;
+      },
+      pause(): OutputStreamStub {
+        return this;
+      },
+      resume(): OutputStreamStub {
+        return this;
       },
     };
 
     // Create stderr stream stub
     this.stderr = {
       readable: true,
+      isTTY: false,
       _listeners: {},
       _onceListeners: {},
+      _bufferedChunks: [],
+      _ended: false,
+      _flushScheduled: false,
       _maxListeners: 10,
       _maxListenersWarned: new Set(),
       on(event: string, listener: EventListener): OutputStreamStub {
         if (!this._listeners[event]) this._listeners[event] = [];
         this._listeners[event].push(listener);
         checkStreamMaxListeners(this, event);
+        if (event === "data" || event === "end") {
+          scheduleOutputFlush(this);
+        }
         return this;
       },
       once(event: string, listener: EventListener): OutputStreamStub {
         if (!this._onceListeners[event]) this._onceListeners[event] = [];
         this._onceListeners[event].push(listener);
         checkStreamMaxListeners(this, event);
+        if (event === "data" || event === "end") {
+          scheduleOutputFlush(this);
+        }
         return this;
       },
+      off(event: string, listener: EventListener): OutputStreamStub {
+        if (this._listeners[event]) {
+          const idx = this._listeners[event].indexOf(listener);
+          if (idx !== -1) this._listeners[event].splice(idx, 1);
+        }
+        if (this._onceListeners[event]) {
+          const idx = this._onceListeners[event].indexOf(listener);
+          if (idx !== -1) this._onceListeners[event].splice(idx, 1);
+        }
+        return this;
+      },
+      removeListener(event: string, listener: EventListener): OutputStreamStub {
+        return this.off(event, listener);
+      },
       emit(event: string, ...args: unknown[]): boolean {
+        if (event === "data" && !hasOutputListeners(this, "data")) {
+          this._bufferedChunks.push(args[0]);
+          return false;
+        }
+        if (event === "end") {
+          this._ended = true;
+          if (!hasOutputListeners(this, "end")) {
+            return false;
+          }
+        }
         if (this._listeners[event]) {
           this._listeners[event].forEach((fn) => fn(...args));
         }
@@ -343,6 +453,12 @@ class ChildProcess {
       },
       pipe<T extends NodeJS.WritableStream>(dest: T): T {
         return dest;
+      },
+      pause(): OutputStreamStub {
+        return this;
+      },
+      resume(): OutputStreamStub {
+        return this;
       },
     };
 

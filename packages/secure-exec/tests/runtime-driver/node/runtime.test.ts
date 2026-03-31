@@ -94,6 +94,29 @@ describe("runtime driver specific: node", () => {
 	});
 
 	describe("isTTY and setRawMode", () => {
+		it("preserves process argv fields from processConfig", async () => {
+			const runtime = createRuntimeWithProcessConfig(
+				{
+					argv: ["node", "/app/cli.js", "--mode", "rpc", "--no-themes"],
+					execPath: "/usr/local/bin/node",
+				},
+				runtimes,
+			);
+			const result = await runtime.run(`
+				module.exports = {
+					argv: process.argv,
+					argv0: process.argv0,
+					execPath: process.execPath,
+				};
+			`);
+			expect(result.code).toBe(0);
+			expect(result.exports).toEqual({
+				argv: ["node", "/app/cli.js", "--mode", "rpc", "--no-themes"],
+				argv0: "node",
+				execPath: "/usr/local/bin/node",
+			});
+		});
+
 		it("process.stdout.isTTY is true when stdoutIsTTY is set in processConfig", async () => {
 			const runtime = createRuntimeWithProcessConfig(
 				{ stdoutIsTTY: true },

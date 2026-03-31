@@ -3,8 +3,18 @@
 
 /** Process configuration injected as _processConfig global. */
 export interface ProcessConfig {
+	platform?: string;
+	arch?: string;
+	version?: string;
 	cwd: string;
 	env: Record<string, string>;
+	argv?: string[];
+	execPath?: string;
+	pid?: number;
+	ppid?: number;
+	uid?: number;
+	gid?: number;
+	stdin?: string;
 	timing_mitigation: string;
 	frozen_time_ms: number | null;
 }

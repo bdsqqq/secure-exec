@@ -33,8 +33,18 @@ export interface V8ExecutionOptions {
 	filePath?: string;
 	/** Process config to inject as _processConfig global. */
 	processConfig: {
+		platform?: string;
+		arch?: string;
+		version?: string;
 		cwd: string;
 		env: Record<string, string>;
+		argv?: string[];
+		execPath?: string;
+		pid?: number;
+		ppid?: number;
+		uid?: number;
+		gid?: number;
+		stdin?: string;
 		timing_mitigation: string;
 		frozen_time_ms: number | null;
 	};

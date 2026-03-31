@@ -85,39 +85,45 @@ declare const _unregisterHandle:
   | undefined;
 
 // Get config with defaults
-const config = {
-  platform:
-    (typeof _processConfig !== "undefined" && _processConfig.platform) ||
-    "linux",
-  arch:
-    (typeof _processConfig !== "undefined" && _processConfig.arch) || "x64",
-  version:
-    (typeof _processConfig !== "undefined" && _processConfig.version) ||
-    "v22.0.0",
-  cwd: (typeof _processConfig !== "undefined" && _processConfig.cwd) || "/root",
-  env: (typeof _processConfig !== "undefined" && _processConfig.env) || {},
-  argv:
-    (typeof _processConfig !== "undefined" && _processConfig.argv) || [
-      "node",
-      "script.js",
-    ],
-  execPath:
-    (typeof _processConfig !== "undefined" && _processConfig.execPath) ||
-    "/usr/bin/node",
-  pid:
-    (typeof _processConfig !== "undefined" && _processConfig.pid) || 1,
-  ppid:
-    (typeof _processConfig !== "undefined" && _processConfig.ppid) || 0,
-  uid:
-    (typeof _processConfig !== "undefined" && _processConfig.uid) || 0,
-  gid:
-    (typeof _processConfig !== "undefined" && _processConfig.gid) || 0,
-  timingMitigation:
-    (typeof _processConfig !== "undefined" && _processConfig.timingMitigation) ||
-    "off",
-  frozenTimeMs:
-    typeof _processConfig !== "undefined" ? _processConfig.frozenTimeMs : undefined,
-};
+function readProcessConfig() {
+  return {
+    platform:
+      (typeof _processConfig !== "undefined" && _processConfig.platform) ||
+      "linux",
+    arch:
+      (typeof _processConfig !== "undefined" && _processConfig.arch) || "x64",
+    version:
+      (typeof _processConfig !== "undefined" && _processConfig.version) ||
+      "v22.0.0",
+    cwd: (typeof _processConfig !== "undefined" && _processConfig.cwd) || "/root",
+    env: (typeof _processConfig !== "undefined" && _processConfig.env) || {},
+    argv:
+      (typeof _processConfig !== "undefined" && _processConfig.argv) || [
+        "node",
+        "script.js",
+      ],
+    execPath:
+      (typeof _processConfig !== "undefined" && _processConfig.execPath) ||
+      "/usr/bin/node",
+    pid:
+      (typeof _processConfig !== "undefined" && _processConfig.pid) || 1,
+    ppid:
+      (typeof _processConfig !== "undefined" && _processConfig.ppid) || 0,
+    uid:
+      (typeof _processConfig !== "undefined" && _processConfig.uid) || 0,
+    gid:
+      (typeof _processConfig !== "undefined" && _processConfig.gid) || 0,
+    stdin:
+      (typeof _processConfig !== "undefined" ? _processConfig.stdin : undefined),
+    timingMitigation:
+      (typeof _processConfig !== "undefined" && _processConfig.timingMitigation) ||
+      "off",
+    frozenTimeMs:
+      typeof _processConfig !== "undefined" ? _processConfig.frozenTimeMs : undefined,
+  };
+}
+
+let config = readProcessConfig();
 
 /** Get the current timestamp, returning a frozen value when timing mitigation is active. */
 function getNowMs(): number {
@@ -512,11 +518,11 @@ function createStdioWriteStream(options: {
 }
 
 const _stdout = createStdioWriteStream({
-  write(data: string): void {
-    if (typeof _log !== "undefined") {
-      _log.applySync(undefined, [data]);
-    }
-  },
+	write(data: string): void {
+		if (typeof _log !== "undefined") {
+			_log.applySync(undefined, [data]);
+		}
+	},
   isTTY: _getStdoutIsTTY,
 });
 
@@ -534,7 +540,7 @@ const _stderr = createStdioWriteStream({
 type StdinListener = (data?: unknown) => void;
 const _stdinListeners: Record<string, StdinListener[]> = {};
 const _stdinOnceListeners: Record<string, StdinListener[]> = {};
-const _stdinLiveDecoder = new TextDecoder();
+let _stdinLiveDecoder = new TextDecoder();
 const STDIN_HANDLE_ID = "process.stdin";
 let _stdinLiveBuffer = "";
 let _stdinLiveStarted = false;
@@ -1250,6 +1256,47 @@ const process: Record<string, unknown> & {
   _cwd: config.cwd,
   _umask: 0o022,
 };
+
+function applyProcessConfig(nextConfig: ReturnType<typeof readProcessConfig>): void {
+  // Reset per-execution stdin state because the process bridge bundle is reused
+  // across V8 sessions. Without this, one streamed-stdin session can leave the
+  // next session stuck with stdin already marked as started or ended.
+  syncLiveStdinHandle(false);
+  _stdinLiveBuffer = "";
+  _stdinLiveStarted = false;
+  _stdinLiveDecoder = new TextDecoder();
+  for (const key of Object.keys(_stdinListeners)) {
+    _stdinListeners[key] = [];
+  }
+  for (const key of Object.keys(_stdinOnceListeners)) {
+    _stdinOnceListeners[key] = [];
+  }
+  setStdinDataValue(nextConfig.stdin ?? "");
+  setStdinPosition(0);
+  setStdinEnded(false);
+  setStdinFlowMode(false);
+
+  config = nextConfig;
+  _cwd = nextConfig.cwd;
+  process.platform = nextConfig.platform as NodeJS.Platform;
+  process.arch = nextConfig.arch as NodeJS.Architecture;
+  process.version = nextConfig.version;
+  process.pid = nextConfig.pid;
+  process.ppid = nextConfig.ppid;
+  process.execPath = nextConfig.execPath;
+  process.argv = nextConfig.argv;
+  process.argv0 = nextConfig.argv[0] || "node";
+  process.env = nextConfig.env;
+  process._cwd = nextConfig.cwd;
+  process.stdin.paused = true;
+  process.stdin.encoding = null;
+  process.stdin.isRaw = false;
+  (process.versions as Record<string, string>).node = nextConfig.version.replace(/^v/, "");
+}
+
+exposeCustomGlobal("__runtimeRefreshProcessConfig", () => {
+  applyProcessConfig(readProcessConfig());
+});
 
 // Make process.off === process.removeListener (same function reference)
 process.off = process.removeListener;

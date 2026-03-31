@@ -3254,16 +3254,10 @@ function loadHostModuleSourceSync(
 ): string | null {
 	try {
 		const source = readFileSync(readPath, "utf-8");
-		if (readPath.includes("balanced")) {
-			console.error(`[loadHostModuleSourceSync] readPath=${readPath} logicalPath=${logicalPath} loadMode=${loadMode} sourceLen=${source.length}`);
-		}
 		return loadMode === "require"
 			? transformSourceForRequireSync(source, logicalPath)
 			: transformSourceForImportSync(source, logicalPath, readPath);
-	} catch (e) {
-		if (readPath.includes("balanced")) {
-			console.error(`[loadHostModuleSourceSync] FAILED readPath=${readPath}: ${(e as Error).message}`);
-		}
+	} catch {
 		return null;
 	}
 }
@@ -3281,13 +3275,8 @@ export function buildModuleLoadingBridgeHandlers(
 	// The V8 runtime binary only registers a fixed set of bridge globals.
 	// Newer handlers (crypto, net sockets, etc.) are dispatched through
 	// _loadPolyfill with a "__bd:" prefix.
-	let _loadPolyfillCount = 0;
 	handlers[K.loadPolyfill] = async (moduleName: unknown): Promise<string | null> => {
 		const nameStr = String(moduleName);
-		_loadPolyfillCount++;
-		if (_loadPolyfillCount <= 20 || _loadPolyfillCount % 500 === 0) {
-			console.error(`[loadPolyfill] #${_loadPolyfillCount}: ${nameStr.slice(0, 80)}`);
-		}
 
 		// Bridge dispatch: "__bd:methodName:base64args"
 		if (nameStr.startsWith("__bd:") && dispatchHandlers) {
@@ -3324,23 +3313,12 @@ export function buildModuleLoadingBridgeHandlers(
 	// V8 ESM module resolve sends the full file path as referrer, not a directory.
 	// Extract dirname when the referrer looks like a file path.
 	// Falls back to Node.js require.resolve() with realpath for pnpm compatibility.
-	let _resolveCount = 0;
-	let _resolveStart = Date.now();
-	const _resolveTimer = setInterval(() => {
-		if (_resolveCount > 0) {
-			console.error(`[resolveModule] ${_resolveCount} calls in last 2s (${Date.now() - _resolveStart}ms total)`);
-			_resolveCount = 0;
-		}
-	}, 2000);
-	if (_resolveTimer.unref) _resolveTimer.unref();
-
 	handlers[K.resolveModule] = async (
 		request: unknown,
 		fromDir: unknown,
 		requestedMode?: unknown,
 	): Promise<string | null> => {
 		const req = String(request);
-		_resolveCount++;
 		const resolveMode =
 			requestedMode === "require" || requestedMode === "import"
 				? requestedMode
@@ -3397,7 +3375,6 @@ export function buildModuleLoadingBridgeHandlers(
 		requestedMode?: unknown,
 	): string | null | Promise<string | null> => {
 		const p = String(path);
-		console.error(`[loadFile] path=${p.slice(-60)} mode=${requestedMode}`);
 		const loadMode =
 			requestedMode === "require" || requestedMode === "import"
 				? requestedMode
@@ -3443,11 +3420,8 @@ export function buildModuleLoadingBridgeHandlers(
 		}
 
 		// Regular files load differently for CommonJS require() vs V8's ESM loader.
-		console.error(`[loadFile-async] falling to async path for: ${p.slice(-60)}`);
 		return (async () => {
-			console.error(`[loadFile-async] loading from VFS: ${p.slice(-60)}`);
 			const source = await loadFile(p, deps.filesystem);
-			console.error(`[loadFile-async] VFS result: ${source ? source.length + ' bytes' : 'null'}`);
 			if (source === null) return null;
 			if (loadMode === "require") {
 				return transformSourceForRequire(source, p);
@@ -3616,22 +3590,19 @@ export function buildKernelStdinDispatchHandlers(
 	const K = HOST_BRIDGE_GLOBAL_KEYS;
 
 	handlers[K.kernelStdinRead] = async () => {
-			checkBridgeBudget(deps);
-			console.error(`[kernelStdinRead] hasLiveSource=${!!deps.liveStdinSource} reading...`);
-			if (!deps.liveStdinSource) {
-				console.error(`[kernelStdinRead] no source, returning done`);
-				return { done: true };
-			}
-			const chunk = await deps.liveStdinSource.read();
-			console.error(`[kernelStdinRead] got chunk: ${chunk ? chunk.length + ' bytes' : 'null'}`);
-			if (chunk === null || chunk.length === 0) {
-				return { done: true };
-			}
-			return {
-				done: false,
-				dataBase64: Buffer.from(chunk).toString("base64"),
-			};
+		checkBridgeBudget(deps);
+		if (!deps.liveStdinSource) {
+			return { done: true };
+		}
+		const chunk = await deps.liveStdinSource.read();
+		if (chunk === null || chunk.length === 0) {
+			return { done: true };
+		}
+		return {
+			done: false,
+			dataBase64: Buffer.from(chunk).toString("base64"),
 		};
+	};
 
 	return handlers;
 }
@@ -3877,11 +3848,6 @@ export function buildChildProcessBridgeHandlers(deps: ChildProcessBridgeDeps): B
 
 	// Serialize a child process event and push it into the V8 isolate
 	const dispatchEvent = (sessionId: number, type: "stdout" | "stderr" | "exit", data?: Uint8Array | number) => {
-		if (type === "stdout" || type === "stderr") {
-			console.error(`[child-${type}] sessionId=${sessionId} bytes=${(data as Uint8Array)?.length ?? 0} preview=${Buffer.from(data as Uint8Array).toString('utf8').slice(0,80)}`);
-		} else {
-			console.error(`[child-exit] sessionId=${sessionId} code=${data}`);
-		}
 		try {
 			let eventType: "child_stdout" | "child_stderr" | "child_exit";
 			let payload: ChildProcessStreamPayload;
@@ -3955,7 +3921,6 @@ export function buildChildProcessBridgeHandlers(deps: ChildProcessBridgeDeps): B
 	handlers[K.childProcessStdinWrite] = (sessionId: unknown, data: unknown) => {
 		const d = data instanceof Uint8Array ? data : Buffer.from(String(data), "base64");
 		const proc = sessions.get(Number(sessionId));
-		console.error(`[stdin-write] sessionId=${sessionId} hasProc=${!!proc} bytes=${d.length} data=${Buffer.from(d).toString('utf8').slice(0,80)}`);
 		proc?.writeStdin(d);
 	};
 
