@@ -2573,7 +2573,21 @@
             };
           }
 
-          // Overlay host-backed createSign/Sign to avoid vulnerable elliptic ECDSA
+          // Overlay host-backed createSign/Sign to avoid vulnerable elliptic ECDSA.
+          // routes through host crypto to bypass crypto-browserify/elliptic (CVE-2025-14505).
+          //
+          // MEMORY TRADE-OFF: buffers entire payload via Buffer.concat() before invoking
+          // the host bridge. this is necessary because the one-shot _cryptoSign bridge
+          // serializes data as base64, which requires the full payload in memory.
+          //
+          // for small payloads (keys, tokens, hashes) this overhead is negligible.
+          // for large files (binaries, archives), the 4/3x base64 expansion plus v8
+          // heap pressure can exceed isolate limits — this tradeoff mirrors SandboxHash
+          // behavior and aligns with the isolation goal: sandbox code should not
+          // process untrusted large files without explicit memory provisioning.
+          // if sign/verify on multi-gigabyte payloads becomes a requirement, a
+          // stateful bridge (create/update/final) analogous to _cryptoCipheriv would
+          // eliminate the in-isolate buffering.
           if (typeof _cryptoSign !== 'undefined') {
             function SandboxSign(algorithm, options) {
               if (!(this instanceof SandboxSign)) {
@@ -2585,14 +2599,18 @@
               _streamModule.Writable.call(this, options);
               this._algorithm = algorithm;
               this._chunks = [];
+              this._finalized = false;
             }
             _inherits(SandboxSign, _streamModule.Writable);
 
             SandboxSign.prototype.update = function update(data, inputEncoding) {
+              if (this._finalized) {
+                throw createCryptoError('ERR_CRYPTO_SIGN_FINALIZED', 'sign() already called');
+              }
               if (typeof data === 'string') {
                 this._chunks.push(Buffer.from(data, inputEncoding || 'utf8'));
               } else if (isBinaryLike(data)) {
-                this._chunks.push(Buffer.from(data));
+                this._chunks.push(normalizeByteSource(data, 'data'));
               } else {
                 throw createInvalidArgTypeError(
                   'data',
@@ -2604,6 +2622,10 @@
             };
 
             SandboxSign.prototype.sign = function sign(privateKey, outputFormat) {
+              if (this._finalized) {
+                throw createCryptoError('ERR_CRYPTO_SIGN_FINALIZED', 'sign() already called');
+              }
+              this._finalized = true;
               var dataBuf = Buffer.concat(this._chunks);
               var sigBase64;
               try {
@@ -2634,7 +2656,8 @@
             result.Sign = SandboxSign;
           }
 
-          // Overlay host-backed createVerify/Verify to avoid vulnerable elliptic ECDSA
+          // Overlay host-backed createVerify/Verify to avoid vulnerable elliptic ECDSA.
+          // same memory trade-off as createSign (see above).
           if (typeof _cryptoVerify !== 'undefined') {
             function SandboxVerify(algorithm, options) {
               if (!(this instanceof SandboxVerify)) {
@@ -2646,14 +2669,18 @@
               _streamModule.Writable.call(this, options);
               this._algorithm = algorithm;
               this._chunks = [];
+              this._finalized = false;
             }
             _inherits(SandboxVerify, _streamModule.Writable);
 
             SandboxVerify.prototype.update = function update(data, inputEncoding) {
+              if (this._finalized) {
+                throw createCryptoError('ERR_CRYPTO_VERIFY_FINALIZED', 'verify() already called');
+              }
               if (typeof data === 'string') {
                 this._chunks.push(Buffer.from(data, inputEncoding || 'utf8'));
               } else if (isBinaryLike(data)) {
-                this._chunks.push(Buffer.from(data));
+                this._chunks.push(normalizeByteSource(data, 'data'));
               } else {
                 throw createInvalidArgTypeError(
                   'data',
@@ -2665,6 +2692,10 @@
             };
 
             SandboxVerify.prototype.verify = function verify(publicKey, signature, signatureFormat) {
+              if (this._finalized) {
+                throw createCryptoError('ERR_CRYPTO_VERIFY_FINALIZED', 'verify() already called');
+              }
+              this._finalized = true;
               var dataBuf = Buffer.concat(this._chunks);
               var sigBuf;
               if (typeof signature === 'string') {
