@@ -2162,27 +2162,6 @@ export function runNodeCryptoSuite(context: NodeSuiteContext): void {
 		const runtime = await context.createRuntime();
 		const result = await runtime.run(`
 			const crypto = require('crypto');
-			const sign = crypto.createSign('SHA256');
-			module.exports = {
-				hasFinalized: '_finalized' in sign,
-				protoHasFinalized: '_finalized' in sign.__proto__,
-				signKeys: Object.keys(sign),
-				signConstructor: sign.constructor.name,
-			};
-		`);
-		console.error('Full result:', JSON.stringify(result.exports, null, 2));
-		expect(result.code).toBe(0);
-		const exports = result.exports as any;
-		console.error('Sign keys:', exports.signKeys);
-		console.error('Has _finalized:', exports.hasFinalized);
-		console.error('Proto has _finalized:', exports.protoHasFinalized);
-		expect(exports.hasFinalized).toBe(true);
-	});
-
-	it("createSign throws ERR_CRYPTO_SIGN_FINALIZED after sign()", async () => {
-		const runtime = await context.createRuntime();
-		const result = await runtime.run(`
-			const crypto = require('crypto');
 			const { privateKey } = crypto.generateKeyPairSync('ec', {
 				namedCurve: 'prime256v1',
 			});
@@ -2203,7 +2182,6 @@ export function runNodeCryptoSuite(context: NodeSuiteContext): void {
 			}
 			module.exports = { updateError, signError };
 		`);
-		console.error('Full result:', JSON.stringify(result.exports, null, 2));
 		expect(result.code).toBe(0);
 		const exports = result.exports as any;
 		expect(exports.updateError).toBeDefined();
@@ -2316,18 +2294,60 @@ export function runNodeCryptoSuite(context: NodeSuiteContext): void {
 			verify2.update(data);
 			const isValidHex = verify2.verify(publicKey, signature.toString('hex'), 'hex');
 
-			// Verify with string default (utf8)
+			// Verify with Buffer (no encoding param)
 			const verify3 = crypto.createVerify('SHA256');
 			verify3.update(data);
-			// Without encoding, string signature is treated as utf8 bytes
 			const isValidBuffer = verify3.verify(publicKey, signature);
 
-			module.exports = { isValidBase64, isValidHex, isValidBuffer };
+			// Verify with string signature (default utf8 encoding) - should fail because
+			// raw signature bytes are not valid utf8, proving the string path works differently
+			const verify4 = crypto.createVerify('SHA256');
+			verify4.update(data);
+			const isValidUtf8String = verify4.verify(publicKey, signature.toString('utf8'));
+
+			module.exports = { isValidBase64, isValidHex, isValidBuffer, isValidUtf8String };
 		`);
 		expect(result.code).toBe(0);
 		const exports = result.exports as any;
 		expect(exports.isValidBase64).toBe(true);
 		expect(exports.isValidHex).toBe(true);
 		expect(exports.isValidBuffer).toBe(true);
+		// Raw utf8 string of signature bytes is garbage, should return false
+		expect(exports.isValidUtf8String).toBe(false);
+	});
+
+	it("createVerify returns false for tampered data", async () => {
+		const runtime = await context.createRuntime();
+		// Test that verification returns false for tampered data using stateless API
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', {
+				namedCurve: 'prime256v1',
+			});
+			const data = Buffer.from('original data');
+			const signature = crypto.sign('sha256', data, privateKey);
+
+			// Valid signature on original data
+			const validOriginal = crypto.verify('sha256', data, publicKey, signature);
+
+			// Tampered data - same signature should fail
+			const tamperedData = Buffer.from('tampered data');
+			const validTampered = crypto.verify('sha256', tamperedData, publicKey, signature);
+
+			// Corrupted signature (truncated)
+			const corruptedSig = signature.slice(0, signature.length - 10);
+			const validCorrupted = crypto.verify('sha256', data, publicKey, corruptedSig);
+
+			module.exports = {
+				validOriginal,
+				validTampered,
+				validCorrupted,
+			};
+		`);
+		expect(result.code).toBe(0);
+		const exports = result.exports as any;
+		expect(exports.validOriginal).toBe(true);
+		expect(exports.validTampered).toBe(false);
+		expect(exports.validCorrupted).toBe(false);
 	});
 }
