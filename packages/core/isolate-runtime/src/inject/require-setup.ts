@@ -2596,6 +2596,9 @@
               if (!_streamModule || !_streamModule.Writable || !_inherits) {
                 throw new Error('stream.Writable is required for crypto.Sign');
               }
+              if (typeof algorithm !== 'string' && algorithm !== undefined) {
+                throw createInvalidArgTypeError('algorithm', 'of type string', algorithm);
+              }
               _streamModule.Writable.call(this, options);
               this._algorithm = algorithm;
               this._chunks = [];
@@ -2667,6 +2670,9 @@
               if (!_streamModule || !_streamModule.Writable || !_inherits) {
                 throw new Error('stream.Writable is required for crypto.Verify');
               }
+              if (typeof algorithm !== 'string' && algorithm !== undefined) {
+                throw createInvalidArgTypeError('algorithm', 'of type string', algorithm);
+              }
               _streamModule.Writable.call(this, options);
               this._algorithm = algorithm;
               this._chunks = [];
@@ -2701,7 +2707,7 @@
               this._chunks = []; // free buffered chunk references eagerly
               var sigBuf;
               if (typeof signature === 'string') {
-                sigBuf = Buffer.from(signature, signatureFormat || 'base64');
+                sigBuf = Buffer.from(signature, signatureFormat || 'utf8');
               } else {
                 sigBuf = normalizeByteSource(signature, 'signature');
               }
