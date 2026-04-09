@@ -2636,8 +2636,16 @@
               }
               return sigBuf;
             };
-            SandboxSign.prototype.end = function end(data, encoding) {
-              if (data) this.update(data, encoding);
+            SandboxSign.prototype.end = function end(chunk, encoding, cb) {
+              if (_Writable && _Writable.prototype.end) {
+                if (typeof encoding === 'function') {
+                  cb = encoding;
+                  encoding = undefined;
+                }
+                if (chunk) this.update(chunk, encoding);
+                return _Writable.prototype.end.call(this, cb);
+              }
+              if (chunk) this.update(chunk, encoding);
               return this;
             };
             SandboxSign.prototype._update = SandboxSign.prototype.update;
@@ -2715,8 +2723,16 @@
               this._finalized = true;
               return result;
             };
-            SandboxVerify.prototype.end = function end(data) {
-              if (data) this.update(data);
+            SandboxVerify.prototype.end = function end(chunk, encoding, cb) {
+              if (_Writable && _Writable.prototype.end) {
+                if (typeof encoding === 'function') {
+                  cb = encoding;
+                  encoding = undefined;
+                }
+                if (chunk) this.update(chunk, encoding);
+                return _Writable.prototype.end.call(this, cb);
+              }
+              if (chunk) this.update(chunk, encoding);
               return this;
             };
             SandboxVerify.prototype._update = SandboxVerify.prototype.update;
