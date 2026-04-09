@@ -2627,6 +2627,7 @@
               }
               this._finalized = true;
               var dataBuf = Buffer.concat(this._chunks);
+              this._chunks = []; // free buffered chunk references eagerly
               var sigBase64;
               try {
                 sigBase64 = _cryptoSign.applySync(undefined, [
@@ -2697,11 +2698,12 @@
               }
               this._finalized = true;
               var dataBuf = Buffer.concat(this._chunks);
+              this._chunks = []; // free buffered chunk references eagerly
               var sigBuf;
               if (typeof signature === 'string') {
                 sigBuf = Buffer.from(signature, signatureFormat || 'base64');
               } else {
-                sigBuf = Buffer.from(signature);
+                sigBuf = normalizeByteSource(signature, 'signature');
               }
               try {
                 return _cryptoVerify.applySync(undefined, [
