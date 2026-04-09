@@ -2575,13 +2575,18 @@
 
           // Overlay host-backed createSign/Sign to avoid vulnerable elliptic ECDSA
           if (typeof _cryptoSign !== 'undefined') {
-            function SandboxSign(algorithm) {
+            function SandboxSign(algorithm, options) {
               if (!(this instanceof SandboxSign)) {
-                return new SandboxSign(algorithm);
+                return new SandboxSign(algorithm, options);
               }
+              if (!_streamModule || !_streamModule.Writable || !_inherits) {
+                throw new Error('stream.Writable is required for crypto.Sign');
+              }
+              _streamModule.Writable.call(this, options);
               this._algorithm = algorithm;
               this._chunks = [];
             }
+            _inherits(SandboxSign, _streamModule.Writable);
 
             SandboxSign.prototype.update = function update(data, inputEncoding) {
               if (typeof data === 'string') {
@@ -2614,21 +2619,35 @@
               return encodeCryptoResult(resultBuf, outputFormat);
             };
 
-            result.createSign = function createSign(algorithm) {
-              return new SandboxSign(algorithm);
+            SandboxSign.prototype._write = function _write(chunk, encoding, callback) {
+              try {
+                this.update(chunk, encoding === 'buffer' ? undefined : encoding);
+                callback();
+              } catch (error) {
+                callback(normalizeCryptoBridgeError(error));
+              }
+            };
+
+            result.createSign = function createSign(algorithm, options) {
+              return new SandboxSign(algorithm, options);
             };
             result.Sign = SandboxSign;
           }
 
           // Overlay host-backed createVerify/Verify to avoid vulnerable elliptic ECDSA
           if (typeof _cryptoVerify !== 'undefined') {
-            function SandboxVerify(algorithm) {
+            function SandboxVerify(algorithm, options) {
               if (!(this instanceof SandboxVerify)) {
-                return new SandboxVerify(algorithm);
+                return new SandboxVerify(algorithm, options);
               }
+              if (!_streamModule || !_streamModule.Writable || !_inherits) {
+                throw new Error('stream.Writable is required for crypto.Verify');
+              }
+              _streamModule.Writable.call(this, options);
               this._algorithm = algorithm;
               this._chunks = [];
             }
+            _inherits(SandboxVerify, _streamModule.Writable);
 
             SandboxVerify.prototype.update = function update(data, inputEncoding) {
               if (typeof data === 'string') {
@@ -2665,8 +2684,17 @@
               }
             };
 
-            result.createVerify = function createVerify(algorithm) {
-              return new SandboxVerify(algorithm);
+            SandboxVerify.prototype._write = function _write(chunk, encoding, callback) {
+              try {
+                this.update(chunk, encoding === 'buffer' ? undefined : encoding);
+                callback();
+              } catch (error) {
+                callback(normalizeCryptoBridgeError(error));
+              }
+            };
+
+            result.createVerify = function createVerify(algorithm, options) {
+              return new SandboxVerify(algorithm, options);
             };
             result.Verify = SandboxVerify;
           }
