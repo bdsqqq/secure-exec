@@ -2573,6 +2573,104 @@
             };
           }
 
+          // Overlay host-backed createSign/Sign to avoid vulnerable elliptic ECDSA
+          if (typeof _cryptoSign !== 'undefined') {
+            function SandboxSign(algorithm) {
+              if (!(this instanceof SandboxSign)) {
+                return new SandboxSign(algorithm);
+              }
+              this._algorithm = algorithm;
+              this._chunks = [];
+            }
+
+            SandboxSign.prototype.update = function update(data, inputEncoding) {
+              if (typeof data === 'string') {
+                this._chunks.push(Buffer.from(data, inputEncoding || 'utf8'));
+              } else if (isBinaryLike(data)) {
+                this._chunks.push(Buffer.from(data));
+              } else {
+                throw createInvalidArgTypeError(
+                  'data',
+                  'one of type string, Buffer, TypedArray, or DataView',
+                  data,
+                );
+              }
+              return this;
+            };
+
+            SandboxSign.prototype.sign = function sign(privateKey, outputFormat) {
+              var dataBuf = Buffer.concat(this._chunks);
+              var sigBase64;
+              try {
+                sigBase64 = _cryptoSign.applySync(undefined, [
+                  this._algorithm === undefined ? null : this._algorithm,
+                  dataBuf.toString('base64'),
+                  JSON.stringify(serializeBridgeValue(privateKey)),
+                ]);
+              } catch (error) {
+                throw normalizeCryptoBridgeError(error);
+              }
+              var resultBuf = Buffer.from(sigBase64, 'base64');
+              return encodeCryptoResult(resultBuf, outputFormat);
+            };
+
+            result.createSign = function createSign(algorithm) {
+              return new SandboxSign(algorithm);
+            };
+            result.Sign = SandboxSign;
+          }
+
+          // Overlay host-backed createVerify/Verify to avoid vulnerable elliptic ECDSA
+          if (typeof _cryptoVerify !== 'undefined') {
+            function SandboxVerify(algorithm) {
+              if (!(this instanceof SandboxVerify)) {
+                return new SandboxVerify(algorithm);
+              }
+              this._algorithm = algorithm;
+              this._chunks = [];
+            }
+
+            SandboxVerify.prototype.update = function update(data, inputEncoding) {
+              if (typeof data === 'string') {
+                this._chunks.push(Buffer.from(data, inputEncoding || 'utf8'));
+              } else if (isBinaryLike(data)) {
+                this._chunks.push(Buffer.from(data));
+              } else {
+                throw createInvalidArgTypeError(
+                  'data',
+                  'one of type string, Buffer, TypedArray, or DataView',
+                  data,
+                );
+              }
+              return this;
+            };
+
+            SandboxVerify.prototype.verify = function verify(publicKey, signature, signatureFormat) {
+              var dataBuf = Buffer.concat(this._chunks);
+              var sigBuf;
+              if (typeof signature === 'string') {
+                sigBuf = Buffer.from(signature, signatureFormat || 'base64');
+              } else {
+                sigBuf = Buffer.from(signature);
+              }
+              try {
+                return _cryptoVerify.applySync(undefined, [
+                  this._algorithm === undefined ? null : this._algorithm,
+                  dataBuf.toString('base64'),
+                  JSON.stringify(serializeBridgeValue(publicKey)),
+                  sigBuf.toString('base64'),
+                ]);
+              } catch (error) {
+                throw normalizeCryptoBridgeError(error);
+              }
+            };
+
+            result.createVerify = function createVerify(algorithm) {
+              return new SandboxVerify(algorithm);
+            };
+            result.Verify = SandboxVerify;
+          }
+
           if (typeof _cryptoAsymmetricOp !== 'undefined') {
             function asymmetricBridgeCall(operation, key, data) {
               var dataBuf = toRawBuffer(data);
