@@ -1729,6 +1729,7 @@
           var _streamModule = _runtimeRequire && _runtimeRequire('stream');
           var _utilModule = _runtimeRequire && _runtimeRequire('util');
           var _Transform = _streamModule && _streamModule.Transform;
+          var _Writable = _streamModule && _streamModule.Writable;
           var _inherits = _utilModule && _utilModule.inherits;
 
           function createCryptoRangeError(name, message) {
@@ -2571,6 +2572,161 @@
                 throw normalizeCryptoBridgeError(error);
               }
             };
+          }
+
+          // createSign/createVerify use the same bridge as crypto.sign/crypto.verify
+          if (typeof _cryptoSign !== 'undefined') {
+            function SandboxSign(algorithm, options) {
+              if (!(this instanceof SandboxSign)) {
+                return new SandboxSign(algorithm, options);
+              }
+              if (typeof algorithm !== 'string') {
+                throw createInvalidArgTypeError('algorithm', 'of type string', algorithm);
+              }
+              if (_Writable && _inherits) {
+                _Writable.call(this, options);
+              }
+              this._algorithm = algorithm;
+              this._data = [];
+              this._finalized = false;
+            }
+            if (_Writable && _inherits) {
+              _inherits(SandboxSign, _Writable);
+            }
+            SandboxSign.prototype.update = function update(data, inputEncoding) {
+              if (this._finalized) {
+                var err = new Error('Sign already called');
+                err.code = 'ERR_CRYPTO_SIGN_FINALIZED';
+                throw err;
+              }
+              var enc = inputEncoding || 'utf8';
+              var buf = typeof data === 'string' ? Buffer.from(data, enc) : Buffer.from(normalizeByteSource(data, 'data'));
+              this._data.push(buf);
+              return this;
+            };
+            SandboxSign.prototype._write = function _write(chunk, encoding, callback) {
+              try {
+                this.update(chunk, encoding === 'buffer' ? undefined : encoding);
+                callback();
+              } catch (err) {
+                callback(normalizeCryptoBridgeError(err));
+              }
+            };
+            SandboxSign.prototype.sign = function sign(key, encoding) {
+              if (this._finalized) {
+                var err = new Error('Sign already called');
+                err.code = 'ERR_CRYPTO_SIGN_FINALIZED';
+                throw err;
+              }
+              var combined = Buffer.concat(this._data);
+              var sigBase64;
+              try {
+                sigBase64 = _cryptoSign.applySync(undefined, [
+                  this._algorithm === undefined ? null : this._algorithm,
+                  combined.toString('base64'),
+                  JSON.stringify(serializeBridgeValue(key)),
+                ]);
+              } catch (error) {
+                throw normalizeCryptoBridgeError(error);
+              }
+              this._finalized = true;
+              var sigBuf = Buffer.from(sigBase64, 'base64');
+              if (encoding && encoding !== 'buffer') {
+                return sigBuf.toString(encoding);
+              }
+              return sigBuf;
+            };
+            SandboxSign.prototype.end = function end(data, encoding) {
+              if (data) this.update(data, encoding);
+              return this;
+            };
+            SandboxSign.prototype._update = SandboxSign.prototype.update;
+            SandboxSign.prototype._sign = SandboxSign.prototype.sign;
+            SandboxSign.prototype._end = SandboxSign.prototype.end;
+
+            result.createSign = function createSign(algorithm, options) {
+              return new SandboxSign(algorithm, options);
+            };
+            result.Sign = SandboxSign;
+          }
+
+          if (typeof _cryptoVerify !== 'undefined') {
+            function SandboxVerify(algorithm, options) {
+              if (!(this instanceof SandboxVerify)) {
+                return new SandboxVerify(algorithm, options);
+              }
+              if (typeof algorithm !== 'string') {
+                throw createInvalidArgTypeError('algorithm', 'of type string', algorithm);
+              }
+              if (_Writable && _inherits) {
+                _Writable.call(this, options);
+              }
+              this._algorithm = algorithm;
+              this._data = [];
+              this._finalized = false;
+            }
+            if (_Writable && _inherits) {
+              _inherits(SandboxVerify, _Writable);
+            }
+            SandboxVerify.prototype.update = function update(data, inputEncoding) {
+              if (this._finalized) {
+                var err = new Error('Verify already called');
+                err.code = 'ERR_CRYPTO_VERIFY_FINALIZED';
+                throw err;
+              }
+              var enc = inputEncoding || 'utf8';
+              var buf = typeof data === 'string' ? Buffer.from(data, enc) : Buffer.from(normalizeByteSource(data, 'data'));
+              this._data.push(buf);
+              return this;
+            };
+            SandboxVerify.prototype._write = function _write(chunk, encoding, callback) {
+              try {
+                this.update(chunk, encoding === 'buffer' ? undefined : encoding);
+                callback();
+              } catch (err) {
+                callback(normalizeCryptoBridgeError(err));
+              }
+            };
+            SandboxVerify.prototype.verify = function verify(key, signature, encoding) {
+              if (this._finalized) {
+                var err = new Error('Verify already called');
+                err.code = 'ERR_CRYPTO_VERIFY_FINALIZED';
+                throw err;
+              }
+              var combined = Buffer.concat(this._data);
+              var sigBuf;
+              if (typeof signature === 'string') {
+                // Node.js uses 'utf8' as default encoding for string signatures
+                sigBuf = Buffer.from(signature, encoding || 'utf8');
+              } else {
+                sigBuf = Buffer.from(signature);
+              }
+              var result;
+              try {
+                result = _cryptoVerify.applySync(undefined, [
+                  this._algorithm === undefined ? null : this._algorithm,
+                  combined.toString('base64'),
+                  JSON.stringify(serializeBridgeValue(key)),
+                  sigBuf.toString('base64'),
+                ]);
+              } catch (error) {
+                throw normalizeCryptoBridgeError(error);
+              }
+              this._finalized = true;
+              return result;
+            };
+            SandboxVerify.prototype.end = function end(data) {
+              if (data) this.update(data);
+              return this;
+            };
+            SandboxVerify.prototype._update = SandboxVerify.prototype.update;
+            SandboxVerify.prototype._verify = SandboxVerify.prototype.verify;
+            SandboxVerify.prototype._end = SandboxVerify.prototype.end;
+
+            result.createVerify = function createVerify(algorithm, options) {
+              return new SandboxVerify(algorithm, options);
+            };
+            result.Verify = SandboxVerify;
           }
 
           if (typeof _cryptoAsymmetricOp !== 'undefined') {

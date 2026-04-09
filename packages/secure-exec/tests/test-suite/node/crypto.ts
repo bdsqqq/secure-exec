@@ -2350,4 +2350,55 @@ export function runNodeCryptoSuite(context: NodeSuiteContext): void {
 		expect(exports.validTampered).toBe(false);
 		expect(exports.validCorrupted).toBe(false);
 	});
+
+	it("createVerify returns false for wrong public key", async () => {
+		const runtime = await context.createRuntime();
+		// Use generateKeyPairSync with PEM encoding to avoid serialization issues with KeyObjects
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1', publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
+			const { publicKey: wrongPublicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1', publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
+			const data = Buffer.from('test');
+			const sig = crypto.sign('sha256', data, privateKey);
+			const validWrongKey = crypto.verify('sha256', data, wrongPublicKey, sig);
+			const validRightKey = crypto.verify('sha256', data, publicKey, sig);
+			module.exports = { validWrongKey, validRightKey };
+		`);
+		expect(result.code).toBe(0);
+		const exports = result.exports as any;
+		expect(exports.validWrongKey).toBe(false);
+		expect(exports.validRightKey).toBe(true);
+	});
+
+	it("createVerify handles malformed signature gracefully", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', {
+				namedCurve: 'prime256v1',
+			});
+			const data = Buffer.from('test data');
+
+			// Malformed signatures should return false, not crash the sandbox
+			const malformedSigs = [
+				Buffer.from('not a signature'),
+				Buffer.alloc(10, 0xFF),
+				Buffer.from([0x30, 0x00]), // Empty SEQUENCE
+			];
+
+			const results = [];
+			for (const malformed of malformedSigs) {
+				const valid = crypto.verify('sha256', data, publicKey, malformed);
+				results.push(valid);
+			}
+
+			module.exports = { results };
+		`);
+		expect(result.code).toBe(0);
+		const exports = result.exports as any;
+		// All malformed signatures should return false
+		for (const valid of exports.results) {
+			expect(valid).toBe(false);
+		}
+	});
 }
