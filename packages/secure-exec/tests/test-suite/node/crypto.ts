@@ -2066,4 +2066,268 @@ export function runNodeCryptoSuite(context: NodeSuiteContext): void {
 		expect(exports.match).toBe(true);
 		expect(exports.length).toBeGreaterThan(0);
 	});
+
+	// createSign/createVerify tests — these bypass crypto-browserify/elliptic via host bridge
+	it("createSign/createVerify with RSA: sign and verify match", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', {
+				modulusLength: 2048,
+				publicKeyEncoding: { type: 'spki', format: 'pem' },
+				privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+			});
+			const data = 'test data for rsa signature';
+
+			// Sign
+			const sign = crypto.createSign('SHA256');
+			sign.update(data);
+			const signature = sign.sign(privateKey);
+
+			// Verify
+			const verify = crypto.createVerify('SHA256');
+			verify.update(data);
+			const isValid = verify.verify(publicKey, signature);
+
+			module.exports = {
+				isValid,
+				sigLength: signature.length,
+				sigIsBuffer: Buffer.isBuffer(signature),
+			};
+		`);
+		expect(result.code).toBe(0);
+		const exports = result.exports as any;
+		expect(exports.isValid).toBe(true);
+		expect(exports.sigIsBuffer).toBe(true);
+	});
+
+	it("createSign/createVerify with ECDSA: verifies correct signature", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', {
+				namedCurve: 'prime256v1',
+			});
+			const data = 'test data for ecdsa signature';
+
+			const sign = crypto.createSign('SHA256');
+			sign.update(data);
+			const signature = sign.sign(privateKey);
+
+			const verify = crypto.createVerify('SHA256');
+			verify.update(data);
+			const isValid = verify.verify(publicKey, signature);
+
+			module.exports = { isValid };
+		`);
+		expect(result.code).toBe(0);
+		const exports = result.exports as any;
+		expect(exports.isValid).toBe(true);
+	});
+
+	it("createSign stream interface: end() and write() work", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const { privateKey } = crypto.generateKeyPairSync('ec', {
+				namedCurve: 'prime256v1',
+			});
+
+			// Test end() with data
+			const sign = crypto.createSign('SHA256');
+			sign.end('test data');
+			const sig = sign.sign(privateKey);
+
+			// Test write() in chunks
+			const sign2 = crypto.createSign('SHA256');
+			sign2.write('test');
+			sign2.write(' data');
+			sign2.end();
+			const sig2 = sign2.sign(privateKey);
+
+			module.exports = {
+				sigLength: sig.length,
+				sig2Length: sig2.length,
+				writeType: typeof sign.write,
+				endType: typeof sign.end,
+			};
+		`);
+		expect(result.code).toBe(0);
+		const exports = result.exports as any;
+		expect(exports.writeType).toBe("function");
+		expect(exports.endType).toBe("function");
+	});
+
+	it("createSign throws ERR_CRYPTO_SIGN_FINALIZED after sign()", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const sign = crypto.createSign('SHA256');
+			module.exports = {
+				hasFinalized: '_finalized' in sign,
+				protoHasFinalized: '_finalized' in sign.__proto__,
+				signKeys: Object.keys(sign),
+				signConstructor: sign.constructor.name,
+			};
+		`);
+		console.error('Full result:', JSON.stringify(result.exports, null, 2));
+		expect(result.code).toBe(0);
+		const exports = result.exports as any;
+		console.error('Sign keys:', exports.signKeys);
+		console.error('Has _finalized:', exports.hasFinalized);
+		console.error('Proto has _finalized:', exports.protoHasFinalized);
+		expect(exports.hasFinalized).toBe(true);
+	});
+
+	it("createSign throws ERR_CRYPTO_SIGN_FINALIZED after sign()", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const { privateKey } = crypto.generateKeyPairSync('ec', {
+				namedCurve: 'prime256v1',
+			});
+			const sign = crypto.createSign('SHA256');
+			sign.update('data');
+			const sig = sign.sign(privateKey);
+
+			let updateError, signError;
+			try {
+				sign.update('more');
+			} catch (e) {
+				updateError = { code: e.code };
+			}
+			try {
+				sign.sign(privateKey);
+			} catch (e) {
+				signError = { code: e.code };
+			}
+			module.exports = { updateError, signError };
+		`);
+		console.error('Full result:', JSON.stringify(result.exports, null, 2));
+		expect(result.code).toBe(0);
+		const exports = result.exports as any;
+		expect(exports.updateError).toBeDefined();
+		expect(exports.updateError.code).toBe("ERR_CRYPTO_SIGN_FINALIZED");
+		expect(exports.signError).toBeDefined();
+		expect(exports.signError.code).toBe("ERR_CRYPTO_SIGN_FINALIZED");
+	});
+
+	it("createVerify throws ERR_CRYPTO_VERIFY_FINALIZED after verify()", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', {
+				namedCurve: 'prime256v1',
+			});
+			const data = 'test data';
+			const signature = crypto.createSign('SHA256').update(data).sign(privateKey);
+
+			const verify = crypto.createVerify('SHA256');
+			verify.update(data);
+			verify.verify(publicKey, signature);
+
+			// These should throw after verify()
+			let updateError, verifyError;
+			try {
+				verify.update('more');
+			} catch (e) {
+				updateError = { code: e.code };
+			}
+			try {
+				verify.verify(publicKey, signature);
+			} catch (e) {
+				verifyError = { code: e.code };
+			}
+
+			module.exports = { updateError, verifyError };
+		`);
+		expect(result.code).toBe(0);
+		const exports = result.exports as any;
+		expect(exports.updateError.code).toBe("ERR_CRYPTO_VERIFY_FINALIZED");
+		expect(exports.verifyError.code).toBe("ERR_CRYPTO_VERIFY_FINALIZED");
+	});
+
+	it("createSign rejects invalid algorithm type", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			try {
+				const s = crypto.createSign(123);
+				module.exports = { threw: false, algo: s._algorithm };
+			} catch (e) {
+				module.exports = { threw: true, code: e.code, name: e.name };
+			}
+		`);
+		// Debug: log full result if test fails
+		if (result.code !== 0 || !(result.exports as any)?.threw) {
+			console.error('Debug:', JSON.stringify(result.exports, null, 2));
+		}
+		expect(result.code).toBe(0);
+		const exports = result.exports as any;
+		expect(exports.threw).toBe(true);
+		expect(exports.code).toBe("ERR_INVALID_ARG_TYPE");
+	});
+
+	it("createSign handles Buffer input via normalizeByteSource", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', {
+				namedCurve: 'prime256v1',
+			});
+			const data = Buffer.from('test data');
+			const dataSlice = data.subarray(0, 9); // 'test data' (slice to verify byteOffset handling)
+
+			const sign = crypto.createSign('SHA256');
+			sign.update(dataSlice);
+			sign.end();
+			const signature = sign.sign(privateKey);
+
+			const verify = crypto.createVerify('SHA256');
+			verify.update(dataSlice);
+			verify.end();
+			const isValid = verify.verify(publicKey, signature);
+
+			module.exports = { isValid, sliceOffset: dataSlice.byteOffset };
+		`);
+		expect(result.code).toBe(0);
+		const exports = result.exports as any;
+		expect(exports.isValid).toBe(true);
+	});
+
+	it("createVerify with hex and base64 signature encodings", async () => {
+		const runtime = await context.createRuntime();
+		const result = await runtime.run(`
+			const crypto = require('crypto');
+			const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', {
+				namedCurve: 'prime256v1',
+			});
+			const data = 'test data';
+
+			const signature = crypto.createSign('SHA256').update(data).sign(privateKey);
+
+			// Verify with explicit base64 encoding
+			const verify1 = crypto.createVerify('SHA256');
+			verify1.update(data);
+			const isValidBase64 = verify1.verify(publicKey, signature.toString('base64'), 'base64');
+
+			// Verify with explicit hex encoding
+			const verify2 = crypto.createVerify('SHA256');
+			verify2.update(data);
+			const isValidHex = verify2.verify(publicKey, signature.toString('hex'), 'hex');
+
+			// Verify with string default (utf8)
+			const verify3 = crypto.createVerify('SHA256');
+			verify3.update(data);
+			// Without encoding, string signature is treated as utf8 bytes
+			const isValidBuffer = verify3.verify(publicKey, signature);
+
+			module.exports = { isValidBase64, isValidHex, isValidBuffer };
+		`);
+		expect(result.code).toBe(0);
+		const exports = result.exports as any;
+		expect(exports.isValidBase64).toBe(true);
+		expect(exports.isValidHex).toBe(true);
+		expect(exports.isValidBuffer).toBe(true);
+	});
 }
